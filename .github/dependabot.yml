@@ -27,3 +27,5 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
