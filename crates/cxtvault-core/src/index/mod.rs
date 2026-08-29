@@ -198,7 +198,7 @@ impl BM25Index {
             query_parser.parse_query(query).map_err(|e| Error::Index(e.to_string()))?;
 
         let top_docs = searcher
-            .search(&parsed_query, &TopDocs::with_limit(limit))
+            .search(&parsed_query, &TopDocs::with_limit(limit).order_by_score())
             .map_err(|e| Error::Index(e.to_string()))?;
 
         let mut results = Vec::with_capacity(top_docs.len());
