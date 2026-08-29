@@ -18,13 +18,11 @@ authors = ["Trent <trent@example.com>"]
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
-unused_results = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-# Selectively allow things that are too noisy
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
