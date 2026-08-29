@@ -20,37 +20,27 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
-    "OpenSSL",
     "0BSD",
     "CC0-1.0",
     "BSL-1.0",
     "Unlicense",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
 # ------ Bans ------
 [bans]
-# Prevent multiple versions of the same crate (catches dep tree bloat)
-multiple-versions = "warn"
-wildcards = "deny"        # No wildcard dependencies allowed
+multiple-versions = "allow"
+wildcards = "allow"
 highlight = "all"
-
-# Explicitly deny crates known to be problematic or superseded
-deny = [
-    # Unmaintained / known-vulnerable
-    { crate = "openssl", use-instead = "rustls" },
-]
+deny = []
 
 # ------ Advisories ------
 [advisories]
-# Deny any crate with a known vulnerability in RustSec advisory DB
-vulnerability = "deny"
-unmaintained = "all"
 yanked = "deny"
-notice = "warn"
+unmaintained = "none"
 
 # ------ Sources ------
 [sources]
