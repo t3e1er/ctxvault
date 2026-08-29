@@ -123,12 +123,6 @@ cargo build --release           # Build release binary (target/release/cxtvault)
 
 ---
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines, quality gates, and branching workflows.
-
----
-
 ## License
 
 MIT
