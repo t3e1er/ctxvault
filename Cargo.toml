@@ -58,7 +58,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 pulldown-cmark = "0.12"
 
 # Full-text search (BM25)
-tantivy = "0.22"
+tantivy = "0.26"
 
 # Vector search
 hnsw_rs = "0.3"
