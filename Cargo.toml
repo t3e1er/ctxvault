@@ -68,7 +68,7 @@ fastembed = "4"
 petgraph = { version = "0.8", features = ["serde-1"] }
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 
 # File watching
 notify = "7.0"
