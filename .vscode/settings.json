@@ -1,0 +1,26 @@
+{
+  // Rust Analyzer settings for this workspace
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--all-targets"],
+  "rust-analyzer.diagnostics.experimental.enable": true,
+
+  // Format on save with rustfmt
+  "[rust]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+
+  // File associations
+  "files.associations": {
+    "*.toml": "toml"
+  },
+
+  // Exclude build artifacts from search
+  "files.exclude": {
+    "**/target": true
+  },
+  "search.exclude": {
+    "**/target": true
+  }
+}

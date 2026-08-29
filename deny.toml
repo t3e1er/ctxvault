@@ -1,0 +1,56 @@
+# cargo-deny configuration
+# Enforces license compliance, bans risky crates, detects vulnerabilities.
+# Run: cargo deny check
+# See: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = [
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+]
+
+# ------ Licenses ------
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+# ------ Bans ------
+[bans]
+# Prevent multiple versions of the same crate (catches dep tree bloat)
+multiple-versions = "warn"
+wildcards = "deny"        # No wildcard dependencies allowed
+highlight = "all"
+
+# Explicitly deny crates known to be problematic or superseded
+deny = [
+    # Unmaintained / known-vulnerable
+    { crate = "openssl", use-instead = "rustls" },
+]
+
+# ------ Advisories ------
+[advisories]
+# Deny any crate with a known vulnerability in RustSec advisory DB
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+
+# ------ Sources ------
+[sources]
+# Only allow crates from crates.io (prevent typosquatting from alt registries)
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

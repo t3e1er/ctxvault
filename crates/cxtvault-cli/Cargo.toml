@@ -1,0 +1,36 @@
+[package]
+name = "cxtvault-cli"
+description = "CLI binary: argument parsing, mode selection, startup orchestration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cxtvault"
+path = "src/main.rs"
+
+[dependencies]
+cxtvault-common = { path = "../cxtvault-common" }
+cxtvault-core = { path = "../cxtvault-core" }
+cxtvault-mcp = { path = "../cxtvault-mcp" }
+
+# Async
+tokio = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Serialization
+toml = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }

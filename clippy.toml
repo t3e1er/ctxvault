@@ -1,0 +1,17 @@
+# Clippy configuration
+# See: https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Maximum cognitive complexity for a function before warning
+cognitive-complexity-threshold = 25
+
+# Minimum number of lines in a function before triggering too_many_lines
+too-many-lines-threshold = 100
+
+# Maximum number of function arguments
+too-many-arguments-threshold = 7
+
+# Allowed wildcard imports (for prelude patterns)
+allowed-wildcard-imports = ["kb_common::*"]
+
+# MSRV for lint suggestions
+msrv = "1.80"

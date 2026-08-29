@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ──────────────────────────────────────────────────
+  # 1. Build and Package Binary Matrix
+  # ──────────────────────────────────────────────────
+  build-release:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary_name: cxtvault.exe
+            archive_ext: zip
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            binary_name: cxtvault
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            binary_name: cxtvault
+            archive_ext: tar.gz
+            use_cross: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary_name: cxtvault
+            archive_ext: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            binary_name: cxtvault
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (for Linux ARM64 cross-compilation)
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --bin cxtvault
+          else
+            cargo build --release --target ${{ matrix.target }} --bin cxtvault
+          fi
+
+      - name: Package artifacts (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          STAGING="cxtvault-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$STAGING"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$STAGING/"
+          cp README.md LICENSE THIRD_PARTY_LICENSES.md "$STAGING/" 2>/dev/null || true
+          tar -czvf "$STAGING.tar.gz" "$STAGING"
+          echo "ASSET_NAME=$STAGING.tar.gz" >> $GITHUB_ENV
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "cxtvault-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination $staging
+          if (Test-Path README.md) { Copy-Item README.md -Destination $staging }
+          if (Test-Path LICENSE) { Copy-Item LICENSE -Destination $staging }
+          if (Test-Path THIRD_PARTY_LICENSES.md) { Copy-Item THIRD_PARTY_LICENSES.md -Destination $staging }
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip" -Force
+          echo "ASSET_NAME=$staging.zip" >> $env:GITHUB_ENV
+
+      - name: Upload artifact for release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET_NAME }}
+
+  # ──────────────────────────────────────────────────
+  # 2. Collect Artifacts, Generate Checksums & Release
+  # ──────────────────────────────────────────────────
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: release-assets
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

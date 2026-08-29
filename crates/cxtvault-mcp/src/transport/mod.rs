@@ -1,0 +1,14 @@
+//! MCP transport: stdio, HTTP, and SSE server implementations.
+
+pub mod dispatch;
+pub mod http;
+pub mod stdio;
+
+pub use dispatch::{
+    format_rpc_response, make_error_response, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
+};
+pub use http::{
+    run_http_server, run_http_server_multi, MultiCorpusServerState, SingleCorpusServerState,
+};
+pub use stdio::{run_stdio, run_stdio_multi};

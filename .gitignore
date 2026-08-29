@@ -1,0 +1,36 @@
+# Rust build artifacts
+/target/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+.env.local
+
+# Index artifacts (generated at runtime, per-corpus)
+.index/
+.semantic-pages-index/
+.semantic-sidekick-index/
+
+# Temporary build/test output
+*.txt
+!LICENSE*.txt
+!todo.txt
+
+# Fastembed model cache
+.fastembed_cache/
+
+# Kiro settings (user-specific MCP config)
+.kiro/settings/

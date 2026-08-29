@@ -1,0 +1,29 @@
+# Automated dependency update PRs.
+# Keeps crates fresh while respecting pinned versions.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps"
+    # Group minor/patch updates to reduce PR noise
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
