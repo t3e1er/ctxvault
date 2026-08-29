@@ -72,7 +72,7 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
 # File watching
 notify = "7.0"
-notify-debouncer-full = "0.4"
+notify-debouncer-full = "0.7"
 
 # Hashing
 blake3 = "1.5"
