@@ -21,7 +21,6 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Unicode-DFS-2016",
-    "Unicode-MD",
     "Zlib",
     "OpenSSL",
     "0BSD",
@@ -49,7 +48,7 @@ deny = [
 [advisories]
 # Deny any crate with a known vulnerability in RustSec advisory DB
 vulnerability = "deny"
-unmaintained = "warn"
+unmaintained = "all"
 yanked = "deny"
 notice = "warn"
 
