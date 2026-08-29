@@ -178,21 +178,16 @@ pub struct ScoreBreakdown {
 }
 
 /// Depth level for dual-level retrieval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchDepth {
     /// Chunk-level only — best for specific factual queries.
+    #[default]
     Precise,
     /// Document-level only — best for "what do we know about X?" sensemaking.
     Broad,
     /// Both chunk and doc-level, merged with RRF — default.
     Adaptive,
-}
-
-impl Default for SearchDepth {
-    fn default() -> Self {
-        Self::Precise
-    }
 }
 
 impl SearchDepth {
