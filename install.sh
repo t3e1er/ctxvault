@@ -4,7 +4,7 @@ set -e
 # cxtvault Universal Installer for macOS and Linux
 # Installs standalone native binary directly into ~/.local/bin/cxtvault
 
-REPO="${CXTV_GITHUB_REPO:-YOUR_ORG/cxtvault}"
+REPO="${CXTV_GITHUB_REPO:-t3e1er/ctxvault}"
 INSTALL_DIR="${CXTV_INSTALL_DIR:-$HOME/.local/bin}"
 
 # 1. Detect architecture & OS

@@ -6,18 +6,18 @@ Written in 100% pure Rust (`unsafe = forbid`) for maximum performance, safety, z
 
 ---
 
-## ⚡ Installation
+## Installation
 
 Install the precompiled native standalone binary for your platform in one command:
 
 ### macOS & Linux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/cxtvault/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.sh | sh
 ```
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/YOUR_ORG/cxtvault/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.ps1 | iex
 ```
 
 ### From Source (via Cargo)
@@ -27,7 +27,7 @@ cargo install --locked --path crates/cxtvault-cli
 
 ---
 
-## 🔌 MCP Client Configuration
+## MCP Client Configuration
 
 ### Claude Desktop (`claude_desktop_config.json`)
 ```json
@@ -76,7 +76,7 @@ cxtvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
 
 ---
 
-## 🚀 Key Architectural Features
+## Key Architectural Features
 
 - **4-Modality Hybrid Retrieval**:
   - **Tantivy Okapi BM25**: Full-text inverted index with field norms, term positions, and tokenization.
@@ -92,7 +92,7 @@ cxtvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
 
 ---
 
-## 🛠️ Developer Workflow
+## Developer Workflow
 
 ```bash
 cargo check                     # Fast type-checking
@@ -103,7 +103,7 @@ cargo build --release           # Build release binary (target/release/cxtvault)
 
 ---
 
-## 📦 Workspace Layout
+## Workspace Layout
 
 | Crate | Role |
 |---|---|
@@ -114,14 +114,15 @@ cargo build --release           # Build release binary (target/release/cxtvault)
 
 ---
 
-## 🔒 Security & Quality Gates
+## Security & Quality Gates
 
 - `unsafe` is forbidden workspace-wide (`unsafe_code = "forbid"`).
 - Zero C runtime dependencies (pure Rust TLS via `rustls-tls`, bundled SQLite via `rusqlite`).
 - `cargo-deny` enforces strict license compliance and dependency security.
+- Automated CI pipeline executes format verification, Clippy lints, MSRV checks, and unit tests across Ubuntu, Windows, and macOS.
 
 ---
 
-## 📄 License
+## License
 
 MIT

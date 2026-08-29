@@ -1069,7 +1069,7 @@ mod tests {
         let mut index = BM25Index::open_in_memory().unwrap();
 
         // rust.md mentions "systems programming" heavily — unique to this doc.
-        let chunks = vec![
+        let chunks = [
             make_chunk("notes/rust.md", 0, "Rust is a systems programming language. Systems programming in Rust focuses on safety and performance for systems-level code"),
             make_chunk("notes/async.md", 0, "Async concurrency uses futures and the tokio runtime for non-blocking IO"),
             make_chunk("notes/python.md", 0, "Python is a dynamic interpreted scripting language popular for data science and automation. Python scripting is easy to learn"),

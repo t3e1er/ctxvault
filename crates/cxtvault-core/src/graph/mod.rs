@@ -1546,7 +1546,7 @@ mod tests {
         let doc = make_doc("note.md", "Note", vec![], vec!["target1.md", "target2.md"]);
         let configs = vec![wikilink_config()];
 
-        graph.build_edges_for_document(&doc, &configs, &[doc.clone()]);
+        graph.build_edges_for_document(&doc, &configs, std::slice::from_ref(&doc));
 
         assert_eq!(graph.edge_count(), 2);
         assert!(graph.get_node("target1.md").is_some());

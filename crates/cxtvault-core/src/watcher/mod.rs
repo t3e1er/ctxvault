@@ -141,7 +141,7 @@ mod tests {
             make_event(EventKind::Create(CreateKind::File), vec![PathBuf::from("/docs/note.md")]);
         let result = classify_event(&event);
         assert!(
-            matches!(result, Some(FileEvent::Created(p)) if p == PathBuf::from("/docs/note.md"))
+            matches!(result, Some(FileEvent::Created(p)) if p == std::path::Path::new("/docs/note.md"))
         );
     }
 
@@ -153,7 +153,7 @@ mod tests {
         );
         let result = classify_event(&event);
         assert!(
-            matches!(result, Some(FileEvent::Modified(p)) if p == PathBuf::from("/docs/note.md"))
+            matches!(result, Some(FileEvent::Modified(p)) if p == std::path::Path::new("/docs/note.md"))
         );
     }
 
@@ -163,7 +163,7 @@ mod tests {
             make_event(EventKind::Remove(RemoveKind::File), vec![PathBuf::from("/docs/note.md")]);
         let result = classify_event(&event);
         assert!(
-            matches!(result, Some(FileEvent::Deleted(p)) if p == PathBuf::from("/docs/note.md"))
+            matches!(result, Some(FileEvent::Deleted(p)) if p == std::path::Path::new("/docs/note.md"))
         );
     }
 
@@ -177,7 +177,7 @@ mod tests {
         assert!(matches!(
             result,
             Some(FileEvent::Renamed { from, to })
-                if from == PathBuf::from("/docs/old.md") && to == PathBuf::from("/docs/new.md")
+                if from == std::path::Path::new("/docs/old.md") && to == std::path::Path::new("/docs/new.md")
         ));
     }
 

@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:CXTV_GITHUB_REPO) { $env:CXTV_GITHUB_REPO } else { "YOUR_ORG/cxtvault" }
+$Repo = if ($env:CXTV_GITHUB_REPO) { $env:CXTV_GITHUB_REPO } else { "t3e1er/ctxvault" }
 $InstallDir = if ($env:CXTV_INSTALL_DIR) { $env:CXTV_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\cxtvault\bin" }
 
 Write-Host "🔍 Resolving latest release for $Repo..." -ForegroundColor Cyan
