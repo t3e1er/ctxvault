@@ -6,6 +6,31 @@ Written in 100% pure Rust (`unsafe = forbid`) for maximum performance, safety, z
 
 ---
 
+## The `cxtvault` Ethos
+
+`cxtvault` is built around five foundational principles designed for the next generation of AI development and multi-agent orchestration:
+
+1. **Markdown is the Authoritative Ground Truth**: Files on disk are king. Indices (BM25, HNSW vectors, SQLite relation caches) are derived, disposable, and 100% rebuildable. Your knowledge remains human-readable, git-trackable, and portable forever.
+2. **Explicit Graph Topology over Flaky Extraction**: Knowledge structure arises deterministically from typed frontmatter fields, `#tags`, and `[[wikilinks]]` — eliminating expensive, non-deterministic LLM entity-extraction pipelines.
+3. **Continuous Knowledge Crystallization**: AI agent interactions produce valuable conversational exhaust (debugging traces, design consensus, bug resolutions). `cxtvault` provides first-class primitives (`promote_concept`, `traverse_lineage`) to distill ephemeral traces into permanent, schema-validated semantic knowledge assets with full provenance.
+4. **Pure Rust Sub-Millisecond Speed**: With p50 retrieval latencies under 2.2ms, AI agents can execute multi-hop graph traversals and hybrid ranking in real-time without introducing perceptible reasoning lag.
+5. **Multi-Agent Memory Substrate**: Designed to act as a shared in-memory and on-disk semantic plane for swarms of specialized agents (Scouts, Readers, Writers, Crystallizers).
+
+---
+
+## Quickstart & Starter Pack
+
+We provide ready-to-use steering prompts, editor rules, workflow skills, multi-agent blueprints, and a pre-configured starter knowledge base in [`examples/`](examples/):
+
+| Category | Resources | Description |
+|---|---|---|
+| **AI Steering & Rules** | [`examples/steering/`](examples/steering/) | Drop-in rules for [Cursor (`.cursorrules`)](examples/steering/cursorrules.md), [Antigravity / Gemini](examples/steering/cxtvault-rules.md), [Claude Desktop](examples/steering/claude-system-prompt.md), and [Windsurf](examples/steering/windsurf-rules.md). |
+| **Workflow Skills** | [`examples/skills/`](examples/skills/) | Production `SKILL.md` runbooks: [`search`](examples/skills/cxtvault-search/SKILL.md), [`curate`](examples/skills/cxtvault-curate/SKILL.md), [`crystallize`](examples/skills/cxtvault-crystallize/SKILL.md), and [`ops`](examples/skills/cxtvault-ops/SKILL.md). |
+| **Multi-Agent Swarms** | [`examples/agents/`](examples/agents/) | Role definitions for [Scout](examples/agents/scout_agent.md), [Reader](examples/agents/reader_agent.md), [Writer](examples/agents/writer_agent.md), and [Crystallizer](examples/agents/crystallizer_agent.md), plus [Swarm Orchestration Blueprints](examples/agents/swarm_orchestration.md). |
+| **Starter Knowledge Vault** | [`examples/starter-vault/`](examples/starter-vault/) | Turnkey demo vault with [`corpus.toml`](examples/starter-vault/corpus.toml), 4 formal schema templates, and sample interlinked notes. |
+
+---
+
 ## Installation
 
 Install the precompiled native standalone binary for your platform in one command:
@@ -111,6 +136,7 @@ cargo build --release           # Build release binary (target/release/cxtvault)
 | [`cxtvault-core`](crates/cxtvault-core) | Retrieval engine: Tantivy, FastEmbed, Petgraph, SQLite, chunking, file watcher |
 | [`cxtvault-mcp`](crates/cxtvault-mcp) | Model Context Protocol JSON-RPC transport and 31+ MCP tools |
 | [`cxtvault-cli`](crates/cxtvault-cli) | Native CLI binary: argument parsing, mode selection, orchestration |
+| [`examples`](examples) | Steering snippets, workflow skills, multi-agent swarms, and starter vault |
 
 ---
 

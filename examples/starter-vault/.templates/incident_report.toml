@@ -1,0 +1,28 @@
+[template]
+name = "incident_report"
+description = "Post-mortem and root cause analysis for operational incidents"
+
+[[required_fields]]
+name = "title"
+field_type = "string"
+
+[[required_fields]]
+name = "severity"
+field_type = "enum"
+values = ["sev1", "sev2", "sev3", "sev4"]
+
+[[required_fields]]
+name = "date"
+field_type = "date"
+
+[[optional_fields]]
+name = "resolved_by"
+field_type = "string"
+
+[[optional_fields]]
+name = "tags"
+field_type = "list"
+
+[content]
+required_sections = ["Summary", "Timeline", "Root Cause", "Action Items"]
+min_word_count = 25
