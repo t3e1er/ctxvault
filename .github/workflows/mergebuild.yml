@@ -1,0 +1,53 @@
+name: Merge Build
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate (fmt, clippy, test, docs, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mergebuild-validate
+
+      # 1. Format check
+      - name: Format check (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      # 2. Clippy lints
+      - name: Clippy lints (cargo clippy)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      # 3. Unit and integration tests
+      - name: Test suite (cargo test)
+        run: cargo test --workspace --all-features --locked
+
+      # 4. Doc warnings
+      - name: Documentation check (cargo doc)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+      # 5. Security & license audit
+      - name: License & vulnerability audit (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
