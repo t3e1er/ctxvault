@@ -60,7 +60,7 @@ impl<T: McpTransport> McpClient<T> {
             },
             "clientInfo": {
                 "name": "cxtvault-client",
-                "version": "0.1.0"
+                "version": env!("CARGO_PKG_VERSION")
             }
         });
 
