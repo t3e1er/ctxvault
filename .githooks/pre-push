@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+# Git pre-push hook: runs local validation pipeline before push
+set -e
+
+echo "=========================================================="
+echo "  Running Cxtvault Pre-Push Validation Pipeline..."
+echo "=========================================================="
+
+# 1. Format check
+echo "==> [1/5] Checking code formatting (cargo fmt)..."
+if ! cargo fmt --all -- --check; then
+    echo "ERROR: Formatting check failed. Run 'cargo fmt --all' to fix." >&2
+    exit 1
+fi
+
+# 2. Clippy lints (with strict --locked dependency verification)
+echo "==> [2/5] Running Clippy lints (cargo clippy --locked)..."
+if ! cargo clippy --workspace --all-targets --all-features --locked -- -D warnings; then
+    echo "ERROR: Clippy lints failed or Cargo.lock is out of sync. Fix compiler/clippy warnings before pushing." >&2
+    exit 1
+fi
+
+# 3. Unit and integration tests
+echo "==> [3/5] Running workspace test suite (cargo test --locked)..."
+if ! cargo test --workspace --all-features --locked; then
+    echo "ERROR: Test suite failed. Fix failing tests before pushing." >&2
+    exit 1
+fi
+
+# 4. Documentation build
+echo "==> [4/5] Checking documentation warnings (cargo doc --locked)..."
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked; then
+    echo "ERROR: Documentation build failed or contains doc warnings." >&2
+    exit 1
+fi
+
+# 5. Cargo deny check (if cargo-deny is installed)
+if command -v cargo-deny >/dev/null 2>&1 || cargo deny --version >/dev/null 2>&1; then
+    echo "==> [5/5] Running license & advisory checks (cargo deny check)..."
+    if ! cargo deny check; then
+        echo "ERROR: cargo-deny check failed. Review deny.toml or dependency licenses/advisories." >&2
+        exit 1
+    fi
+else
+    echo "==> [5/5] Skipping cargo-deny (not installed locally)."
+fi
+
+echo "=========================================================="
+echo "  All pre-push checks passed successfully! Proceeding with push."
+echo "=========================================================="
+exit 0

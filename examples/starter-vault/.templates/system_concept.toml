@@ -1,0 +1,24 @@
+[template]
+name = "system_concept"
+description = "Core architectural concepts, design patterns, and structural invariants"
+
+[[required_fields]]
+name = "title"
+field_type = "string"
+
+[[required_fields]]
+name = "concept_type"
+field_type = "enum"
+values = ["architecture", "data-structure", "algorithm", "protocol"]
+
+[[optional_fields]]
+name = "derived_from"
+field_type = "string"
+
+[[optional_fields]]
+name = "tags"
+field_type = "list"
+
+[content]
+required_sections = ["Overview", "Mechanisms", "Trade-Offs"]
+min_word_count = 20

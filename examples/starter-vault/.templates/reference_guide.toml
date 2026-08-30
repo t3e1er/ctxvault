@@ -1,0 +1,24 @@
+[template]
+name = "reference_guide"
+description = "Comprehensive technical reference guides and runbooks"
+
+[[required_fields]]
+name = "title"
+field_type = "string"
+
+[[required_fields]]
+name = "audience"
+field_type = "enum"
+values = ["developer", "operator", "ai-agent"]
+
+[[optional_fields]]
+name = "parent"
+field_type = "string"
+
+[[optional_fields]]
+name = "tags"
+field_type = "list"
+
+[content]
+required_sections = ["Purpose", "Usage", "Examples"]
+min_word_count = 15

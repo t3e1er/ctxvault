@@ -64,9 +64,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin cxtvault
+            cross build --release --locked --target ${{ matrix.target }} --bin cxtvault
           else
-            cargo build --release --target ${{ matrix.target }} --bin cxtvault
+            cargo build --release --locked --target ${{ matrix.target }} --bin cxtvault
           fi
 
       - name: Package artifacts (POSIX)
@@ -77,6 +77,7 @@ jobs:
           mkdir -p "$STAGING"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$STAGING/"
           cp README.md LICENSE THIRD_PARTY_LICENSES.md "$STAGING/" 2>/dev/null || true
+          cp -r examples "$STAGING/" 2>/dev/null || true
           tar -czvf "$STAGING.tar.gz" "$STAGING"
           echo "ASSET_NAME=$STAGING.tar.gz" >> $GITHUB_ENV
 
@@ -90,6 +91,7 @@ jobs:
           if (Test-Path README.md) { Copy-Item README.md -Destination $staging }
           if (Test-Path LICENSE) { Copy-Item LICENSE -Destination $staging }
           if (Test-Path THIRD_PARTY_LICENSES.md) { Copy-Item THIRD_PARTY_LICENSES.md -Destination $staging }
+          if (Test-Path examples) { Copy-Item -Recurse examples -Destination $staging }
           Compress-Archive -Path $staging -DestinationPath "$staging.zip" -Force
           echo "ASSET_NAME=$staging.zip" >> $env:GITHUB_ENV
 

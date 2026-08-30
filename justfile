@@ -16,7 +16,7 @@ check:
 
 # Run clippy lints
 clippy:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 # Check formatting without changing files
 fmt-check:
@@ -30,35 +30,39 @@ fmt:
 
 # Build all crates (debug)
 build:
-    cargo build --workspace --all-features
+    cargo build --workspace --all-features --locked
 
 # Build in release mode
 build-release:
-    cargo build --workspace --all-features --release
+    cargo build --workspace --all-features --release --locked
 
 # ── Test ─────────────────────────────────────────────
 
 # Run all tests
 test:
-    cargo test --workspace --all-features
+    cargo test --workspace --all-features --locked
 
 # Run tests with output (for debugging)
 test-verbose:
-    cargo test --workspace --all-features -- --nocapture
+    cargo test --workspace --all-features --locked -- --nocapture
 
 # Run a specific test by name
 test-one NAME:
-    cargo test --workspace --all-features -- {{NAME}} --nocapture
+    cargo test --workspace --all-features --locked -- {{NAME}} --nocapture
 
 # ── Security ─────────────────────────────────────────
 
 # Run cargo-deny (license + vulnerability + source checks)
 deny:
-    cargo deny check --all-features
+    cargo deny check
 
 # Run cargo-audit (vulnerability scan)
 audit:
     cargo audit
+
+# Configure local git repository to use .githooks
+setup-hooks:
+    git config core.hooksPath .githooks
 
 # Show dependency tree (useful for inspecting transitive deps)
 deps:
@@ -72,7 +76,7 @@ deps-dupes:
 
 # Build documentation
 docs:
-    cargo doc --workspace --all-features --no-deps
+    cargo doc --workspace --all-features --no-deps --locked
 
 # Build and open documentation
 docs-open:

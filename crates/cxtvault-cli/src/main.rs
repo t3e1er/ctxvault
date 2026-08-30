@@ -185,7 +185,8 @@ fn load_or_default_config(corpus_path: &Path) -> anyhow::Result<CorpusConfig> {
 
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
-        let config: CorpusConfig = toml::from_str(&content)?;
+        let mut config: CorpusConfig = toml::from_str(&content)?;
+        config.path = corpus_path.to_string_lossy().replace('\\', "/");
         Ok(config)
     } else {
         Ok(CorpusConfig {

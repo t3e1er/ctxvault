@@ -1,0 +1,32 @@
+[template]
+name = "decision_record"
+description = "Architecture Decision Record (ADR) for technical consensus"
+
+[[required_fields]]
+name = "title"
+field_type = "string"
+
+[[required_fields]]
+name = "status"
+field_type = "enum"
+values = ["proposed", "accepted", "deprecated", "superseded"]
+
+[[required_fields]]
+name = "date"
+field_type = "date"
+
+[[optional_fields]]
+name = "supersedes"
+field_type = "string"
+
+[[optional_fields]]
+name = "implements"
+field_type = "string"
+
+[[optional_fields]]
+name = "tags"
+field_type = "list"
+
+[content]
+required_sections = ["Context", "Decision", "Consequences"]
+min_word_count = 20
