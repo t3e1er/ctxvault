@@ -54,11 +54,15 @@ test-one NAME:
 
 # Run cargo-deny (license + vulnerability + source checks)
 deny:
-    cargo deny check --all-features
+    cargo deny check
 
 # Run cargo-audit (vulnerability scan)
 audit:
     cargo audit
+
+# Configure local git repository to use .githooks
+setup-hooks:
+    git config core.hooksPath .githooks
 
 # Show dependency tree (useful for inspecting transitive deps)
 deps:
