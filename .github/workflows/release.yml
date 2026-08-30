@@ -64,9 +64,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin cxtvault
+            cross build --release --locked --target ${{ matrix.target }} --bin cxtvault
           else
-            cargo build --release --target ${{ matrix.target }} --bin cxtvault
+            cargo build --release --locked --target ${{ matrix.target }} --bin cxtvault
           fi
 
       - name: Package artifacts (POSIX)
