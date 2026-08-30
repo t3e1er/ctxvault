@@ -18,7 +18,7 @@ case "$OS" in
         elif [ "$ARCH" = "x86_64" ]; then
             TARGET="x86_64-apple-darwin"
         else
-            echo "❌ Unsupported macOS architecture: $ARCH" >&2
+            echo "[ERROR] Unsupported macOS architecture: $ARCH" >&2
             exit 1
         fi
         ;;
@@ -28,35 +28,35 @@ case "$OS" in
         elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
             TARGET="aarch64-unknown-linux-gnu"
         else
-            echo "❌ Unsupported Linux architecture: $ARCH" >&2
+            echo "[ERROR] Unsupported Linux architecture: $ARCH" >&2
             exit 1
         fi
         ;;
     *)
-        echo "❌ Unsupported operating system: $OS (For Windows, run install.ps1)" >&2
+        echo "[ERROR] Unsupported operating system: $OS (For Windows, run install.ps1)" >&2
         exit 1
         ;;
 esac
 
 # 2. Fetch latest release version from GitHub API
-echo "🔍 Resolving latest release for $REPO..."
+echo "[*] Resolving latest release for $REPO..."
 TAG=$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
 if [ -z "$TAG" ]; then
-    echo "❌ Failed to fetch latest release tag from https://api.github.com/repos/$REPO/releases/latest" >&2
+    echo "[ERROR] Failed to fetch latest release tag from https://api.github.com/repos/$REPO/releases/latest" >&2
     exit 1
 fi
 
 ARCHIVE_NAME="cxtvault-${TAG}-${TARGET}.tar.gz"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/${TAG}/${ARCHIVE_NAME}"
 
-echo "📦 Downloading $DOWNLOAD_URL..."
+echo "[*] Downloading $DOWNLOAD_URL..."
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$ARCHIVE_NAME"
 
-echo "📂 Extracting binary..."
+echo "[*] Extracting binary..."
 tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
 
 mkdir -p "$INSTALL_DIR"
@@ -67,18 +67,18 @@ chmod +x "$INSTALL_DIR/cxtvault"
 ln -sf "$INSTALL_DIR/cxtvault" "$INSTALL_DIR/cxtv" 2>/dev/null || true
 
 echo ""
-echo "✅ Successfully installed 'cxtvault' to $INSTALL_DIR/cxtvault"
+echo "[+] Successfully installed 'cxtvault' to $INSTALL_DIR/cxtvault"
 echo ""
 
 # 3. Path hint
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        echo "⚠️  Note: $INSTALL_DIR is not currently in your PATH."
+        echo "[NOTE] $INSTALL_DIR is not currently in your PATH."
         echo "   Add it to your shell config (~/.bashrc or ~/.zshrc):"
         echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
         echo ""
         ;;
 esac
 
-echo "🚀 Quick check: run 'cxtvault --version' to get started."
+echo "[>] Quick check: run 'cxtvault --version' to get started."

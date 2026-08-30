@@ -70,13 +70,13 @@ Traditional text chunkers (fixed token/character windows) cause severe **context
 
 | Crate / Tool | License | Multi-Language | Role & Capability | Assessment & Decision for `cxtvault` |
 | :--- | :--- | :--- | :--- | :--- |
-| **`tree-sitter`** (v0.22+) | MIT | ✅ 100+ langs | Fast incremental C-CST parser with safe Rust bindings | **Core Substrate**: Universal parser for syntax tree generation. |
-| **`tree-sitter-language-pack`** | MIT / Apache | ✅ 370+ langs | Bundled pre-compiled grammars for instant polyglot support | **Recommended**: Eliminates managing individual grammar crates in `Cargo.toml`. |
-| **`tree-sitter-tags`** | MIT | ✅ Polyglot | Query-based extraction of symbol definitions, refs, and docstrings | **Recommended**: High-performance extraction of symbol tables and doc comments without compiler overhead. |
-| **`ast-grep-core`** | MIT | ✅ Polyglot | Structural AST pattern search and rewrite engine | **Alternative**: Useful for custom AST pattern extraction rules. |
-| **`stack-graphs`** | MIT / Apache | ✅ Polyglot | Incremental scope-graph name resolution | **Reference Only**: Upstream archived late 2025; adopt lightweight scope resolution directly in Petgraph. |
-| **`scip`** | Apache-2.0 | ✅ Polyglot (via CLI) | Protobuf parser for compiler-generated code indexes | **Optional Phase 4**: Ingests compiler-precise `.scip` files if pre-generated in CI. |
-| **`petgraph`** | MIT / Apache | ➖ N/A (Graph Engine) | In-memory directed typed graph store and algorithms | **Core Substrate**: Already integrated in `cxtvault-core`; houses code and doc edges. |
+| **`tree-sitter`** (v0.22+) | MIT | Yes (100+ langs) | Fast incremental C-CST parser with safe Rust bindings | **Core Substrate**: Universal parser for syntax tree generation. |
+| **`tree-sitter-language-pack`** | MIT / Apache | Yes (370+ langs) | Bundled pre-compiled grammars for instant polyglot support | **Recommended**: Eliminates managing individual grammar crates in `Cargo.toml`. |
+| **`tree-sitter-tags`** | MIT | Yes (Polyglot) | Query-based extraction of symbol definitions, refs, and docstrings | **Recommended**: High-performance extraction of symbol tables and doc comments without compiler overhead. |
+| **`ast-grep-core`** | MIT | Yes (Polyglot) | Structural AST pattern search and rewrite engine | **Alternative**: Useful for custom AST pattern extraction rules. |
+| **`stack-graphs`** | MIT / Apache | Yes (Polyglot) | Incremental scope-graph name resolution | **Reference Only**: Upstream archived late 2025; adopt lightweight scope resolution directly in Petgraph. |
+| **`scip`** | Apache-2.0 | Yes (Polyglot via CLI) | Protobuf parser for compiler-generated code indexes | **Optional Phase 4**: Ingests compiler-precise `.scip` files if pre-generated in CI. |
+| **`petgraph`** | MIT / Apache | N/A (Graph Engine) | In-memory directed typed graph store and algorithms | **Core Substrate**: Already integrated in `cxtvault-core`; houses code and doc edges. |
 
 ---
 

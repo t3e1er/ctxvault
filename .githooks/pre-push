@@ -6,6 +6,62 @@ echo "=========================================================="
 echo "  Running Cxtvault Pre-Push Validation Pipeline..."
 echo "=========================================================="
 
+# 0. Tag & Cargo.toml Version Verification
+# When pushing git tags, ensure the tag matches the workspace Cargo.toml version
+PUSH_REFS=$(cat)
+
+if [ -n "$PUSH_REFS" ]; then
+    while IFS=' ' read -r local_ref local_oid remote_ref remote_oid; do
+        # Ignore empty lines and deletions (40 zeros or delete keywords)
+        case "$local_oid" in
+            "0000000000000000000000000000000000000000"|""|"(delete)") continue ;;
+        esac
+
+        # Check if this ref is a tag push
+        TAG_NAME=""
+        case "$local_ref" in
+            refs/tags/*) TAG_NAME="${local_ref#refs/tags/}" ;;
+            *)
+                case "$remote_ref" in
+                    refs/tags/*) TAG_NAME="${remote_ref#refs/tags/}" ;;
+                esac
+                ;;
+        esac
+
+        if [ -n "$TAG_NAME" ]; then
+            echo "==> [0/5] Verifying tag '$TAG_NAME' matches Cargo.toml version..."
+
+            # Read Cargo.toml from the tag's target commit
+            CARGO_VER=$(git show "${local_oid}^{commit}:Cargo.toml" 2>/dev/null | sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+
+            # Fallback to local Cargo.toml if git show fails
+            if [ -z "$CARGO_VER" ]; then
+                CARGO_VER=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml 2>/dev/null | head -n1)
+            fi
+
+            CLEAN_TAG="${TAG_NAME#v}"
+
+            if [ -n "$CARGO_VER" ] && [ "$CLEAN_TAG" != "$CARGO_VER" ]; then
+                echo "==========================================================" >&2
+                echo "  [ERROR] PUSH REJECTED: Tag / Version Mismatch!" >&2
+                echo "==========================================================" >&2
+                echo "  Pushed Tag:         $TAG_NAME (parsed version: $CLEAN_TAG)" >&2
+                echo "  Cargo.toml Version: $CARGO_VER (expected tag: v$CARGO_VER)" >&2
+                echo "" >&2
+                echo "  Cargo.toml is the single source of truth for versions." >&2
+                echo "  To resolve:" >&2
+                echo "    1. Update 'version = \"$CLEAN_TAG\"' in Cargo.toml and commit before tagging, OR" >&2
+                echo "    2. Re-tag matching Cargo.toml: 'git tag -d $TAG_NAME' && 'git tag v$CARGO_VER'" >&2
+                echo "==========================================================" >&2
+                exit 1
+            fi
+            echo "==> [0/5] Tag check passed: tag '$TAG_NAME' matches Cargo.toml ($CARGO_VER)."
+        fi
+    done <<EOF
+$PUSH_REFS
+EOF
+fi
+
 # 1. Format check
 echo "==> [1/5] Checking code formatting (cargo fmt)..."
 if ! cargo fmt --all -- --check; then
