@@ -71,7 +71,7 @@ petgraph = { version = "0.8", features = ["serde-1"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 
 # File watching
-notify = "7.0"
+notify = "8.2"
 notify-debouncer-full = "0.7"
 
 # Hashing
