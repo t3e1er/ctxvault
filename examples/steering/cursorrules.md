@@ -1,11 +1,11 @@
-# Cursor AI Steering Rules (.cursorrules)
+﻿# Cursor AI Steering Rules (.cursorrules)
 
-Place the following content into `.cursorrules` in your project root to instruct Cursor AI when using `cxtvault` MCP server tools.
+Place the following content into `.cursorrules` in your project root to instruct Cursor AI when using `ctxvault` MCP server tools.
 
 ```markdown
-# Cxtvault Knowledge Base Protocol
+# Ctxvault Knowledge Base Protocol
 
-You have access to the `cxtvault` MCP server. Follow these rules when querying or modifying knowledge in this repository:
+You have access to the `ctxvault` MCP server. Follow these rules when querying or modifying knowledge in this repository:
 
 1. Retrieval Strategy:
    - For codebase and documentation queries, prioritize `search_hybrid` (combines BM25 lexical + ONNX embeddings via 3-way RRF).

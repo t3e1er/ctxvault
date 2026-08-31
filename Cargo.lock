@@ -709,14 +709,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxtvault-cli"
+name = "ctxvault-cli"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
- "cxtvault-common",
- "cxtvault-core",
- "cxtvault-mcp",
+ "ctxvault-common",
+ "ctxvault-core",
+ "ctxvault-mcp",
  "serde_json",
  "tokio",
  "toml",
@@ -725,7 +725,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxtvault-common"
+name = "ctxvault-common"
 version = "0.0.2"
 dependencies = [
  "serde",
@@ -735,14 +735,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxtvault-core"
+name = "ctxvault-core"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "assert_fs",
  "bincode",
  "blake3",
- "cxtvault-common",
+ "ctxvault-common",
  "fastembed",
  "hnsw_rs",
  "notify 7.0.0",
@@ -762,14 +762,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxtvault-mcp"
+name = "ctxvault-mcp"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "cxtvault-common",
- "cxtvault-core",
+ "ctxvault-common",
+ "ctxvault-core",
  "futures-util",
  "reqwest",
  "serde",

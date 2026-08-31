@@ -3,7 +3,7 @@
 set -e
 
 echo "=========================================================="
-echo "  Running Cxtvault Pre-Push Validation Pipeline..."
+echo "  Running Ctxvault Pre-Push Validation Pipeline..."
 echo "=========================================================="
 
 # 0. Tag & Cargo.toml Version Verification

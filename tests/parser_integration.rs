@@ -1,8 +1,8 @@
-//! Integration tests for the document parsing pipeline.
+﻿//! Integration tests for the document parsing pipeline.
 
 use std::path::PathBuf;
 
-use cxtvault_core::parser;
+use ctxvault_core::parser;
 
 #[test]
 fn parses_complete_document_with_frontmatter_and_wikilinks() {

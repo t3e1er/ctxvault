@@ -1,6 +1,6 @@
-# Multi-Agent Swarm Orchestration with cxtvault
+﻿# Multi-Agent Swarm Orchestration with ctxvault
 
-This guide provides blueprint architectures for orchestrating multi-agent swarms powered by `cxtvault` as a sub-millisecond, shared semantic memory substrate.
+This guide provides blueprint architectures for orchestrating multi-agent swarms powered by `ctxvault` as a sub-millisecond, shared semantic memory substrate.
 
 ```mermaid
 flowchart TD
@@ -14,7 +14,7 @@ flowchart TD
         Orch -->|4a. Draft Spec / ADR| Writer[Writer Agent]
         Orch -->|4b. Episodic Distillation| Cryst[Crystallizer Agent]
         
-        Writer -->|5a. Validated Markdown| Vault[(cxtvault Knowledge Base)]
+        Writer -->|5a. Validated Markdown| Vault[(ctxvault Knowledge Base)]
         Cryst -->|5b. Lineage & Concepts| Vault
     end
     

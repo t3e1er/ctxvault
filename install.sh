@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-# cxtvault Universal Installer for macOS and Linux
-# Installs standalone native binary directly into ~/.local/bin/cxtvault
+# ctxvault Universal Installer for macOS and Linux
+# Installs standalone native binary directly into ~/.local/bin/ctxvault
 
-REPO="${CXTV_GITHUB_REPO:-t3e1er/ctxvault}"
-INSTALL_DIR="${CXTV_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${CTXV_GITHUB_REPO:-${CXTV_GITHUB_REPO:-t3e1er/ctxvault}}"
+INSTALL_DIR="${CTXV_INSTALL_DIR:-${CXTV_INSTALL_DIR:-$HOME/.local/bin}}"
 
 # 1. Detect architecture & OS
 ARCH=$(uname -m)
@@ -47,7 +47,7 @@ if [ -z "$TAG" ]; then
     exit 1
 fi
 
-ARCHIVE_NAME="cxtvault-${TAG}-${TARGET}.tar.gz"
+ARCHIVE_NAME="ctxvault-${TAG}-${TARGET}.tar.gz"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/${TAG}/${ARCHIVE_NAME}"
 
 echo "[*] Downloading $DOWNLOAD_URL..."
@@ -60,14 +60,14 @@ echo "[*] Extracting binary..."
 tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
 
 mkdir -p "$INSTALL_DIR"
-cp "$TMP_DIR/cxtvault-${TAG}-${TARGET}/cxtvault" "$INSTALL_DIR/cxtvault"
-chmod +x "$INSTALL_DIR/cxtvault"
+cp "$TMP_DIR/ctxvault-${TAG}-${TARGET}/ctxvault" "$INSTALL_DIR/ctxvault"
+chmod +x "$INSTALL_DIR/ctxvault"
 
-# Optional symlink for short shorthand alias `cxtv`
-ln -sf "$INSTALL_DIR/cxtvault" "$INSTALL_DIR/cxtv" 2>/dev/null || true
+# Optional symlink for short shorthand alias `ctxv`
+ln -sf "$INSTALL_DIR/ctxvault" "$INSTALL_DIR/ctxv" 2>/dev/null || true
 
 echo ""
-echo "[+] Successfully installed 'cxtvault' to $INSTALL_DIR/cxtvault"
+echo "[+] Successfully installed 'ctxvault' to $INSTALL_DIR/ctxvault"
 echo ""
 
 # 3. Path hint
@@ -81,4 +81,4 @@ case ":$PATH:" in
         ;;
 esac
 
-echo "[>] Quick check: run 'cxtvault --version' to get started."
+echo "[>] Quick check: run 'ctxvault --version' to get started."

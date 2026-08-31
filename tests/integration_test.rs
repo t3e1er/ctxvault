@@ -1,9 +1,9 @@
-//! Workspace-level integration tests.
+﻿//! Workspace-level integration tests.
 //!
 //! These tests verify cross-crate behavior: parsing → indexing → search.
 //! They use tempfile for filesystem fixtures.
 
-use cxtvault_common::config::{ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig};
+use ctxvault_common::config::{ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig};
 
 #[test]
 fn corpus_config_round_trips_through_toml() {
