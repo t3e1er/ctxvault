@@ -62,7 +62,7 @@ tantivy = "0.26"
 hnsw_rs = "0.3"
 
 # Embeddings
-fastembed = "4"
+fastembed = "6"
 
 # Knowledge graph
 petgraph = { version = "0.8", features = ["serde-1"] }
