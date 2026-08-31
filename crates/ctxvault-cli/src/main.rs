@@ -52,6 +52,14 @@ struct Cli {
     #[arg(long)]
     sync: bool,
 
+    /// Batch size for paginated indexing and delta scanning.
+    #[arg(long, default_value = "50")]
+    batch_size: usize,
+
+    /// Do not resume indexing from previous checkpoint; restart from scratch.
+    #[arg(long)]
+    no_resume: bool,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -147,12 +155,16 @@ async fn main() -> anyhow::Result<()> {
     let mut engine = Engine::open(config, &index_dir)?;
 
     if cli.reindex {
-        tracing::info!("performing full reindex");
-        let count = engine.full_reindex()?;
+        tracing::info!(
+            batch_size = cli.batch_size,
+            resume = !cli.no_resume,
+            "performing full reindex (paginated)"
+        );
+        let count = engine.full_reindex_paginated(cli.batch_size, !cli.no_resume)?;
         tracing::info!(count, "reindex complete");
     } else if cli.sync {
-        tracing::info!("running delta scan");
-        let result = engine.delta_scan()?;
+        tracing::info!(batch_size = cli.batch_size, "running delta scan (paginated)");
+        let result = engine.delta_scan_paginated(cli.batch_size)?;
         tracing::info!(
             new = result.new_files.len(),
             modified = result.modified_files.len(),

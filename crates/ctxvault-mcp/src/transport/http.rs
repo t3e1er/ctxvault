@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::stream::{self, Stream};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
@@ -28,8 +28,8 @@ use ctxvault_core::engine::Engine;
 
 use crate::tools::{MultiCorpusToolRegistry, ToolRegistry};
 use crate::transport::dispatch::{
-    dispatch, dispatch_multi, format_rpc_response, make_error_response, JsonRpcRequest,
-    PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
+    dispatch_multi_read, dispatch_multi_write, dispatch_read, dispatch_write, format_rpc_response,
+    make_error_response, JsonRpcRequest, PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
 };
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -59,6 +59,46 @@ fn describe_request(req: &JsonRpcRequest) -> String {
     }
 }
 
+/// Check if a JSON-RPC request is read-only.
+fn is_read_only_request(req: &JsonRpcRequest, registry: &ToolRegistry) -> bool {
+    match req.method.as_str() {
+        "initialize" | "server/discover" | "tools/list" | "ping" | "roots/list" => true,
+        "tools/call" => {
+            if let Some(params) = &req.params {
+                if let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) {
+                    registry.is_read_only(tool_name)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        method if method.starts_with("notifications/") || method.starts_with("$/") => true,
+        _ => false,
+    }
+}
+
+/// Check if a multi-corpus JSON-RPC request is read-only.
+fn is_read_only_request_multi(req: &JsonRpcRequest, registry: &MultiCorpusToolRegistry) -> bool {
+    match req.method.as_str() {
+        "initialize" | "server/discover" | "tools/list" | "ping" | "roots/list" => true,
+        "tools/call" => {
+            if let Some(params) = &req.params {
+                if let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) {
+                    registry.is_read_only(tool_name)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        method if method.starts_with("notifications/") || method.starts_with("$/") => true,
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Server State Structs
 // ---------------------------------------------------------------------------
@@ -66,8 +106,8 @@ fn describe_request(req: &JsonRpcRequest) -> String {
 /// Shared state for single-corpus HTTP server.
 #[derive(Clone)]
 pub struct SingleCorpusServerState {
-    /// Thread-safe reference to the single-corpus engine.
-    pub engine: Arc<Mutex<Engine>>,
+    /// Thread-safe reader-writer reference to the single-corpus engine.
+    pub engine: Arc<RwLock<Engine>>,
     /// Registered MCP tool handlers.
     pub registry: Arc<ToolRegistry>,
 }
@@ -75,8 +115,8 @@ pub struct SingleCorpusServerState {
 /// Shared state for multi-corpus HTTP server.
 #[derive(Clone)]
 pub struct MultiCorpusServerState {
-    /// Thread-safe reference to the multi-corpus manager.
-    pub manager: Arc<Mutex<CorpusManager>>,
+    /// Thread-safe reader-writer reference to the multi-corpus manager.
+    pub manager: Arc<RwLock<CorpusManager>>,
     /// Registered multi-corpus MCP tool handlers.
     pub registry: Arc<MultiCorpusToolRegistry>,
 }
@@ -92,7 +132,7 @@ pub async fn run_http_server(
     registry: ToolRegistry,
 ) -> Result<()> {
     let state = SingleCorpusServerState {
-        engine: Arc::new(Mutex::new(engine)),
+        engine: Arc::new(RwLock::new(engine)),
         registry: Arc::new(registry),
     };
 
@@ -110,7 +150,7 @@ pub async fn run_http_server(
     let local_addr = listener.local_addr().map_err(Error::Io)?;
 
     let (corpus_name, corpus_path, doc_count) = {
-        let eng = state.engine.lock().await;
+        let eng = state.engine.read().await;
         let count = eng.store().list_files().map(|f| f.len()).unwrap_or(0);
         (eng.config().name.clone(), eng.config().path.clone(), count)
     };
@@ -145,7 +185,7 @@ pub async fn run_http_server_multi(
     registry: MultiCorpusToolRegistry,
 ) -> Result<()> {
     let state = MultiCorpusServerState {
-        manager: Arc::new(Mutex::new(manager)),
+        manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
     };
 
@@ -163,7 +203,7 @@ pub async fn run_http_server_multi(
     let local_addr = listener.local_addr().map_err(Error::Io)?;
 
     let corpora_count = {
-        let mgr = state.manager.lock().await;
+        let mgr = state.manager.read().await;
         mgr.corpus_names().len()
     };
 
@@ -210,35 +250,68 @@ async fn handle_jsonrpc_single(
             }
         };
 
+        let all_read_only = requests.iter().all(|r| is_read_only_request(r, &state.registry));
         let mut responses = Vec::new();
-        let mut engine = state.engine.lock().await;
 
-        for req in requests {
-            let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-            let desc = describe_request(&req);
-            info!(req_id, "[REQ #{req_id}] --> {}", desc);
+        if all_read_only {
+            let engine = state.engine.read().await;
+            for req in requests {
+                let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+                let desc = describe_request(&req);
+                info!(req_id, "[REQ #{req_id}] --> {}", desc);
 
-            let start = Instant::now();
-            let res = dispatch(&req, &mut *engine, &state.registry);
-            let elapsed = start.elapsed();
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                let res = dispatch_read(&req, &*engine, &state.registry);
+                let elapsed = start.elapsed();
+                let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
-            match &res {
-                Ok(_) => {
-                    info!(
-                        req_id,
-                        duration_ms = elapsed_ms,
-                        "[RES #{req_id}] <-- Success ({:.2}ms)",
-                        elapsed_ms
-                    );
+                match &res {
+                    Ok(_) => {
+                        info!(
+                            req_id,
+                            duration_ms = elapsed_ms,
+                            "[RES #{req_id}] <-- Success ({:.2}ms)",
+                            elapsed_ms
+                        );
+                    }
+                    Err(e) => {
+                        warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+                    }
                 }
-                Err(e) => {
-                    warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+
+                if let Some(id) = req.id {
+                    responses.push(format_rpc_response(id, res));
                 }
             }
+        } else {
+            let mut engine = state.engine.write().await;
+            for req in requests {
+                let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+                let desc = describe_request(&req);
+                info!(req_id, "[REQ #{req_id}] --> {}", desc);
 
-            if let Some(id) = req.id {
-                responses.push(format_rpc_response(id, res));
+                let start = Instant::now();
+                let res = dispatch_write(&req, &mut *engine, &state.registry);
+                let elapsed = start.elapsed();
+                let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+                match &res {
+                    Ok(_) => {
+                        info!(
+                            req_id,
+                            duration_ms = elapsed_ms,
+                            "[RES #{req_id}] <-- Success ({:.2}ms)",
+                            elapsed_ms
+                        );
+                    }
+                    Err(e) => {
+                        warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+                    }
+                }
+
+                if let Some(id) = req.id {
+                    responses.push(format_rpc_response(id, res));
+                }
             }
         }
 
@@ -261,8 +334,14 @@ async fn handle_jsonrpc_single(
         info!(req_id, "[REQ #{req_id}] --> {}", desc);
 
         let start = Instant::now();
-        let mut engine = state.engine.lock().await;
-        let res = dispatch(&req, &mut *engine, &state.registry);
+        let is_read = is_read_only_request(&req, &state.registry);
+        let res = if is_read {
+            let engine = state.engine.read().await;
+            dispatch_read(&req, &*engine, &state.registry)
+        } else {
+            let mut engine = state.engine.write().await;
+            dispatch_write(&req, &mut *engine, &state.registry)
+        };
         let elapsed = start.elapsed();
         let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
@@ -307,35 +386,68 @@ async fn handle_jsonrpc_multi(
             }
         };
 
+        let all_read_only = requests.iter().all(|r| is_read_only_request_multi(r, &state.registry));
         let mut responses = Vec::new();
-        let mut manager = state.manager.lock().await;
 
-        for req in requests {
-            let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-            let desc = describe_request(&req);
-            info!(req_id, "[REQ #{req_id}] --> {} (multi-corpus)", desc);
+        if all_read_only {
+            let manager = state.manager.read().await;
+            for req in requests {
+                let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+                let desc = describe_request(&req);
+                info!(req_id, "[REQ #{req_id}] --> {} (multi-corpus)", desc);
 
-            let start = Instant::now();
-            let res = dispatch_multi(&req, &mut *manager, &state.registry);
-            let elapsed = start.elapsed();
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                let res = dispatch_multi_read(&req, &*manager, &state.registry);
+                let elapsed = start.elapsed();
+                let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
-            match &res {
-                Ok(_) => {
-                    info!(
-                        req_id,
-                        duration_ms = elapsed_ms,
-                        "[RES #{req_id}] <-- Success ({:.2}ms)",
-                        elapsed_ms
-                    );
+                match &res {
+                    Ok(_) => {
+                        info!(
+                            req_id,
+                            duration_ms = elapsed_ms,
+                            "[RES #{req_id}] <-- Success ({:.2}ms)",
+                            elapsed_ms
+                        );
+                    }
+                    Err(e) => {
+                        warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+                    }
                 }
-                Err(e) => {
-                    warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+
+                if let Some(id) = req.id {
+                    responses.push(format_rpc_response(id, res));
                 }
             }
+        } else {
+            let mut manager = state.manager.write().await;
+            for req in requests {
+                let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+                let desc = describe_request(&req);
+                info!(req_id, "[REQ #{req_id}] --> {} (multi-corpus)", desc);
 
-            if let Some(id) = req.id {
-                responses.push(format_rpc_response(id, res));
+                let start = Instant::now();
+                let res = dispatch_multi_write(&req, &mut *manager, &state.registry);
+                let elapsed = start.elapsed();
+                let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+                match &res {
+                    Ok(_) => {
+                        info!(
+                            req_id,
+                            duration_ms = elapsed_ms,
+                            "[RES #{req_id}] <-- Success ({:.2}ms)",
+                            elapsed_ms
+                        );
+                    }
+                    Err(e) => {
+                        warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
+                    }
+                }
+
+                if let Some(id) = req.id {
+                    responses.push(format_rpc_response(id, res));
+                }
             }
         }
 
@@ -358,8 +470,14 @@ async fn handle_jsonrpc_multi(
         info!(req_id, "[REQ #{req_id}] --> {} (multi-corpus)", desc);
 
         let start = Instant::now();
-        let mut manager = state.manager.lock().await;
-        let res = dispatch_multi(&req, &mut *manager, &state.registry);
+        let is_read = is_read_only_request_multi(&req, &state.registry);
+        let res = if is_read {
+            let manager = state.manager.read().await;
+            dispatch_multi_read(&req, &*manager, &state.registry)
+        } else {
+            let mut manager = state.manager.write().await;
+            dispatch_multi_write(&req, &mut *manager, &state.registry)
+        };
         let elapsed = start.elapsed();
         let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
@@ -397,14 +515,16 @@ pub async fn handle_sse() -> Sse<impl Stream<Item = std::result::Result<Event, I
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
 }
 
-/// Liveness health check for single corpus server.
+/// Non-blocking liveness health check for single corpus server.
 async fn handle_health_single(State(state): State<SingleCorpusServerState>) -> Json<Value> {
     info!("[HEALTH] --> Health check probe received");
-    let engine = state.engine.lock().await;
-    let is_indexed = engine.is_indexed();
+    let (is_indexed, status) = match state.engine.try_read() {
+        Ok(engine) => (engine.is_indexed(), "healthy"),
+        Err(_) => (true, "busy"),
+    };
 
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": status,
         "server": SERVER_NAME,
         "version": SERVER_VERSION,
         "protocol": PROTOCOL_VERSION,
@@ -412,14 +532,16 @@ async fn handle_health_single(State(state): State<SingleCorpusServerState>) -> J
     }))
 }
 
-/// Liveness health check for multi-corpus server.
+/// Non-blocking liveness health check for multi-corpus server.
 async fn handle_health_multi(State(state): State<MultiCorpusServerState>) -> Json<Value> {
     info!("[HEALTH] --> Multi-corpus health check probe received");
-    let manager = state.manager.lock().await;
-    let corpora_count = manager.corpus_names().len();
+    let (corpora_count, status) = match state.manager.try_read() {
+        Ok(manager) => (manager.corpus_names().len(), "healthy"),
+        Err(_) => (0, "busy"),
+    };
 
     Json(serde_json::json!({
-        "status": "healthy",
+        "status": status,
         "server": SERVER_NAME,
         "version": SERVER_VERSION,
         "protocol": PROTOCOL_VERSION,

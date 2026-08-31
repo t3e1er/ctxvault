@@ -1,4 +1,4 @@
-﻿//! Benchmark runner for retrieval quality evaluation.
+//! Benchmark runner for retrieval quality evaluation.
 //! Runs all 28 queries against the indexed corpus and computes Recall@5, MRR@5, NDCG@5,
 //! score separation, and produces `bench/results_v2.json` and `bench/report_v2.md`.
 
@@ -188,7 +188,7 @@ fn main() {
         // 2. Semantic Search (Precise direct chunk)
         let sem_res = search::search_semantic_dual(
             engine.vector_index(),
-            embedder,
+            &embedder,
             &q.query,
             10,
             ctxvault_common::types::SearchDepth::Precise,
@@ -206,7 +206,7 @@ fn main() {
                 engine.bm25(),
                 engine.vector_index(),
                 engine.graph(),
-                Some(embedder),
+                Some(&*embedder),
                 &q.query,
                 query_embedding.as_deref(),
                 10,

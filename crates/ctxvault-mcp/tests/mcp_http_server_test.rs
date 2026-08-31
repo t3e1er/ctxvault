@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::routing::{get, post};
 use axum::Router;
 use tempfile::TempDir;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use ctxvault_common::config::{
@@ -67,7 +67,7 @@ async fn test_mcp_http_server_and_client_e2e() {
 
     // 4. Start HTTP Server in background
     let state = SingleCorpusServerState {
-        engine: Arc::new(Mutex::new(engine)),
+        engine: Arc::new(RwLock::new(engine)),
         registry: Arc::new(registry),
     };
 
@@ -136,8 +136,9 @@ async fn handle_jsonrpc_test(
     axum::Json(req): axum::Json<ctxvault_mcp::transport::JsonRpcRequest>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let mut engine = state.engine.lock().await;
-    let res = ctxvault_mcp::transport::dispatch::dispatch(&req, &mut *engine, &state.registry);
+    let mut engine = state.engine.write().await;
+    let res =
+        ctxvault_mcp::transport::dispatch::dispatch_write(&req, &mut *engine, &state.registry);
     if let Some(id) = req.id {
         let rpc_res = ctxvault_mcp::transport::dispatch::format_rpc_response(id, res);
         axum::Json(rpc_res).into_response()
@@ -149,11 +150,14 @@ async fn handle_jsonrpc_test(
 async fn handle_health_test(
     axum::extract::State(state): axum::extract::State<SingleCorpusServerState>,
 ) -> axum::Json<serde_json::Value> {
-    let engine = state.engine.lock().await;
+    let (is_indexed, status) = match state.engine.try_read() {
+        Ok(engine) => (engine.is_indexed(), "healthy"),
+        Err(_) => (true, "busy"),
+    };
     axum::Json(serde_json::json!({
-        "status": "healthy",
+        "status": status,
         "server": "ctxvault",
-        "indexed": engine.is_indexed()
+        "indexed": is_indexed
     }))
 }
 
@@ -189,7 +193,7 @@ async fn test_mcp_http_server_sse_and_proxy() {
 
     let _server_handle = tokio::spawn(async move {
         let state = SingleCorpusServerState {
-            engine: Arc::new(Mutex::new(engine)),
+            engine: Arc::new(RwLock::new(engine)),
             registry: Arc::new(registry),
         };
         let app = Router::new()
@@ -232,4 +236,69 @@ async fn test_mcp_http_server_sse_and_proxy() {
     let sse_get_res =
         client.get(format!("{server_url}/sse")).send().await.expect("send GET to /sse");
     assert!(sse_get_res.status().is_success());
+}
+
+#[tokio::test]
+async fn test_concurrent_reads_and_health_during_write() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let corpus_path = temp_dir.path().to_path_buf();
+    let index_dir = corpus_path.join(".index");
+
+    for i in 0..10 {
+        fs::write(
+            corpus_path.join(format!("doc_{i}.md")),
+            format!("# Document {i}\nContent for document {i}\n"),
+        )
+        .unwrap();
+    }
+
+    let config = CorpusConfig {
+        name: "concurrent-corpus".to_string(),
+        path: corpus_path.to_string_lossy().to_string(),
+        mode: CorpusMode::ReadWrite,
+        chunking: ChunkingConfig::default(),
+        embedding: EmbeddingConfig::default(),
+        graph: GraphConfig::default(),
+        templates_dir: ".templates".to_string(),
+    };
+
+    let mut engine = Engine::open(config, &index_dir).expect("open engine");
+    let _ = engine.full_reindex().expect("reindex");
+
+    let mut registry = ToolRegistry::new();
+    registry.register_all();
+
+    let state = SingleCorpusServerState {
+        engine: Arc::new(RwLock::new(engine)),
+        registry: Arc::new(registry),
+    };
+
+    // 1. Simulate active write lock in a background task
+    let engine_lock = state.engine.clone();
+    let write_hold = tokio::spawn(async move {
+        let _write_guard = engine_lock.write().await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    });
+
+    // Let the write lock be acquired
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // 2. Non-blocking health check should immediately succeed with "busy" status
+    let (is_indexed, status) = match state.engine.try_read() {
+        Ok(e) => (e.is_indexed(), "healthy"),
+        Err(_) => (true, "busy"),
+    };
+    assert_eq!(status, "busy");
+    assert!(is_indexed);
+
+    // Wait for write lock to release
+    write_hold.await.unwrap();
+
+    // 3. Health check after write lock released
+    let (is_indexed_post, status_post) = match state.engine.try_read() {
+        Ok(e) => (e.is_indexed(), "healthy"),
+        Err(_) => (true, "busy"),
+    };
+    assert_eq!(status_post, "healthy");
+    assert!(is_indexed_post);
 }

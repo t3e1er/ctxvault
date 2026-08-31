@@ -1,4 +1,4 @@
-﻿//! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
+//! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
 
 use std::path::Path;
 
@@ -21,6 +21,7 @@ pub struct BM25Index {
     index: Index,
     reader: IndexReader,
     writer: Option<IndexWriter>,
+    index_path: Option<std::path::PathBuf>,
     #[allow(dead_code)]
     schema: Schema,
     // Field handles
@@ -29,6 +30,42 @@ pub struct BM25Index {
     field_title: Field,
     field_body: Field,
     field_tags: Field,
+}
+
+/// Scan the Tantivy index directory for stale lockfiles (`.tantivy-*.lock`)
+/// and clean them up if no active process holds an advisory lock on them.
+pub fn heal_stale_lockfiles(index_path: &Path) {
+    if !index_path.exists() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(index_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.starts_with(".tantivy-") && file_name.ends_with(".lock") {
+                    if let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path)
+                    {
+                        use fs4::fs_std::FileExt;
+                        if file.try_lock_exclusive().is_ok() {
+                            drop(file);
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                tracing::debug!(
+                                    "Failed to remove stale lockfile {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "Removed stale Tantivy lockfile: {}",
+                                    path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl BM25Index {
@@ -47,6 +84,9 @@ impl BM25Index {
     /// Open or create a Tantivy index at the given directory.
     pub fn open(index_path: &Path) -> Result<Self> {
         std::fs::create_dir_all(index_path).map_err(|e| Error::Index(e.to_string()))?;
+
+        // Clean up any stale lockfiles from previously killed processes.
+        heal_stale_lockfiles(index_path);
 
         let (schema, field_path, field_chunk_index, field_title, field_body, field_tags) =
             Self::build_schema();
@@ -67,6 +107,7 @@ impl BM25Index {
             index,
             reader,
             writer: None,
+            index_path: Some(index_path.to_path_buf()),
             schema,
             field_path,
             field_chunk_index,
@@ -94,6 +135,7 @@ impl BM25Index {
             index,
             reader,
             writer: None,
+            index_path: None,
             schema,
             field_path,
             field_chunk_index,
@@ -107,10 +149,21 @@ impl BM25Index {
     /// This acquires an exclusive file lock on the index directory.
     fn ensure_writer(&mut self) -> Result<&mut IndexWriter> {
         if self.writer.is_none() {
-            let writer = self
-                .index
-                .writer(50_000_000)
-                .map_err(|e| Error::Index(format!("Failed to acquire Lockfile: {}", e)))?;
+            let writer = match self.index.writer(50_000_000) {
+                Ok(w) => w,
+                Err(e) => {
+                    // Try healing stale lockfiles if we have an index path, then retry once.
+                    if let Some(ref path) = self.index_path {
+                        heal_stale_lockfiles(path);
+                    }
+                    self.index.writer(50_000_000).map_err(|retry_err| {
+                        Error::Index(format!(
+                            "Failed to acquire Lockfile: {} (retry also failed: {})",
+                            e, retry_err
+                        ))
+                    })?
+                }
+            };
             self.writer = Some(writer);
         }
         Ok(self.writer.as_mut().unwrap())
@@ -441,5 +494,28 @@ mod tests {
                 "Results should be in descending score order"
             );
         }
+    }
+
+    #[test]
+    fn test_lockfile_self_healing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index_dir = temp.path().join("tantivy");
+        std::fs::create_dir_all(&index_dir).unwrap();
+
+        // Simulate an orphaned stale lock file left behind by a killed process
+        let stale_lock = index_dir.join(".tantivy-writer.lock");
+        std::fs::write(&stale_lock, b"stale lock content").unwrap();
+        assert!(stale_lock.exists());
+
+        // Opening BM25Index should detect and remove the stale lockfile
+        let mut index = BM25Index::open(&index_dir).expect("should heal and open");
+
+        // Verify we can write and commit
+        let chunks = vec![make_chunk("doc.md", 0, "Test content")];
+        index.add_document("doc.md", Some("Title"), &[], &chunks).unwrap();
+        index.commit().unwrap();
+
+        let res = index.search("content", 5).unwrap();
+        assert_eq!(res.len(), 1);
     }
 }

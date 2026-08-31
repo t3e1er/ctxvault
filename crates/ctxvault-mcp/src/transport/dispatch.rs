@@ -73,17 +73,98 @@ pub struct JsonRpcError {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/// Route a JSON-RPC request for read-only tools executing concurrently under reader lock.
+pub fn dispatch_read(
+    request: &JsonRpcRequest,
+    engine: &Engine,
+    registry: &ToolRegistry,
+) -> Result<Value> {
+    debug!(method = %request.method, "dispatching MCP read request");
+    match request.method.as_str() {
+        "initialize" | "server/discover" => handle_initialize(),
+        "tools/list" => handle_tools_list(registry),
+        "tools/call" => handle_tools_call_read(request, engine, registry),
+        "ping" => Ok(serde_json::json!({})),
+        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
+        method if method.starts_with("notifications/") || method.starts_with("$/") => {
+            debug!(method, "handling MCP notification");
+            Ok(Value::Null)
+        }
+        other => {
+            warn!(method = other, "unknown method");
+            Err(Error::NotFound(format!("method not found: {other}")))
+        }
+    }
+}
+
+/// Route a JSON-RPC request for mutating tools requiring exclusive writer lock.
+pub fn dispatch_write(
+    request: &JsonRpcRequest,
+    engine: &mut Engine,
+    registry: &ToolRegistry,
+) -> Result<Value> {
+    debug!(method = %request.method, "dispatching MCP write request");
+    match request.method.as_str() {
+        "initialize" | "server/discover" => handle_initialize(),
+        "tools/list" => handle_tools_list(registry),
+        "tools/call" => handle_tools_call_write(request, engine, registry),
+        "ping" => Ok(serde_json::json!({})),
+        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
+        method if method.starts_with("notifications/") || method.starts_with("$/") => {
+            debug!(method, "handling MCP notification");
+            Ok(Value::Null)
+        }
+        other => {
+            warn!(method = other, "unknown method");
+            Err(Error::NotFound(format!("method not found: {other}")))
+        }
+    }
+}
+
 /// Route a JSON-RPC request to the appropriate MCP handler for a single-corpus engine.
 pub fn dispatch(
     request: &JsonRpcRequest,
     engine: &mut Engine,
     registry: &ToolRegistry,
 ) -> Result<Value> {
-    debug!(method = %request.method, "dispatching MCP request");
+    dispatch_write(request, engine, registry)
+}
+
+/// Route a JSON-RPC request for multi-corpus reading concurrently.
+pub fn dispatch_multi_read(
+    request: &JsonRpcRequest,
+    manager: &CorpusManager,
+    registry: &MultiCorpusToolRegistry,
+) -> Result<Value> {
+    debug!(method = %request.method, "dispatching MCP multi read request");
     match request.method.as_str() {
         "initialize" | "server/discover" => handle_initialize(),
-        "tools/list" => handle_tools_list(registry),
-        "tools/call" => handle_tools_call(request, engine, registry),
+        "tools/list" => handle_tools_list_multi(registry),
+        "tools/call" => handle_tools_call_multi_read(request, manager, registry),
+        "ping" => Ok(serde_json::json!({})),
+        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
+        method if method.starts_with("notifications/") || method.starts_with("$/") => {
+            debug!(method, "handling MCP notification");
+            Ok(Value::Null)
+        }
+        other => {
+            warn!(method = other, "unknown method");
+            Err(Error::NotFound(format!("method not found: {other}")))
+        }
+    }
+}
+
+/// Route a JSON-RPC request for multi-corpus mutating with exclusive lock.
+pub fn dispatch_multi_write(
+    request: &JsonRpcRequest,
+    manager: &mut CorpusManager,
+    registry: &MultiCorpusToolRegistry,
+) -> Result<Value> {
+    debug!(method = %request.method, "dispatching MCP multi write request");
+    match request.method.as_str() {
+        "initialize" | "server/discover" => handle_initialize(),
+        "tools/list" => handle_tools_list_multi(registry),
+        "tools/call" => handle_tools_call_multi_write(request, manager, registry),
         "ping" => Ok(serde_json::json!({})),
         "roots/list" => Ok(serde_json::json!({ "roots": [] })),
         method if method.starts_with("notifications/") || method.starts_with("$/") => {
@@ -103,22 +184,7 @@ pub fn dispatch_multi(
     manager: &mut CorpusManager,
     registry: &MultiCorpusToolRegistry,
 ) -> Result<Value> {
-    debug!(method = %request.method, "dispatching MCP request (multi-corpus)");
-    match request.method.as_str() {
-        "initialize" | "server/discover" => handle_initialize(),
-        "tools/list" => handle_tools_list_multi(registry),
-        "tools/call" => handle_tools_call_multi(request, manager, registry),
-        "ping" => Ok(serde_json::json!({})),
-        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
-        method if method.starts_with("notifications/") || method.starts_with("$/") => {
-            debug!(method, "handling MCP notification");
-            Ok(Value::Null)
-        }
-        other => {
-            warn!(method = other, "unknown method");
-            Err(Error::NotFound(format!("method not found: {other}")))
-        }
-    }
+    dispatch_multi_write(request, manager, registry)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +224,34 @@ pub fn handle_tools_list(registry: &ToolRegistry) -> Result<Value> {
     Ok(serde_json::json!({ "tools": tools }))
 }
 
-/// Dispatch a `tools/call` request to the named tool handler.
-pub fn handle_tools_call(
+/// Dispatch a `tools/call` read request to the named read-only tool handler.
+pub fn handle_tools_call_read(
+    request: &JsonRpcRequest,
+    engine: &Engine,
+    registry: &ToolRegistry,
+) -> Result<Value> {
+    let params = request.params.as_ref().ok_or_else(|| Error::Config("missing params".into()))?;
+
+    let tool_name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Config("missing tool name".into()))?;
+
+    let arguments =
+        params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+
+    let result = registry.execute_read(tool_name, engine, arguments)?;
+
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+        }]
+    }))
+}
+
+/// Dispatch a `tools/call` write request to the named mutating tool handler.
+pub fn handle_tools_call_write(
     request: &JsonRpcRequest,
     engine: &mut Engine,
     registry: &ToolRegistry,
@@ -174,7 +266,7 @@ pub fn handle_tools_call(
     let arguments =
         params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let result = registry.execute(tool_name, engine, arguments)?;
+    let result = registry.execute_write(tool_name, engine, arguments)?;
 
     Ok(serde_json::json!({
         "content": [{
@@ -182,6 +274,15 @@ pub fn handle_tools_call(
             "text": serde_json::to_string_pretty(&result).unwrap_or_default()
         }]
     }))
+}
+
+/// Dispatch a `tools/call` request to the named tool handler.
+pub fn handle_tools_call(
+    request: &JsonRpcRequest,
+    engine: &mut Engine,
+    registry: &ToolRegistry,
+) -> Result<Value> {
+    handle_tools_call_write(request, engine, registry)
 }
 
 /// Respond to `tools/list` with all registered tools (multi-corpus).
@@ -201,8 +302,34 @@ pub fn handle_tools_list_multi(registry: &MultiCorpusToolRegistry) -> Result<Val
     Ok(serde_json::json!({ "tools": tools }))
 }
 
-/// Dispatch a `tools/call` request with multi-corpus routing.
-pub fn handle_tools_call_multi(
+/// Dispatch a `tools/call` request with multi-corpus routing (read-only).
+pub fn handle_tools_call_multi_read(
+    request: &JsonRpcRequest,
+    manager: &CorpusManager,
+    registry: &MultiCorpusToolRegistry,
+) -> Result<Value> {
+    let params = request.params.as_ref().ok_or_else(|| Error::Config("missing params".into()))?;
+
+    let tool_name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Config("missing tool name".into()))?;
+
+    let arguments =
+        params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+
+    let result = registry.execute_read(tool_name, manager, arguments)?;
+
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+        }]
+    }))
+}
+
+/// Dispatch a `tools/call` request with multi-corpus routing (mutating).
+pub fn handle_tools_call_multi_write(
     request: &JsonRpcRequest,
     manager: &mut CorpusManager,
     registry: &MultiCorpusToolRegistry,
@@ -217,7 +344,7 @@ pub fn handle_tools_call_multi(
     let arguments =
         params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let result = registry.execute(tool_name, manager, arguments)?;
+    let result = registry.execute_write(tool_name, manager, arguments)?;
 
     Ok(serde_json::json!({
         "content": [{
@@ -225,6 +352,15 @@ pub fn handle_tools_call_multi(
             "text": serde_json::to_string_pretty(&result).unwrap_or_default()
         }]
     }))
+}
+
+/// Dispatch a `tools/call` request with multi-corpus routing.
+pub fn handle_tools_call_multi(
+    request: &JsonRpcRequest,
+    manager: &mut CorpusManager,
+    registry: &MultiCorpusToolRegistry,
+) -> Result<Value> {
+    handle_tools_call_multi_write(request, manager, registry)
 }
 
 // ---------------------------------------------------------------------------

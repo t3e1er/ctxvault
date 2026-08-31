@@ -1,4 +1,4 @@
-﻿//! Multi-corpus support: manages multiple independent Engine instances.
+//! Multi-corpus support: manages multiple independent Engine instances.
 //!
 //! Each corpus is an independent unit with its own BM25 index, vector index,
 //! knowledge graph, and SQLite store. The [`CorpusManager`] provides a unified
@@ -121,7 +121,15 @@ impl CorpusManager {
         self.get_engine(name)
     }
 
-    /// Resolve a corpus name: if provided, use it; otherwise use default.
+    /// Resolve a corpus name: if provided, use it; otherwise use default (immutable).
+    pub fn resolve_engine(&self, corpus: Option<&str>) -> Result<&Engine> {
+        match corpus {
+            Some(name) => self.get_engine(name),
+            None => self.default_engine(),
+        }
+    }
+
+    /// Resolve a corpus name: if provided, use it; otherwise use default (mutable).
     pub fn resolve_engine_mut(&mut self, corpus: Option<&str>) -> Result<&mut Engine> {
         match corpus {
             Some(name) => self.get_engine_mut(name),

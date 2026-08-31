@@ -1,4 +1,4 @@
-﻿//! Engine: coordinates persistence (SQLite), BM25 index (Tantivy), knowledge graph (petgraph),
+//! Engine: coordinates persistence (SQLite), BM25 index (Tantivy), knowledge graph (petgraph),
 //! and vector index (HNSW) with optional embedding support.
 //!
 //! The [`Engine`] is the top-level orchestrator for a single corpus. It manages
@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use ctxvault_common::config::CorpusConfig;
@@ -20,8 +22,37 @@ use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
 use crate::parser;
 use crate::parser::chunker;
-use crate::persistence::{ChunkRecord, EdgeTypeRecord, Store};
+use crate::persistence::{ChunkRecord, EdgeTypeRecord, IndexingState, IndexingStatus, Store};
 use crate::vector_index::VectorIndex;
+
+/// Detailed indexing status response for client queries and monitoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexingStatusResponse {
+    /// Corpus identifier/name.
+    pub corpus_id: String,
+    /// Current status (idle, indexing, paused, error, completed).
+    pub status: IndexingStatus,
+    /// Total markdown files discovered.
+    pub total_files: usize,
+    /// Count of markdown files successfully committed.
+    pub indexed_files: usize,
+    /// Progress as a percentage (0.0 - 100.0).
+    pub progress_percent: f64,
+    /// Relative path of last committed file.
+    pub last_processed_path: Option<String>,
+    /// When indexing started (Unix timestamp seconds).
+    pub started_at: i64,
+    /// When status was last updated (Unix timestamp seconds).
+    pub updated_at: i64,
+    /// Total elapsed time in seconds.
+    pub elapsed_seconds: i64,
+    /// Estimated indexing throughput in documents per second.
+    pub estimated_throughput_docs_per_sec: f64,
+    /// Estimated time remaining in seconds until completion.
+    pub estimated_time_remaining_seconds: f64,
+    /// Error message if status is Error.
+    pub error_message: Option<String>,
+}
 
 /// Coordinates persistence, full-text index, knowledge graph, and vector index for a corpus.
 pub struct Engine {
@@ -30,7 +61,7 @@ pub struct Engine {
     bm25: BM25Index,
     graph: KnowledgeGraph,
     vector_index: VectorIndex,
-    embedder: Option<Embedder>,
+    embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
 }
 
@@ -130,7 +161,7 @@ impl Engine {
             bm25,
             graph,
             vector_index,
-            embedder: None, // Lazily initialized
+            embedder: RwLock::new(None), // Lazily initialized
             index_dir: index_dir.to_path_buf(),
         })
     }
@@ -139,19 +170,22 @@ impl Engine {
     ///
     /// The embedder is lazily created to avoid model download during tests or when
     /// vector indexing is not needed. Uses the model specified in corpus config.
-    pub fn ensure_embedder(&mut self) -> Result<bool> {
-        if self.embedder.is_some() {
-            return Ok(true);
+    pub fn ensure_embedder(&self) -> Result<bool> {
+        {
+            let guard = self.embedder.read().unwrap();
+            if guard.is_some() {
+                return Ok(true);
+            }
         }
 
         let model_str = &self.config.embedding.model;
         match Embedder::from_config(model_str) {
             Ok(embedder) => {
-                // Set model version on vector index if not already set.
-                if self.vector_index.model_version().is_none() {
-                    self.vector_index.set_model_version(embedder.model_name().version_string());
+                let arc = Arc::new(embedder);
+                let mut guard = self.embedder.write().unwrap();
+                if guard.is_none() {
+                    *guard = Some(arc);
                 }
-                self.embedder = Some(embedder);
                 Ok(true)
             }
             Err(e) => {
@@ -201,7 +235,7 @@ impl Engine {
 
         // 7. Embed chunks and add to vector index (if embedder is available).
         self.vector_index.remove_document(rel_path);
-        if let Some(ref embedder) = self.embedder {
+        if let Some(embedder) = self.embedder_ref() {
             // Build context-prefixed text for embedding (original text preserved for BM25/snippets).
             let doc_title = doc.title.as_deref().unwrap_or("").trim();
             let texts_for_embedding: Vec<String> = chunks
@@ -275,12 +309,17 @@ impl Engine {
         Ok(())
     }
 
-    /// Perform a delta scan: compare filesystem against stored file records.
-    ///
-    /// Automatically re-indexes changed files and removes deleted ones.
-    /// Returns a summary of what changed.
+    /// Perform a delta scan with default batch size.
     pub fn delta_scan(&mut self) -> Result<DeltaScanResult> {
-        // Ensure embedder is available for indexing.
+        self.delta_scan_paginated(50)
+    }
+
+    /// Perform a paginated delta scan: compare filesystem against stored file records.
+    ///
+    /// Automatically re-indexes changed files and removes deleted ones with intermediate commits.
+    /// Returns a summary of what changed.
+    pub fn delta_scan_paginated(&mut self, batch_size: usize) -> Result<DeltaScanResult> {
+        let batch_size = if batch_size == 0 { 50 } else { batch_size };
         let _ = self.ensure_embedder();
 
         // 1. List all files currently in persistence.
@@ -295,6 +334,7 @@ impl Engine {
         let mut new_files = Vec::new();
         let mut modified_files = Vec::new();
         let mut seen_on_disk = HashMap::new();
+        let mut uncommitted_count = 0usize;
 
         for (rel_path, full_path) in &disk_files {
             let content = fs::read_to_string(full_path).map_err(|e| {
@@ -308,15 +348,22 @@ impl Engine {
                     // New file.
                     self.index_file(rel_path, &content)?;
                     new_files.push(rel_path.clone());
+                    uncommitted_count += 1;
                 }
                 Some(stored_hash) if *stored_hash != hash => {
                     // Modified file.
                     self.index_file(rel_path, &content)?;
                     modified_files.push(rel_path.clone());
+                    uncommitted_count += 1;
                 }
                 _ => {
                     // Unchanged, skip.
                 }
+            }
+
+            if uncommitted_count >= batch_size {
+                self.commit()?;
+                uncommitted_count = 0;
             }
         }
 
@@ -326,10 +373,15 @@ impl Engine {
             if !seen_on_disk.contains_key(path) {
                 self.remove_file(path)?;
                 deleted_files.push(path.clone());
+                uncommitted_count += 1;
+            }
+            if uncommitted_count >= batch_size {
+                self.commit()?;
+                uncommitted_count = 0;
             }
         }
 
-        // 4. Commit.
+        // 4. Commit remaining changes.
         self.commit()?;
 
         info!(
@@ -342,45 +394,109 @@ impl Engine {
         Ok(DeltaScanResult { new_files, modified_files, deleted_files })
     }
 
-    /// Full reindex: clear all indices, scan entire corpus, re-index everything.
+    /// Full reindex with default parameters (batch_size=50, resume=false).
     ///
     /// Returns the number of files indexed.
     pub fn full_reindex(&mut self) -> Result<usize> {
+        self.full_reindex_paginated(50, false)
+    }
+
+    /// Paginated, resumable full reindex: scans corpus directory in configurable batches.
+    ///
+    /// - `batch_size`: Number of documents processed before flushing/checkpointing (default 50).
+    /// - `resume`: If true, skips files already committed with identical content hash.
+    ///
+    /// Performs intermediate commits of SQLite, Tantivy, Vectors, Graph, and updates `indexing_state`.
+    pub fn full_reindex_paginated(&mut self, batch_size: usize, resume: bool) -> Result<usize> {
+        let batch_size = if batch_size == 0 { 50 } else { batch_size };
+        let corpus_id = self.config.name.clone();
+        let corpus_path = PathBuf::from(&self.config.path);
+        let mut disk_files = walk_markdown_files(&corpus_path)?;
+        disk_files.sort_by(|a, b| a.0.cmp(&b.0));
+        let total_files = disk_files.len();
+
         // Ensure embedder is available for indexing.
         let _ = self.ensure_embedder();
 
-        // 1. Delete all files from store (cascades chunks).
-        let existing = self.store.list_files()?;
-        for file in &existing {
-            self.store.delete_file(&file.path)?;
+        let mut stored_map: HashMap<String, String> = HashMap::new();
+
+        if !resume {
+            // Fresh rebuild: clear store, Tantivy, graph, vector index, and reset state
+            let existing = self.store.list_files()?;
+            for file in &existing {
+                self.store.delete_file(&file.path)?;
+                self.bm25.remove_document(&file.path)?;
+            }
+            self.graph = KnowledgeGraph::new();
+            self.vector_index = VectorIndex::new_default(self.vector_index.dimensions());
+            self.store.reset_indexing_state(&corpus_id)?;
+        } else {
+            // Resuming: load existing indexed files and their content hashes
+            let existing = self.store.list_files()?;
+            for file in existing {
+                let _ = stored_map.insert(file.path, file.content_hash);
+            }
         }
 
-        // 2. Clear BM25 index by removing all known documents.
-        for file in &existing {
-            self.bm25.remove_document(&file.path)?;
+        let started_at = now_unix();
+        let mut state = IndexingState {
+            corpus_id: corpus_id.clone(),
+            status: IndexingStatus::Indexing,
+            total_files,
+            indexed_files: 0,
+            last_processed_path: None,
+            started_at,
+            updated_at: started_at,
+            error_message: None,
+        };
+
+        // If resuming, calculate already-indexed matching files
+        if resume {
+            let mut matched_count = 0usize;
+            for (rel_path, full_path) in &disk_files {
+                if let Some(stored_hash) = stored_map.get(rel_path) {
+                    if let Ok(content) = fs::read_to_string(full_path) {
+                        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                        if hash == *stored_hash {
+                            matched_count += 1;
+                        }
+                    }
+                }
+            }
+            state.indexed_files = matched_count;
         }
 
-        // 3. Reset graph.
-        self.graph = KnowledgeGraph::new();
-
-        // 3b. Reset vector index.
-        self.vector_index = VectorIndex::new_default(self.vector_index.dimensions());
-
-        // 4. Walk corpus directory and index every .md file.
-        let corpus_path = PathBuf::from(&self.config.path);
-        let disk_files = walk_markdown_files(&corpus_path)?;
+        self.store.update_indexing_state(&state)?;
 
         let mut all_docs: Vec<Document> = Vec::new();
+        let mut processed_in_current_batch = 0usize;
+        let mut newly_indexed_count = 0usize;
 
         for (rel_path, full_path) in &disk_files {
-            let content = fs::read_to_string(full_path).map_err(|e| {
-                Error::Io(std::io::Error::new(e.kind(), format!("{}: {}", rel_path, e)))
-            })?;
+            let content = match fs::read_to_string(full_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read {}: {}", rel_path, e);
+                    continue;
+                }
+            };
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-            // Parse and store.
+            // If resume is enabled and file is already indexed with matching hash, skip parsing/indexing!
+            if resume {
+                if let Some(stored_hash) = stored_map.get(rel_path) {
+                    if *stored_hash == hash {
+                        // Document already indexed and unchanged
+                        continue;
+                    }
+                }
+            }
+
+            // 1. Parse document.
             let doc = parser::parse_document(Path::new(rel_path.as_str()), &content)?;
             let chunks = chunker::chunk_document(rel_path, &doc.content, &self.config.chunking);
 
+            // 2. Insert file record into SQLite.
             let modified_at = now_unix();
             self.store.insert_file(
                 rel_path,
@@ -390,6 +506,8 @@ impl Engine {
                 doc.title.as_deref(),
             )?;
 
+            // 3. Insert chunk records into SQLite.
+            self.store.delete_chunks_for_file(rel_path)?;
             let chunk_records: Vec<ChunkRecord> = chunks
                 .iter()
                 .map(|c| ChunkRecord {
@@ -400,10 +518,14 @@ impl Engine {
                 })
                 .collect();
             self.store.insert_chunks(rel_path, &chunk_records)?;
+
+            // 4. Tantivy BM25.
+            self.bm25.remove_document(rel_path)?;
             self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
 
-            // Embed chunks in vector index (if embedder available).
-            if let Some(embedder) = &self.embedder {
+            // 5. Vector index (embed chunks if embedder available).
+            self.vector_index.remove_document(rel_path);
+            if let Some(embedder) = self.embedder_ref() {
                 let doc_title = doc.title.as_deref().unwrap_or(rel_path);
                 let texts_for_embedding: Vec<String> = chunks
                     .iter()
@@ -441,13 +563,35 @@ impl Engine {
                 }
             }
 
-            // Build non-tag edges (wikilink, frontmatter).
+            // 6. Build document non-tag graph edges.
+            self.graph.remove_edges_for_node(rel_path);
             self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
 
             all_docs.push(doc);
+            processed_in_current_batch += 1;
+            newly_indexed_count += 1;
+            state.indexed_files += 1;
+            state.last_processed_path = Some(rel_path.clone());
+
+            // Check if batch is full -> commit checkpoint!
+            if processed_in_current_batch >= batch_size {
+                self.commit()?;
+                state.updated_at = now_unix();
+                self.store.update_indexing_state(&state)?;
+                debug!(
+                    "Committed batch of {} files ({}/{} total)",
+                    processed_in_current_batch, state.indexed_files, total_files
+                );
+                processed_in_current_batch = 0;
+            }
         }
 
-        // 5. Second pass: build tag-based edges with all documents available.
+        // Commit any remaining files in final batch
+        if processed_in_current_batch > 0 {
+            self.commit()?;
+        }
+
+        // Second pass: build tag-based edges with all documents available.
         let tag_configs: Vec<_> = self
             .config
             .graph
@@ -457,18 +601,25 @@ impl Engine {
             .cloned()
             .collect();
 
-        if !tag_configs.is_empty() {
+        if !tag_configs.is_empty() && !all_docs.is_empty() {
             for doc in &all_docs {
                 self.graph.build_edges_for_document(doc, &tag_configs, &all_docs);
             }
         }
 
-        // 6. Commit.
+        // Final commit and update state to Completed
         self.commit()?;
+        state.status = IndexingStatus::Completed;
+        state.updated_at = now_unix();
+        state.indexed_files = total_files;
+        self.store.update_indexing_state(&state)?;
 
-        let count = all_docs.len();
-        info!("Full reindex complete: {} files indexed", count);
-        Ok(count)
+        info!(
+            "Paginated indexing complete: {} new/updated files ({} total files)",
+            newly_indexed_count, total_files
+        );
+
+        Ok(total_files)
     }
 
     /// Commit all pending changes (Tantivy commit, graph save, vector index save).
@@ -494,9 +645,75 @@ impl Engine {
         &self.vector_index
     }
 
-    /// Get a reference to the embedder (if initialized).
-    pub fn embedder_ref(&self) -> Option<&Embedder> {
-        self.embedder.as_ref()
+    /// Get an Arc reference to the embedder (if initialized).
+    pub fn embedder_ref(&self) -> Option<Arc<Embedder>> {
+        self.embedder.read().unwrap().clone()
+    }
+
+    /// Get current indexing progress and throughput statistics.
+    pub fn get_indexing_status(&self) -> Result<IndexingStatusResponse> {
+        let corpus_id = &self.config.name;
+        let stored = self.store.get_indexing_state(corpus_id)?;
+        let now = now_unix();
+
+        if let Some(state) = stored {
+            let total = state.total_files;
+            let indexed = state.indexed_files;
+            let progress_percent = if total > 0 {
+                ((indexed as f64 / total as f64) * 100.0).min(100.0)
+            } else if state.status == IndexingStatus::Completed {
+                100.0
+            } else {
+                0.0
+            };
+
+            let elapsed = if state.status == IndexingStatus::Indexing {
+                now.saturating_sub(state.started_at)
+            } else {
+                state.updated_at.saturating_sub(state.started_at)
+            };
+
+            let throughput = if elapsed > 0 { indexed as f64 / elapsed as f64 } else { 0.0 };
+
+            let remaining_files = total.saturating_sub(indexed);
+            let time_remaining = if throughput > 0.0 && state.status == IndexingStatus::Indexing {
+                remaining_files as f64 / throughput
+            } else {
+                0.0
+            };
+
+            Ok(IndexingStatusResponse {
+                corpus_id: state.corpus_id,
+                status: state.status,
+                total_files: total,
+                indexed_files: indexed,
+                progress_percent: (progress_percent * 100.0).round() / 100.0,
+                last_processed_path: state.last_processed_path,
+                started_at: state.started_at,
+                updated_at: state.updated_at,
+                elapsed_seconds: elapsed,
+                estimated_throughput_docs_per_sec: (throughput * 100.0).round() / 100.0,
+                estimated_time_remaining_seconds: (time_remaining * 100.0).round() / 100.0,
+                error_message: state.error_message,
+            })
+        } else {
+            // No indexing state recorded yet: check store files
+            let count = self.store.list_files().map(|f| f.len()).unwrap_or(0);
+            Ok(IndexingStatusResponse {
+                corpus_id: corpus_id.clone(),
+                status: if count > 0 { IndexingStatus::Completed } else { IndexingStatus::Idle },
+                total_files: count,
+                indexed_files: count,
+                progress_percent: if count > 0 { 100.0 } else { 0.0 },
+                last_processed_path: None,
+                started_at: 0,
+                updated_at: 0,
+                elapsed_seconds: 0,
+                estimated_throughput_docs_per_sec: 0.0,
+                estimated_time_remaining_seconds: 0.0,
+                error_message: None,
+            })
+        }
     }
 
     /// Get a reference to the graph for traversal/queries.
@@ -556,6 +773,7 @@ impl Engine {
         if !available {
             return Err(Error::Index("embedder not available — cannot re-embed".to_string()));
         }
+        let embedder = self.embedder_ref().unwrap();
 
         // 2. Get all files and their chunks from the store.
         let files = self.store.list_files()?;
@@ -625,7 +843,7 @@ impl Engine {
             let texts: Vec<&str> = texts_for_embedding.iter().map(|s| s.as_str()).collect();
 
             // Embed using the current embedder.
-            let embeddings = self.embedder.as_ref().unwrap().embed_batch(&texts)?;
+            let embeddings = embedder.embed_batch(&texts)?;
 
             // Add chunk-level embeddings.
             let chunk_indices: Vec<Option<usize>> =
@@ -642,8 +860,7 @@ impl Engine {
         }
 
         // 5. Update model version metadata.
-        let model_version =
-            self.embedder.as_ref().unwrap().model_name().version_string().to_string();
+        let model_version = embedder.model_name().version_string().to_string();
         self.vector_index.set_model_version(&model_version);
         self.vector_index.clear_stale();
 
@@ -993,5 +1210,78 @@ mod tests {
         // Non-existent key returns None.
         let missing = engine.store().get_config("nonexistent").unwrap();
         assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn test_paginated_reindex_and_status() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+
+        // Write 15 files
+        for i in 0..15 {
+            fs::write(
+                corpus_dir.join(format!("doc_{:02}.md", i)),
+                format!("# Document {}\n\nContent for note {}\n", i, i),
+            )
+            .unwrap();
+        }
+
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        // Index in batches of 5
+        let count = engine.full_reindex_paginated(5, false).unwrap();
+        assert_eq!(count, 15);
+
+        // Check indexing status
+        let status = engine.get_indexing_status().unwrap();
+        assert_eq!(status.corpus_id, "test");
+        assert_eq!(status.status, IndexingStatus::Completed);
+        assert_eq!(status.total_files, 15);
+        assert_eq!(status.indexed_files, 15);
+        assert_eq!(status.progress_percent, 100.0);
+    }
+
+    #[test]
+    fn test_indexing_resumption() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+
+        // Write 10 files
+        for i in 0..10 {
+            fs::write(
+                corpus_dir.join(format!("doc_{:02}.md", i)),
+                format!("# Document {}\n\nContent for note {}\n", i, i),
+            )
+            .unwrap();
+        }
+
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config.clone(), &index_dir).unwrap();
+
+        // 1. First index all 10 files
+        let count = engine.full_reindex_paginated(4, false).unwrap();
+        assert_eq!(count, 10);
+
+        // 2. Add 5 more files to corpus
+        for i in 10..15 {
+            fs::write(
+                corpus_dir.join(format!("doc_{:02}.md", i)),
+                format!("# Document {}\n\nContent for note {}\n", i, i),
+            )
+            .unwrap();
+        }
+
+        // 3. Open fresh engine instance and resume indexing
+        let mut resumed_engine = Engine::open(config, &index_dir).unwrap();
+        let resumed_count = resumed_engine.full_reindex_paginated(4, true).unwrap();
+        assert_eq!(resumed_count, 15);
+
+        let files = resumed_engine.store().list_files().unwrap();
+        assert_eq!(files.len(), 15);
     }
 }
