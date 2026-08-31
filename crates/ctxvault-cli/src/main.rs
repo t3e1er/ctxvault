@@ -1,4 +1,4 @@
-﻿//! CLI entry point: argument parsing, mode selection, startup orchestration.
+//! CLI entry point: argument parsing, mode selection, startup orchestration.
 
 use std::path::{Path, PathBuf};
 
@@ -27,8 +27,8 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:9090")]
     bind: String,
 
-    /// Server endpoint URL when running in client mode.
-    #[arg(long, default_value = "http://127.0.0.1:9090")]
+    /// Server endpoint URL when running in client or proxy mode.
+    #[arg(long, visible_alias = "remote", default_value = "http://127.0.0.1:9090")]
     server: String,
 
     /// Tool name to execute when in client mode (e.g. search_hybrid, list_notes).
@@ -86,6 +86,15 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(&cli.log_level).with_writer(std::io::stderr).init();
 
     // -----------------------------------------------------------------------
+    // Proxy Mode Execution
+    // -----------------------------------------------------------------------
+    if matches!(cli.mode, Mode::Proxy) {
+        tracing::info!(server = %cli.server, "starting stdio MCP proxy -> remote server");
+        transport::run_stdio_proxy(&cli.server).await?;
+        return Ok(());
+    }
+
+    // -----------------------------------------------------------------------
     // Client Mode Execution
     // -----------------------------------------------------------------------
     if matches!(cli.mode, Mode::Client) {
@@ -123,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // -----------------------------------------------------------------------
-    // Local / Server / Proxy Modes
+    // Local / Server Modes
     // -----------------------------------------------------------------------
     tracing::info!(mode = ?cli.mode, "starting ctxvault engine");
 
@@ -170,10 +179,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(bind = %cli.bind, "starting localhost HTTP MCP server");
             transport::run_http_server(&cli.bind, engine, registry).await?;
         }
-        Mode::Client => unreachable!(),
-        Mode::Proxy => {
-            tracing::warn!("proxy mode not yet implemented");
-        }
+        Mode::Client | Mode::Proxy => unreachable!(),
     }
 
     Ok(())

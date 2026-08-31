@@ -1,4 +1,4 @@
-﻿//! MCP JSON-RPC 2.0 protocol dispatch and message handling.
+//! MCP JSON-RPC 2.0 protocol dispatch and message handling.
 //!
 //! Provides the core request parsing, routing, and response construction
 //! shared across stdio, HTTP, and SSE server transports.
@@ -81,11 +81,15 @@ pub fn dispatch(
 ) -> Result<Value> {
     debug!(method = %request.method, "dispatching MCP request");
     match request.method.as_str() {
-        "initialize" => handle_initialize(),
-        "notifications/initialized" => Ok(Value::Null),
+        "initialize" | "server/discover" => handle_initialize(),
         "tools/list" => handle_tools_list(registry),
         "tools/call" => handle_tools_call(request, engine, registry),
         "ping" => Ok(serde_json::json!({})),
+        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
+        method if method.starts_with("notifications/") || method.starts_with("$/") => {
+            debug!(method, "handling MCP notification");
+            Ok(Value::Null)
+        }
         other => {
             warn!(method = other, "unknown method");
             Err(Error::NotFound(format!("method not found: {other}")))
@@ -101,11 +105,15 @@ pub fn dispatch_multi(
 ) -> Result<Value> {
     debug!(method = %request.method, "dispatching MCP request (multi-corpus)");
     match request.method.as_str() {
-        "initialize" => handle_initialize(),
-        "notifications/initialized" => Ok(Value::Null),
+        "initialize" | "server/discover" => handle_initialize(),
         "tools/list" => handle_tools_list_multi(registry),
         "tools/call" => handle_tools_call_multi(request, manager, registry),
         "ping" => Ok(serde_json::json!({})),
+        "roots/list" => Ok(serde_json::json!({ "roots": [] })),
+        method if method.starts_with("notifications/") || method.starts_with("$/") => {
+            debug!(method, "handling MCP notification");
+            Ok(Value::Null)
+        }
         other => {
             warn!(method = other, "unknown method");
             Err(Error::NotFound(format!("method not found: {other}")))

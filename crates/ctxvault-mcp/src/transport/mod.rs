@@ -11,4 +11,4 @@ pub use dispatch::{
 pub use http::{
     run_http_server, run_http_server_multi, MultiCorpusServerState, SingleCorpusServerState,
 };
-pub use stdio::{run_stdio, run_stdio_multi};
+pub use stdio::{run_stdio, run_stdio_multi, run_stdio_proxy};
