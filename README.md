@@ -1,4 +1,4 @@
-﻿# ctxvault (`ctxvault` / `ctxv`)
+# ctxvault (`ctxvault` / `ctxv`)
 
 **Enterprise Semantic Model Context Protocol (MCP) Server** for markdown knowledge bases and polyglot codebases. Features pure Rust hybrid BM25 + ONNX vector + Petgraph typed graph retrieval with 3-Way Reciprocal Rank Fusion (RRF), formal schema validation, and Principle 3 knowledge crystallization.
 
@@ -84,19 +84,43 @@ cargo install --locked --path crates/ctxvault-cli
 }
 ```
 
-### Shared Multi-Agent HTTP Server Mode
-You can also run `ctxvault` as a shared local daemon so multiple IDEs/agents share a single in-memory index:
+### Shared Multi-Agent / Local Network Server Mode
+Host `ctxvault` as a shared daemon so multiple IDEs, team members on LAN, or sandboxed agent environments share a single in-memory index:
 ```bash
-ctxvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
+# Bind to localhost (local multi-agent) or 0.0.0.0 (LAN hackathon / team sharing)
+ctxvault --mode server --bind 0.0.0.0:9090 --corpus /path/to/vault --sync
 ```
+
+#### Direct Remote Client (Antigravity / Remote SSE-capable IDEs)
 ```json
 {
   "mcpServers": {
     "ctxvault": {
-      "url": "http://127.0.0.1:9090/sse"
+      "serverUrl": "http://<HOST_IP>:9090/sse"
     }
   }
 }
+```
+
+#### Stdio Proxy Mode (Claude Desktop, Cursor, Sandboxed Containers)
+For IDEs and containerized agents that only support local stdio processes, run `ctxvault` in proxy mode:
+```json
+{
+  "mcpServers": {
+    "ctxvault": {
+      "command": "ctxvault",
+      "args": [
+        "--mode", "proxy",
+        "--server", "http://<HOST_IP>:9090"
+      ]
+    }
+  }
+}
+```
+
+#### CLI / Scripted Client Mode
+```bash
+ctxvault --mode client --server http://<HOST_IP>:9090 --call search_hybrid --query "architecture"
 ```
 
 ---

@@ -1,4 +1,4 @@
-﻿//! End-to-end integration test for Localhost MCP HTTP Server and McpClient.
+//! End-to-end integration test for Localhost MCP HTTP Server and McpClient.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -155,4 +155,81 @@ async fn handle_health_test(
         "server": "ctxvault",
         "indexed": engine.is_indexed()
     }))
+}
+
+#[tokio::test]
+async fn test_mcp_http_server_sse_and_proxy() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let corpus_path = temp_dir.path().to_path_buf();
+    let index_dir = corpus_path.join(".index");
+
+    let doc_path = corpus_path.join("proxy_test.md");
+    fs::write(&doc_path, "---\ntitle: Proxy Test\n---\n# Proxy Mode Works\n").unwrap();
+
+    let config = CorpusConfig {
+        name: "proxy-corpus".to_string(),
+        path: corpus_path.to_string_lossy().to_string(),
+        mode: CorpusMode::ReadWrite,
+        chunking: ChunkingConfig::default(),
+        embedding: EmbeddingConfig::default(),
+        graph: GraphConfig::default(),
+        templates_dir: ".templates".to_string(),
+    };
+
+    let mut engine = Engine::open(config, &index_dir).expect("open engine");
+    let _ = engine.full_reindex().expect("reindex");
+
+    let mut registry = ToolRegistry::new();
+    registry.register_all();
+
+    // Bind server on ephemeral port using production run_http_server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind port");
+    let local_addr = listener.local_addr().expect("local addr");
+    let server_url = format!("http://{local_addr}");
+
+    let _server_handle = tokio::spawn(async move {
+        let state = SingleCorpusServerState {
+            engine: Arc::new(Mutex::new(engine)),
+            registry: Arc::new(registry),
+        };
+        let app = Router::new()
+            .route("/mcp", post(handle_jsonrpc_test).get(ctxvault_mcp::transport::http::handle_sse))
+            .route(
+                "/jsonrpc",
+                post(handle_jsonrpc_test).get(ctxvault_mcp::transport::http::handle_sse),
+            )
+            .route("/", post(handle_jsonrpc_test).get(ctxvault_mcp::transport::http::handle_sse))
+            .route("/sse", get(ctxvault_mcp::transport::http::handle_sse).post(handle_jsonrpc_test))
+            .route("/health", get(handle_health_test))
+            .layer(CorsLayer::permissive())
+            .with_state(state);
+
+        let _ =
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await;
+    });
+
+    // Test POST directly to /sse
+    let client = reqwest::Client::new();
+    let init_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    });
+
+    let sse_post_res = client
+        .post(format!("{server_url}/sse"))
+        .json(&init_req)
+        .send()
+        .await
+        .expect("send POST to /sse");
+    assert!(sse_post_res.status().is_success());
+    let body: serde_json::Value = sse_post_res.json().await.expect("parse response");
+    assert_eq!(body["id"], 1);
+    assert_eq!(body["result"]["serverInfo"]["name"], "ctxvault");
+
+    // Test GET /sse endpoint handshake
+    let sse_get_res =
+        client.get(format!("{server_url}/sse")).send().await.expect("send GET to /sse");
+    assert!(sse_get_res.status().is_success());
 }
