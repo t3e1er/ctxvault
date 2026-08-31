@@ -73,17 +73,17 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            binary_name: cxtvault.exe
+            binary_name: ctxvault.exe
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            binary_name: cxtvault
+            binary_name: ctxvault
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
-            binary_name: cxtvault
+            binary_name: ctxvault
             use_cross: true
           - target: aarch64-apple-darwin
             os: macos-latest
-            binary_name: cxtvault
+            binary_name: ctxvault
 
     steps:
       - name: Checkout repository
@@ -107,16 +107,16 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }} --bin cxtvault
+            cross build --release --locked --target ${{ matrix.target }} --bin ctxvault
           else
-            cargo build --release --locked --target ${{ matrix.target }} --bin cxtvault
+            cargo build --release --locked --target ${{ matrix.target }} --bin ctxvault
           fi
 
       - name: Package artifacts (POSIX)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          STAGING="cxtvault-${{ github.ref_name }}-${{ matrix.target }}"
+          STAGING="ctxvault-${{ github.ref_name }}-${{ matrix.target }}"
           mkdir -p "$STAGING"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$STAGING/"
           cp README.md LICENSE THIRD_PARTY_LICENSES.md "$STAGING/" 2>/dev/null || true
@@ -128,7 +128,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $staging = "cxtvault-${{ github.ref_name }}-${{ matrix.target }}"
+          $staging = "ctxvault-${{ github.ref_name }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination $staging
           if (Test-Path README.md) { Copy-Item README.md -Destination $staging }

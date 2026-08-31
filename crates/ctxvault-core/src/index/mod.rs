@@ -1,0 +1,445 @@
+﻿//! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
+
+use std::path::Path;
+
+use tantivy::{
+    collector::TopDocs,
+    directory::MmapDirectory,
+    doc,
+    query::QueryParser,
+    schema::{Field, Schema, Value, STORED, STRING, TEXT},
+    Index, IndexReader, IndexWriter, ReloadPolicy, Term,
+};
+
+use ctxvault_common::{
+    types::{Chunk, ScoreBreakdown, SearchResult},
+    Error, Result,
+};
+
+/// Full-text BM25 search index backed by Tantivy.
+pub struct BM25Index {
+    index: Index,
+    reader: IndexReader,
+    writer: Option<IndexWriter>,
+    #[allow(dead_code)]
+    schema: Schema,
+    // Field handles
+    field_path: Field,
+    field_chunk_index: Field,
+    field_title: Field,
+    field_body: Field,
+    field_tags: Field,
+}
+
+impl BM25Index {
+    /// Build the shared schema used by all BM25Index instances.
+    fn build_schema() -> (Schema, Field, Field, Field, Field, Field) {
+        let mut builder = Schema::builder();
+        let field_path = builder.add_text_field("path", STRING | STORED);
+        let field_chunk_index = builder.add_text_field("chunk_index", STORED);
+        let field_title = builder.add_text_field("title", TEXT | STORED);
+        let field_body = builder.add_text_field("body", TEXT | STORED);
+        let field_tags = builder.add_text_field("tags", TEXT | STORED);
+        let schema = builder.build();
+        (schema, field_path, field_chunk_index, field_title, field_body, field_tags)
+    }
+
+    /// Open or create a Tantivy index at the given directory.
+    pub fn open(index_path: &Path) -> Result<Self> {
+        std::fs::create_dir_all(index_path).map_err(|e| Error::Index(e.to_string()))?;
+
+        let (schema, field_path, field_chunk_index, field_title, field_body, field_tags) =
+            Self::build_schema();
+
+        let dir = MmapDirectory::open(index_path).map_err(|e| Error::Index(e.to_string()))?;
+
+        let index =
+            Index::open_or_create(dir, schema.clone()).map_err(|e| Error::Index(e.to_string()))?;
+
+        // Don't acquire writer at open — only needed for mutations.
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
+
+        Ok(Self {
+            index,
+            reader,
+            writer: None,
+            schema,
+            field_path,
+            field_chunk_index,
+            field_title,
+            field_body,
+            field_tags,
+        })
+    }
+
+    /// Create an in-memory index (for testing).
+    pub fn open_in_memory() -> Result<Self> {
+        let (schema, field_path, field_chunk_index, field_title, field_body, field_tags) =
+            Self::build_schema();
+
+        let index = Index::create_in_ram(schema.clone());
+
+        // Don't acquire writer at open — only needed for mutations.
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
+
+        Ok(Self {
+            index,
+            reader,
+            writer: None,
+            schema,
+            field_path,
+            field_chunk_index,
+            field_title,
+            field_body,
+            field_tags,
+        })
+    }
+
+    /// Lazily acquire the IndexWriter if not already held.
+    /// This acquires an exclusive file lock on the index directory.
+    fn ensure_writer(&mut self) -> Result<&mut IndexWriter> {
+        if self.writer.is_none() {
+            let writer = self
+                .index
+                .writer(50_000_000)
+                .map_err(|e| Error::Index(format!("Failed to acquire Lockfile: {}", e)))?;
+            self.writer = Some(writer);
+        }
+        Ok(self.writer.as_mut().unwrap())
+    }
+
+    /// Release the IndexWriter, dropping the exclusive file lock.
+    /// Call this after commit to allow other processes to access the index.
+    pub fn release_writer(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            drop(writer);
+        }
+    }
+
+    /// Add all chunks for a document to the index.
+    ///
+    /// Each chunk becomes a separate tantivy document with the doc_path,
+    /// chunk_index, and body text. Does NOT auto-commit.
+    pub fn add_document(
+        &mut self,
+        doc_path: &str,
+        title: Option<&str>,
+        tags: &[String],
+        chunks: &[Chunk],
+    ) -> Result<()> {
+        let tags_text = tags.join(" ");
+        let title_text = title.unwrap_or("");
+
+        // Copy field handles before borrowing self mutably for writer.
+        let field_path = self.field_path;
+        let field_chunk_index = self.field_chunk_index;
+        let field_title = self.field_title;
+        let field_body = self.field_body;
+        let field_tags = self.field_tags;
+
+        let writer = self.ensure_writer()?;
+
+        for chunk in chunks {
+            let tantivy_doc = doc!(
+                field_path => doc_path,
+                field_chunk_index => chunk.chunk_index.to_string(),
+                field_title => title_text,
+                field_body => chunk.text.as_str(),
+                field_tags => tags_text.as_str(),
+            );
+            let _ = writer.add_document(tantivy_doc).map_err(|e| Error::Index(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Remove all indexed chunks for a given document path.
+    ///
+    /// Does NOT auto-commit.
+    pub fn remove_document(&mut self, doc_path: &str) -> Result<()> {
+        let field_path = self.field_path;
+        let writer = self.ensure_writer()?;
+        let term = Term::from_field_text(field_path, doc_path);
+        let _ = writer.delete_term(term);
+        Ok(())
+    }
+
+    /// Commit pending changes to disk.
+    pub fn commit(&mut self) -> Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            let _ = writer.commit().map_err(|e| Error::Index(e.to_string()))?;
+        }
+        // Release writer to drop the exclusive file lock.
+        self.release_writer();
+        Ok(())
+    }
+
+    /// Search the BM25 index with a text query.
+    ///
+    /// Returns ranked results with scores and snippets.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        // Reload the reader to pick up latest commits.
+        self.reader.reload().map_err(|e| Error::Index(e.to_string()))?;
+
+        let searcher = self.reader.searcher();
+
+        let query_parser =
+            QueryParser::for_index(&self.index, vec![self.field_body, self.field_title]);
+
+        let parsed_query =
+            query_parser.parse_query(query).map_err(|e| Error::Index(e.to_string()))?;
+
+        let top_docs = searcher
+            .search(&parsed_query, &TopDocs::with_limit(limit).order_by_score())
+            .map_err(|e| Error::Index(e.to_string()))?;
+
+        let mut results = Vec::with_capacity(top_docs.len());
+
+        for (score, doc_address) in top_docs {
+            let retrieved: tantivy::TantivyDocument =
+                searcher.doc(doc_address).map_err(|e| Error::Index(e.to_string()))?;
+
+            let path = retrieved
+                .get_first(self.field_path)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let chunk_index_str =
+                retrieved.get_first(self.field_chunk_index).and_then(|v| v.as_str()).unwrap_or("0");
+            let chunk_index = chunk_index_str.parse::<usize>().unwrap_or(0);
+
+            let body = retrieved
+                .get_first(self.field_body)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Create snippet from first ~200 characters of body (char-boundary safe).
+            let snippet = if body.len() > 200 {
+                // Find the nearest char boundary at or before byte 200.
+                let mut end = 200;
+                while end > 0 && !body.is_char_boundary(end) {
+                    end -= 1;
+                }
+                Some(body[..end].to_string())
+            } else {
+                Some(body)
+            };
+
+            let score_f64 = score as f64;
+
+            results.push(SearchResult {
+                path,
+                score: score_f64,
+                snippet,
+                chunk_index: Some(chunk_index),
+                score_components: Some(ScoreBreakdown {
+                    bm25: score_f64,
+                    vector: 0.0,
+                    graph_boost: 0.0,
+                    graph_hops: None,
+                }),
+                lineage: None,
+            });
+        }
+
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ctxvault_common::types::Chunk;
+
+    /// Helper to create a simple chunk.
+    fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
+        Chunk {
+            doc_path: doc_path.to_string(),
+            chunk_index: index,
+            text: text.to_string(),
+            start_byte: 0,
+            end_byte: text.len(),
+            heading_chain: None,
+        }
+    }
+
+    #[test]
+    fn test_create_in_memory() {
+        let index = BM25Index::open_in_memory();
+        assert!(index.is_ok());
+    }
+
+    #[test]
+    fn test_add_and_search() {
+        let mut index = BM25Index::open_in_memory().unwrap();
+
+        let chunks1 = vec![make_chunk(
+            "notes/rust.md",
+            0,
+            "Rust is a systems programming language focused on safety and performance",
+        )];
+        let chunks2 = vec![make_chunk(
+            "notes/python.md",
+            0,
+            "Python is a dynamic interpreted language popular for data science",
+        )];
+        let chunks3 = vec![make_chunk(
+            "notes/java.md",
+            0,
+            "Java is an object-oriented language that runs on the JVM",
+        )];
+
+        index
+            .add_document(
+                "notes/rust.md",
+                Some("Rust Language"),
+                &["rust".to_string(), "systems".to_string()],
+                &chunks1,
+            )
+            .unwrap();
+        index
+            .add_document(
+                "notes/python.md",
+                Some("Python Language"),
+                &["python".to_string()],
+                &chunks2,
+            )
+            .unwrap();
+        index
+            .add_document("notes/java.md", Some("Java Language"), &["java".to_string()], &chunks3)
+            .unwrap();
+        index.commit().unwrap();
+
+        let results = index.search("systems programming safety", 10).unwrap();
+        assert!(!results.is_empty(), "Expected at least one result");
+        assert_eq!(results[0].path, "notes/rust.md");
+    }
+
+    #[test]
+    fn test_remove_document() {
+        let mut index = BM25Index::open_in_memory().unwrap();
+
+        let chunks = vec![make_chunk(
+            "notes/remove_me.md",
+            0,
+            "This document should be removed from the index",
+        )];
+        index.add_document("notes/remove_me.md", Some("Remove Me"), &[], &chunks).unwrap();
+        index.commit().unwrap();
+
+        // Verify it's searchable first.
+        let results = index.search("removed from the index", 10).unwrap();
+        assert!(!results.is_empty());
+
+        // Remove and commit.
+        index.remove_document("notes/remove_me.md").unwrap();
+        index.commit().unwrap();
+
+        // Should no longer appear in results.
+        let results = index.search("removed from the index", 10).unwrap();
+        assert!(results.is_empty(), "Document should have been removed");
+    }
+
+    #[test]
+    fn test_search_by_title() {
+        let mut index = BM25Index::open_in_memory().unwrap();
+
+        let chunks = vec![make_chunk(
+            "notes/kubernetes.md",
+            0,
+            "Container orchestration platform for deploying applications",
+        )];
+        index
+            .add_document(
+                "notes/kubernetes.md",
+                Some("Kubernetes Deep Dive"),
+                &["k8s".to_string()],
+                &chunks,
+            )
+            .unwrap();
+        index.commit().unwrap();
+
+        // Search using title text — should find the document.
+        let results = index.search("Kubernetes Deep Dive", 10).unwrap();
+        assert!(!results.is_empty(), "Should find document by title");
+        assert_eq!(results[0].path, "notes/kubernetes.md");
+    }
+
+    #[test]
+    fn test_search_multiple_results() {
+        let mut index = BM25Index::open_in_memory().unwrap();
+
+        let chunks1 = vec![make_chunk(
+            "notes/ml_intro.md",
+            0,
+            "Machine learning is a subset of artificial intelligence that learns from data",
+        )];
+        let chunks2 = vec![make_chunk(
+            "notes/ml_advanced.md",
+            0,
+            "Advanced machine learning covers deep learning neural networks and transformers",
+        )];
+        let chunks3 = vec![make_chunk(
+            "notes/cooking.md",
+            0,
+            "This recipe explains how to make a perfect sourdough bread",
+        )];
+
+        index
+            .add_document(
+                "notes/ml_intro.md",
+                Some("ML Introduction"),
+                &["ml".to_string()],
+                &chunks1,
+            )
+            .unwrap();
+        index
+            .add_document(
+                "notes/ml_advanced.md",
+                Some("Advanced ML"),
+                &["ml".to_string(), "deep-learning".to_string()],
+                &chunks2,
+            )
+            .unwrap();
+        index
+            .add_document(
+                "notes/cooking.md",
+                Some("Sourdough Recipe"),
+                &["cooking".to_string()],
+                &chunks3,
+            )
+            .unwrap();
+        index.commit().unwrap();
+
+        let results = index.search("machine learning", 10).unwrap();
+        assert!(
+            results.len() >= 2,
+            "Expected at least 2 results for 'machine learning', got {}",
+            results.len()
+        );
+
+        // Both ML documents should appear, cooking should not.
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
+        assert!(paths.contains(&"notes/ml_intro.md"));
+        assert!(paths.contains(&"notes/ml_advanced.md"));
+        assert!(!paths.contains(&"notes/cooking.md"));
+
+        // Results should be ordered by relevance (descending score).
+        for window in results.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "Results should be in descending score order"
+            );
+        }
+    }
+}

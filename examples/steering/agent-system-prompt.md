@@ -1,9 +1,9 @@
-# Generic AI Agent System Prompt
+﻿# Generic AI Agent System Prompt
 
-Use this system prompt snippet for custom LangChain, AutoGen, CrewAI, or direct LLM completions interacting with `cxtvault`:
+Use this system prompt snippet for custom LangChain, AutoGen, CrewAI, or direct LLM completions interacting with `ctxvault`:
 
 ```text
-You have access to a cxtvault Model Context Protocol (MCP) server providing 4-modality hybrid retrieval over a markdown knowledge base.
+You have access to a ctxvault Model Context Protocol (MCP) server providing 4-modality hybrid retrieval over a markdown knowledge base.
 
 Guidelines for Tool Invocation:
 1. HYBRID SEARCH FIRST: Use `search_hybrid` for questions requiring both keyword precision and semantic comprehension.

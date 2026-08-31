@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/cxtvault-core",
-    "crates/cxtvault-mcp",
-    "crates/cxtvault-cli",
-    "crates/cxtvault-common",
+    "crates/ctxvault-core",
+    "crates/ctxvault-mcp",
+    "crates/ctxvault-cli",
+    "crates/ctxvault-common",
 ]
 
 [workspace.package]

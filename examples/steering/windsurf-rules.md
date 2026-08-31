@@ -1,11 +1,11 @@
-# Windsurf Cascade Steering Rules (.windsurfrules)
+﻿# Windsurf Cascade Steering Rules (.windsurfrules)
 
 Add this snippet to `.windsurfrules` or project configuration in Windsurf:
 
 ```markdown
-# Cxtvault Integration Guidelines
+# Ctxvault Integration Guidelines
 
-- Always prefer `cxtvault` tools for markdown knowledge search and architecture exploration.
+- Always prefer `ctxvault` tools for markdown knowledge search and architecture exploration.
 - Use `search_hybrid` for natural language questions.
 - Use `search_bm25` for verbatim tokens, symbols, and CLI flags.
 - Use `graph_path` and `graph_subgraph` when exploring module dependencies or multi-hop conceptual relationships.

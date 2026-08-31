@@ -104,4 +104,4 @@ watch:
 
 # Run the CLI binary
 run *ARGS:
-    cargo run --bin cxtvault -- {{ARGS}}
+    cargo run --bin ctxvault -- {{ARGS}}

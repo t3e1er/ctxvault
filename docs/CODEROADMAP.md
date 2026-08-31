@@ -1,6 +1,6 @@
-# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
+﻿# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
 
-This roadmap defines the architectural specification, academic foundations, tooling evaluation, and phased engineering plan for integrating **polyglot codebases** into the **Enterprise Semantic MCP** engine (`cxtvault-core`, `cxtvault-common`, `cxtvault-mcp`).
+This roadmap defines the architectural specification, academic foundations, tooling evaluation, and phased engineering plan for integrating **polyglot codebases** into the **Enterprise Semantic MCP** engine (`ctxvault-core`, `ctxvault-common`, `ctxvault-mcp`).
 
 ---
 
@@ -68,7 +68,7 @@ Traditional text chunkers (fixed token/character windows) cause severe **context
 
 ## 3. Rust Tooling Ecosystem Evaluation
 
-| Crate / Tool | License | Multi-Language | Role & Capability | Assessment & Decision for `cxtvault` |
+| Crate / Tool | License | Multi-Language | Role & Capability | Assessment & Decision for `ctxvault` |
 | :--- | :--- | :--- | :--- | :--- |
 | **`tree-sitter`** (v0.22+) | MIT | Yes (100+ langs) | Fast incremental C-CST parser with safe Rust bindings | **Core Substrate**: Universal parser for syntax tree generation. |
 | **`tree-sitter-language-pack`** | MIT / Apache | Yes (370+ langs) | Bundled pre-compiled grammars for instant polyglot support | **Recommended**: Eliminates managing individual grammar crates in `Cargo.toml`. |
@@ -76,7 +76,7 @@ Traditional text chunkers (fixed token/character windows) cause severe **context
 | **`ast-grep-core`** | MIT | Yes (Polyglot) | Structural AST pattern search and rewrite engine | **Alternative**: Useful for custom AST pattern extraction rules. |
 | **`stack-graphs`** | MIT / Apache | Yes (Polyglot) | Incremental scope-graph name resolution | **Reference Only**: Upstream archived late 2025; adopt lightweight scope resolution directly in Petgraph. |
 | **`scip`** | Apache-2.0 | Yes (Polyglot via CLI) | Protobuf parser for compiler-generated code indexes | **Optional Phase 4**: Ingests compiler-precise `.scip` files if pre-generated in CI. |
-| **`petgraph`** | MIT / Apache | N/A (Graph Engine) | In-memory directed typed graph store and algorithms | **Core Substrate**: Already integrated in `cxtvault-core`; houses code and doc edges. |
+| **`petgraph`** | MIT / Apache | N/A (Graph Engine) | In-memory directed typed graph store and algorithms | **Core Substrate**: Already integrated in `ctxvault-core`; houses code and doc edges. |
 
 ---
 
@@ -84,10 +84,10 @@ Traditional text chunkers (fixed token/character windows) cause severe **context
 
 The open-source **`DeusData/codebase-memory-mcp`** represents an industry baseline for code-focused MCP servers. Below is a head-to-head architectural comparison:
 
-| Dimension | `codebase-memory-mcp` | Our Unified `cxtvault-core` Architecture |
+| Dimension | `codebase-memory-mcp` | Our Unified `ctxvault-core` Architecture |
 | :--- | :--- | :--- |
 | **Core Philosophy** | **Code-only structural property graph** | **Unified Cross-Modal Doc + Code Knowledge Engine** |
-| **Implementation Language** | Static C binary | **Pure Rust** (`cxtvault-core`, `cxtvault-mcp`, `#![forbid(unsafe_code)]`) |
+| **Implementation Language** | Static C binary | **Pure Rust** (`ctxvault-core`, `ctxvault-mcp`, `#![forbid(unsafe_code)]`) |
 | **Retrieval Mechanism** | **Discrete graph queries** (Cypher-like queries, caller/callee traces) | **4-Modality Continuous Hybrid Retrieval** (BM25 + Dense Vector + Graph Proximity + RRF) |
 | **Documentation Handling** | Basic ADR records in SQLite | **Full Markdown Vault Indexing** (ADRs, RFCs, wikilinks `[[...]]`, tags, templates, Principle 3 crystallization) |
 | **Cross-Modal Lineage** | Explicit parameter links | **Native Graph Lineage** (`implements`, `documents`, `supersedes`) bridging docs and code |
@@ -105,7 +105,7 @@ The open-source **`DeusData/codebase-memory-mcp`** represents an industry baseli
 
 ## 5. Architectural Specification & Data Model
 
-### 5.1 Unified Entity Discrimination (`cxtvault-common`)
+### 5.1 Unified Entity Discrimination (`ctxvault-common`)
 Every indexed item is tagged with an `EntityKind` to prevent index pollution and enable precise filtering:
 
 ```rust
@@ -151,7 +151,7 @@ pub enum CodeSymbolType {
 }
 ```
 
-### 5.2 Extended Graph Edge Schema (`corpus.toml` & `cxtvault-core`)
+### 5.2 Extended Graph Edge Schema (`corpus.toml` & `ctxvault-core`)
 The graph engine is extended with code-specific and cross-modal relationship types:
 
 | Edge Type | Source Node | Target Node | Default Weight | Description |
@@ -242,43 +242,43 @@ Source Code (.rs, .py, .ts, .go, .java)
 ```
 
 ### Phase 1: Polyglot Parsing & AST-Aware Semantic Chunker
-* **Crates Impacted**: `cxtvault-common`, `cxtvault-core`
+* **Crates Impacted**: `ctxvault-common`, `ctxvault-core`
 * **Deliverables**:
   - Add `tree-sitter` and `tree-sitter-language-pack` to `Cargo.toml`.
-  - Implement `CodeChunker` in `cxtvault-core/src/parser/code/chunker.rs`.
+  - Implement `CodeChunker` in `ctxvault-core/src/parser/code/chunker.rs`.
   - Support top 6 languages: Rust, TypeScript/JavaScript, Python, Go, Java, C/C++.
   - Inject AST scope breadcrumbs into chunk text for Tantivy and fastembed embedding passes.
 * **Verification**: Unit tests validating that AST chunks never split functions mid-expression and docstrings remain bound to signatures.
 
 ### Phase 2: Code Graph Extractor & Lightweight Import Resolver
-* **Crates Impacted**: `cxtvault-core`
+* **Crates Impacted**: `ctxvault-core`
 * **Deliverables**:
-  - Implement `CodeGraphExtractor` in `cxtvault-core/src/graph/code.rs` using `tree-sitter-tags`.
+  - Implement `CodeGraphExtractor` in `ctxvault-core/src/graph/code.rs` using `tree-sitter-tags`.
   - Extract `defines`, `imports`, and `calls` relationships.
   - Implement a lightweight import resolver pass across SQLite symbol tables to connect cross-file call sites.
   - Ingest code nodes and edges into `petgraph` (`graph.bin`).
 * **Verification**: Integration tests confirming cross-file graph traversal from caller function to callee function in a multi-file project.
 
 ### Phase 3: Multi-Modal Search & Query Discrimination Engine
-* **Crates Impacted**: `cxtvault-core`, `cxtvault-mcp`
+* **Crates Impacted**: `ctxvault-core`, `ctxvault-mcp`
 * **Deliverables**:
   - Add `EntityKind` filtering to Tantivy index schema and HNSW metadata.
   - Update `SearchEngine` to perform cross-modal seed-then-traverse graph expansion.
-  - Update `cxtvault-mcp` search tool parameters: `query`, `entity_types`, `languages`, `depth`.
+  - Update `ctxvault-mcp` search tool parameters: `query`, `entity_types`, `languages`, `depth`.
 * **Verification**: Benchmark evaluation verifying that natural language queries retrieve documentation while surfacing relevant code via graph hops.
 
 ### Phase 4: Structural MCP Tools & Architecture Overview
-* **Crates Impacted**: `cxtvault-mcp`, `cxtvault-core`
+* **Crates Impacted**: `ctxvault-mcp`, `ctxvault-core`
 * **Deliverables**:
   - Add deterministic structural tools to MCP server:
     - `get_symbol_definition(symbol_path)`
     - `find_callers(symbol_name, max_depth)`
     - `get_module_graph(module_path)`
-  - Implement Louvain community detection in `cxtvault-core` to generate automated architectural module summaries.
+  - Implement Louvain community detection in `ctxvault-core` to generate automated architectural module summaries.
 * **Verification**: End-to-end MCP JSON-RPC test suite for all new structural tools.
 
 ### Phase 5: Principle 3 Cross-Modal Knowledge Crystallization
-* **Crates Impacted**: `cxtvault-core`, `cxtvault-mcp`
+* **Crates Impacted**: `ctxvault-core`, `ctxvault-mcp`
 * **Deliverables**:
   - Extend `promote_concept` tool to accept code symbol links and synthesize `implements`/`documents` lineage edges.
   - Add automated **Code Drift Detection**: scan indexed code to alert when an ADR references deprecated or renamed symbols/functions.

@@ -1,4 +1,4 @@
-# Crystallizer Agent: Principle 3 Knowledge Distiller
+﻿# Crystallizer Agent: Principle 3 Knowledge Distiller
 
 The **Crystallizer Agent** is dedicated to **Principle 3 (Knowledge Crystallization)**: transforming noisy, transient conversational interactions, incident logs, and debugging traces into permanent, structured, highly-linked semantic knowledge assets.
 
@@ -54,7 +54,7 @@ Operational Instructions:
   "template": "system_concept",
   "source_references": [
     "incidents/inc-002-memory-spike.md",
-    "crates/cxtvault-mcp/src/transport/stdio.rs"
+    "crates/ctxvault-mcp/src/transport/stdio.rs"
   ],
   "summary": "Explains how serde streaming serialization avoids buffer reallocations during high-throughput tool streaming.",
   "tags": ["rpc", "performance", "memory"]

@@ -1,4 +1,4 @@
-# Scout Agent: High-Throughput Search & Graph Explorer
+﻿# Scout Agent: High-Throughput Search & Graph Explorer
 
 The **Scout Agent** is designed for rapid information retrieval, multi-modal query dispatch, and knowledge graph topology mapping. Its mission is to explore the knowledge corpus quickly, identify high-probability candidate notes, trace multi-hop connections, and deliver a concise, filtered reading list to downstream reader agents without overwhelming the orchestrator's context window.
 
@@ -31,7 +31,7 @@ The **Scout Agent** is designed for rapid information retrieval, multi-modal que
 
 ```text
 You are the Scout Agent for a multi-agent knowledge swarm.
-Your goal is to survey the cxtvault knowledge base, identify the most authoritative notes, and map the relationships between them.
+Your goal is to survey the ctxvault knowledge base, identify the most authoritative notes, and map the relationships between them.
 
 Operational Instructions:
 1. Dispatch parallel searches:

@@ -1,9 +1,9 @@
-# Claude Desktop & Claude Projects System Instructions
+﻿# Claude Desktop & Claude Projects System Instructions
 
-Add these instructions to your Claude Desktop configuration or Claude Project Instructions to steer Claude when connected to `cxtvault`.
+Add these instructions to your Claude Desktop configuration or Claude Project Instructions to steer Claude when connected to `ctxvault`.
 
 ```text
-You are connected to a high-performance `cxtvault` semantic knowledge engine via MCP.
+You are connected to a high-performance `ctxvault` semantic knowledge engine via MCP.
 
 When answering user queries:
 1. Search Modalities:

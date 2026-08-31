@@ -1,4 +1,4 @@
-# cxtvault (`cxtvault` / `cxtv`)
+﻿# ctxvault (`ctxvault` / `ctxv`)
 
 **Enterprise Semantic Model Context Protocol (MCP) Server** for markdown knowledge bases and polyglot codebases. Features pure Rust hybrid BM25 + ONNX vector + Petgraph typed graph retrieval with 3-Way Reciprocal Rank Fusion (RRF), formal schema validation, and Principle 3 knowledge crystallization.
 
@@ -6,13 +6,13 @@ Written in 100% pure Rust (`unsafe = forbid`) for maximum performance, safety, z
 
 ---
 
-## The `cxtvault` Ethos
+## The `ctxvault` Ethos
 
-`cxtvault` is built around five foundational principles designed for the next generation of AI development and multi-agent orchestration:
+`ctxvault` is built around five foundational principles designed for the next generation of AI development and multi-agent orchestration:
 
 1. **Markdown is the Authoritative Ground Truth**: Files on disk are king. Indices (BM25, HNSW vectors, SQLite relation caches) are derived, disposable, and 100% rebuildable. Your knowledge remains human-readable, git-trackable, and portable forever.
 2. **Explicit Graph Topology over Flaky Extraction**: Knowledge structure arises deterministically from typed frontmatter fields, `#tags`, and `[[wikilinks]]` — eliminating expensive, non-deterministic LLM entity-extraction pipelines.
-3. **Continuous Knowledge Crystallization**: AI agent interactions produce valuable conversational exhaust (debugging traces, design consensus, bug resolutions). `cxtvault` provides first-class primitives (`promote_concept`, `traverse_lineage`) to distill ephemeral traces into permanent, schema-validated semantic knowledge assets with full provenance.
+3. **Continuous Knowledge Crystallization**: AI agent interactions produce valuable conversational exhaust (debugging traces, design consensus, bug resolutions). `ctxvault` provides first-class primitives (`promote_concept`, `traverse_lineage`) to distill ephemeral traces into permanent, schema-validated semantic knowledge assets with full provenance.
 4. **Pure Rust Sub-Millisecond Speed**: With p50 retrieval latencies under 2.2ms, AI agents can execute multi-hop graph traversals and hybrid ranking in real-time without introducing perceptible reasoning lag.
 5. **Multi-Agent Memory Substrate**: Designed to act as a shared in-memory and on-disk semantic plane for swarms of specialized agents (Scouts, Readers, Writers, Crystallizers).
 
@@ -24,8 +24,8 @@ We provide ready-to-use steering prompts, editor rules, workflow skills, multi-a
 
 | Category | Resources | Description |
 |---|---|---|
-| **AI Steering & Rules** | [`examples/steering/`](examples/steering/) | Drop-in rules for [Cursor (`.cursorrules`)](examples/steering/cursorrules.md), [Antigravity / Gemini](examples/steering/cxtvault-rules.md), [Claude Desktop](examples/steering/claude-system-prompt.md), and [Windsurf](examples/steering/windsurf-rules.md). |
-| **Workflow Skills** | [`examples/skills/`](examples/skills/) | Production `SKILL.md` runbooks: [`search`](examples/skills/cxtvault-search/SKILL.md), [`curate`](examples/skills/cxtvault-curate/SKILL.md), [`crystallize`](examples/skills/cxtvault-crystallize/SKILL.md), and [`ops`](examples/skills/cxtvault-ops/SKILL.md). |
+| **AI Steering & Rules** | [`examples/steering/`](examples/steering/) | Drop-in rules for [Cursor (`.cursorrules`)](examples/steering/cursorrules.md), [Antigravity / Gemini](examples/steering/ctxvault-rules.md), [Claude Desktop](examples/steering/claude-system-prompt.md), and [Windsurf](examples/steering/windsurf-rules.md). |
+| **Workflow Skills** | [`examples/skills/`](examples/skills/) | Production `SKILL.md` runbooks: [`search`](examples/skills/ctxvault-search/SKILL.md), [`curate`](examples/skills/ctxvault-curate/SKILL.md), [`crystallize`](examples/skills/ctxvault-crystallize/SKILL.md), and [`ops`](examples/skills/ctxvault-ops/SKILL.md). |
 | **Multi-Agent Swarms** | [`examples/agents/`](examples/agents/) | Role definitions for [Scout](examples/agents/scout_agent.md), [Reader](examples/agents/reader_agent.md), [Writer](examples/agents/writer_agent.md), and [Crystallizer](examples/agents/crystallizer_agent.md), plus [Swarm Orchestration Blueprints](examples/agents/swarm_orchestration.md). |
 | **Starter Knowledge Vault** | [`examples/starter-vault/`](examples/starter-vault/) | Turnkey demo vault with [`corpus.toml`](examples/starter-vault/corpus.toml), 4 formal schema templates, and sample interlinked notes. |
 
@@ -47,7 +47,7 @@ irm https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.ps1 | iex
 
 ### From Source (via Cargo)
 ```bash
-cargo install --locked --path crates/cxtvault-cli
+cargo install --locked --path crates/ctxvault-cli
 ```
 
 ---
@@ -58,8 +58,8 @@ cargo install --locked --path crates/cxtvault-cli
 ```json
 {
   "mcpServers": {
-    "cxtvault": {
-      "command": "cxtvault",
+    "ctxvault": {
+      "command": "ctxvault",
       "args": [
         "--corpus", "/path/to/your/markdown/vault",
         "--sync"
@@ -73,8 +73,8 @@ cargo install --locked --path crates/cxtvault-cli
 ```json
 {
   "mcpServers": {
-    "cxtvault": {
-      "command": "cxtvault",
+    "ctxvault": {
+      "command": "ctxvault",
       "args": [
         "--corpus", "${workspaceFolder}",
         "--sync"
@@ -85,14 +85,14 @@ cargo install --locked --path crates/cxtvault-cli
 ```
 
 ### Shared Multi-Agent HTTP Server Mode
-You can also run `cxtvault` as a shared local daemon so multiple IDEs/agents share a single in-memory index:
+You can also run `ctxvault` as a shared local daemon so multiple IDEs/agents share a single in-memory index:
 ```bash
-cxtvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
+ctxvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
 ```
 ```json
 {
   "mcpServers": {
-    "cxtvault": {
+    "ctxvault": {
       "url": "http://127.0.0.1:9090/sse"
     }
   }
@@ -123,7 +123,7 @@ cxtvault --mode server --bind 127.0.0.1:9090 --corpus /path/to/vault
 cargo check                     # Fast type-checking
 cargo test                      # Run all 156+ unit, integration & e2e tests
 cargo clippy --all-targets -- -D warnings
-cargo build --release           # Build release binary (target/release/cxtvault)
+cargo build --release           # Build release binary (target/release/ctxvault)
 ```
 
 ---
@@ -132,10 +132,10 @@ cargo build --release           # Build release binary (target/release/cxtvault)
 
 | Crate | Role |
 |---|---|
-| [`cxtvault-common`](crates/cxtvault-common) | Shared domain types, TOML configurations, error definitions |
-| [`cxtvault-core`](crates/cxtvault-core) | Retrieval engine: Tantivy, FastEmbed, Petgraph, SQLite, chunking, file watcher |
-| [`cxtvault-mcp`](crates/cxtvault-mcp) | Model Context Protocol JSON-RPC transport and 31+ MCP tools |
-| [`cxtvault-cli`](crates/cxtvault-cli) | Native CLI binary: argument parsing, mode selection, orchestration |
+| [`ctxvault-common`](crates/ctxvault-common) | Shared domain types, TOML configurations, error definitions |
+| [`ctxvault-core`](crates/ctxvault-core) | Retrieval engine: Tantivy, FastEmbed, Petgraph, SQLite, chunking, file watcher |
+| [`ctxvault-mcp`](crates/ctxvault-mcp) | Model Context Protocol JSON-RPC transport and 31+ MCP tools |
+| [`ctxvault-cli`](crates/ctxvault-cli) | Native CLI binary: argument parsing, mode selection, orchestration |
 | [`examples`](examples) | Steering snippets, workflow skills, multi-agent swarms, and starter vault |
 
 ---
