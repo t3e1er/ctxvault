@@ -1,4 +1,4 @@
-﻿//! MCP tool definitions: maps tool names → core engine calls.
+//! MCP tool definitions: maps tool names → core engine calls.
 //!
 //! Each tool is a named handler function that takes `(&mut Engine, Value)` and returns
 //! `Result<Value>`. The [`ToolRegistry`] manages registration and dispatch.
@@ -533,6 +533,30 @@ impl ToolRegistry {
             }),
             handler: handle_reindex_corpus,
         });
+
+        self.register(ToolInfo {
+            name: "get_status".to_string(),
+            description:
+                "Get corpus statistics, indexing status, document counts, and configuration."
+                    .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            handler: handle_get_status_single,
+        });
+
+        self.register(ToolInfo {
+            name: "get_corpus_stats".to_string(),
+            description: "Get corpus statistics, indexing status, document counts, and configuration (alias for get_status).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            handler: handle_get_status_single,
+        });
     }
 
     /// Register a single tool.
@@ -589,19 +613,6 @@ impl MultiCorpusToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        // Register the get_status tool (only available in multi-corpus mode).
-        registry.register(ToolInfo {
-            name: "get_status".to_string(),
-            description: "Get overall system status: corpora, index states, watcher status, embedding model info.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            // Placeholder handler — actual logic is in execute_multi.
-            handler: handle_get_status_placeholder,
-        });
-
         Self { registry }
     }
 
@@ -615,8 +626,8 @@ impl MultiCorpusToolRegistry {
     /// Extracts the optional `corpus` field from arguments, resolves the engine
     /// from the CorpusManager, and dispatches to the tool handler.
     pub fn execute(&self, name: &str, manager: &mut CorpusManager, args: Value) -> Result<Value> {
-        // Special handling for get_status — needs the whole CorpusManager.
-        if name == "get_status" {
+        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
+        if name == "get_status" || name == "get_corpus_stats" {
             return handle_get_status(manager);
         }
 
@@ -652,13 +663,6 @@ fn extract_corpus_param(args: Value) -> (Option<String>, Value) {
         }
         other => (None, other),
     }
-}
-
-/// Placeholder handler for get_status (not actually called via this path).
-fn handle_get_status_placeholder(_engine: &mut Engine, _args: Value) -> Result<Value> {
-    Ok(serde_json::json!({
-        "error": "get_status must be called via MultiCorpusToolRegistry"
-    }))
 }
 
 /// Get overall system status from the CorpusManager.
@@ -1297,6 +1301,22 @@ fn handle_reindex_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
     Ok(serde_json::json!({
         "status": "complete",
         "files_indexed": count,
+    }))
+}
+
+/// Single-corpus status handler.
+fn handle_get_status_single(engine: &mut Engine, _args: Value) -> Result<Value> {
+    let files = engine.store().list_files()?;
+    let is_indexed = engine.is_indexed();
+    Ok(serde_json::json!({
+        "status": "healthy",
+        "corpus_name": engine.config().name,
+        "corpus_path": engine.config().path,
+        "document_count": files.len(),
+        "indexed": is_indexed,
+        "mode": format!("{:?}", engine.config().mode),
+        "chunking": format!("{:?}", engine.config().chunking.strategy),
+        "embedding_model": engine.config().embedding.model,
     }))
 }
 
@@ -2115,7 +2135,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 34, "Expected 34 tools registered");
+        assert_eq!(tools.len(), 36, "Expected 36 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -2153,6 +2173,8 @@ mod tests {
             "reembed_corpus",
             "sync_corpus",
             "reindex_corpus",
+            "get_status",
+            "get_corpus_stats",
         ];
 
         for name in expected {
@@ -2506,9 +2528,13 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 35 tools (34 base + get_status).
-        assert_eq!(tools.len(), 35, "Expected 35 tools in multi-corpus registry");
+        // Should have 36 tools.
+        assert_eq!(tools.len(), 36, "Expected 36 tools in multi-corpus registry");
         assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
+        assert!(
+            registry.registry().get("get_corpus_stats").is_some(),
+            "get_corpus_stats should be registered"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-﻿//! MCP JSON-RPC 2.0 protocol dispatch and message handling.
+//! MCP JSON-RPC 2.0 protocol dispatch and message handling.
 //!
 //! Provides the core request parsing, routing, and response construction
 //! shared across stdio, HTTP, and SSE server transports.
@@ -81,7 +81,7 @@ pub fn dispatch(
 ) -> Result<Value> {
     debug!(method = %request.method, "dispatching MCP request");
     match request.method.as_str() {
-        "initialize" => handle_initialize(),
+        "initialize" | "server/discover" => handle_initialize(),
         "notifications/initialized" => Ok(Value::Null),
         "tools/list" => handle_tools_list(registry),
         "tools/call" => handle_tools_call(request, engine, registry),
@@ -101,7 +101,7 @@ pub fn dispatch_multi(
 ) -> Result<Value> {
     debug!(method = %request.method, "dispatching MCP request (multi-corpus)");
     match request.method.as_str() {
-        "initialize" => handle_initialize(),
+        "initialize" | "server/discover" => handle_initialize(),
         "notifications/initialized" => Ok(Value::Null),
         "tools/list" => handle_tools_list_multi(registry),
         "tools/call" => handle_tools_call_multi(request, manager, registry),

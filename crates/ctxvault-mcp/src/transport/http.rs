@@ -388,10 +388,11 @@ async fn handle_jsonrpc_multi(
 
 /// Server-Sent Events stream for MCP session handshake.
 pub async fn handle_sse() -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    use futures_util::StreamExt;
     info!("[SSE] --> Client opened SSE event stream handshake");
     let session_event = Event::default().event("endpoint").data("/mcp");
 
-    let stream = stream::iter(vec![Ok(session_event)]);
+    let stream = stream::once(async move { Ok(session_event) }).chain(stream::pending());
 
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
 }
