@@ -1,4 +1,4 @@
-﻿//! Quick test binary for search_multihop crash debugging.
+//! Quick test binary for search_multihop crash debugging.
 //! Run with: cargo run --release -p ctxvault-core --bin test_decompose
 
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ fn main() {
 
     let index_dir = corpus_path.join(".index");
     eprintln!("Opening engine at {:?}", index_dir);
-    let mut engine = Engine::open(config, &index_dir).expect("open engine");
+    let engine = Engine::open(config, &index_dir).expect("open engine");
 
     // Ensure embedder is ready.
     eprintln!("Ensuring embedder...");
@@ -53,7 +53,7 @@ fn main() {
         engine.bm25(),
         engine.vector_index(),
         engine.graph(),
-        engine.embedder_ref(),
+        engine.embedder_ref().as_deref(),
         query,
         query_embedding.as_deref(),
         10,

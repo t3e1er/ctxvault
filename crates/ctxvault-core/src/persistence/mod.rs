@@ -1,4 +1,4 @@
-﻿//! Persistence layer: SQLite metadata, file tracking, incremental state.
+//! Persistence layer: SQLite metadata, file tracking, incremental state.
 //!
 //! Provides a [`Store`] backed by SQLite for managing file records, chunks,
 //! edge types, templates, and validation issues. Uses WAL mode for concurrency
@@ -8,12 +8,77 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use ctxvault_common::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Record types
 // ---------------------------------------------------------------------------
+
+/// Status of an indexing operation for a corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexingStatus {
+    /// No indexing job in progress.
+    Idle,
+    /// Actively indexing files in batches.
+    Indexing,
+    /// Indexing is paused.
+    Paused,
+    /// Indexing encountered an error.
+    Error,
+    /// All discovered files successfully indexed.
+    Completed,
+}
+
+impl std::fmt::Display for IndexingStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Indexing => write!(f, "indexing"),
+            Self::Paused => write!(f, "paused"),
+            Self::Error => write!(f, "error"),
+            Self::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl std::str::FromStr for IndexingStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "idle" => Ok(Self::Idle),
+            "indexing" => Ok(Self::Indexing),
+            "paused" => Ok(Self::Paused),
+            "error" => Ok(Self::Error),
+            "completed" => Ok(Self::Completed),
+            _ => Ok(Self::Idle),
+        }
+    }
+}
+
+/// State tracking record for resumable paginated indexing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexingState {
+    /// Corpus identifier/name.
+    pub corpus_id: String,
+    /// Current indexing status.
+    pub status: IndexingStatus,
+    /// Total markdown files discovered in corpus.
+    pub total_files: usize,
+    /// Count of markdown files successfully committed.
+    pub indexed_files: usize,
+    /// Relative path of the last committed file.
+    pub last_processed_path: Option<String>,
+    /// When indexing started (Unix timestamp seconds).
+    pub started_at: i64,
+    /// When state was last updated (Unix timestamp seconds).
+    pub updated_at: i64,
+    /// Error message if status is Error.
+    pub error_message: Option<String>,
+}
 
 /// A tracked file in the index.
 #[derive(Debug, Clone)]
@@ -113,6 +178,17 @@ CREATE TABLE IF NOT EXISTS corpus_config (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS indexing_state (
+    corpus_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    total_files INTEGER NOT NULL DEFAULT 0,
+    indexed_files INTEGER NOT NULL DEFAULT 0,
+    last_processed_path TEXT,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -121,10 +197,14 @@ CREATE TABLE IF NOT EXISTS corpus_config (
 
 /// SQLite-backed persistence store for the ctxvault engine.
 pub struct Store {
-    conn: Connection,
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl Store {
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().expect("store connection mutex poisoned")
+    }
+
     /// Open (or create) a SQLite database at the given path and run migrations.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).map_err(|e| Error::Database(e.to_string()))?;
@@ -143,8 +223,10 @@ impl Store {
             .map_err(|e| Error::Database(e.to_string()))?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| Error::Database(e.to_string()))?;
+        conn.execute_batch("PRAGMA busy_timeout = 5000;")
+            .map_err(|e| Error::Database(e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL).map_err(|e| Error::Database(e.to_string()))?;
-        Ok(Self { conn })
+        Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
 
     // ------------------------------------------------------------------
@@ -162,7 +244,7 @@ impl Store {
     ) -> Result<()> {
         let indexed_at = now_unix();
         let _ = self
-            .conn
+            .conn()
             .execute(
                 "INSERT OR REPLACE INTO files (path, content_hash, modified_at, template, title, indexed_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -174,8 +256,8 @@ impl Store {
 
     /// Retrieve a single file record by path.
     pub fn get_file(&self, path: &str) -> Result<Option<FileRecord>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT path, content_hash, modified_at, template, title, indexed_at
                  FROM files WHERE path = ?1",
@@ -205,7 +287,7 @@ impl Store {
     /// Delete a file record and its associated chunks/validation issues (via CASCADE).
     pub fn delete_file(&self, path: &str) -> Result<()> {
         let _ = self
-            .conn
+            .conn()
             .execute("DELETE FROM files WHERE path = ?1", params![path])
             .map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
@@ -213,8 +295,8 @@ impl Store {
 
     /// List all tracked files.
     pub fn list_files(&self) -> Result<Vec<FileRecord>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT path, content_hash, modified_at, template, title, indexed_at FROM files ORDER BY path",
             )
@@ -242,7 +324,8 @@ impl Store {
 
     /// Insert chunks for a file within a transaction.
     pub fn insert_chunks(&self, file_path: &str, chunks: &[ChunkRecord]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
 
         {
             let mut stmt = tx
@@ -271,8 +354,8 @@ impl Store {
 
     /// Retrieve all chunks for a given file, ordered by chunk_index.
     pub fn get_chunks_for_file(&self, file_path: &str) -> Result<Vec<ChunkRecord>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT chunk_index, start_byte, end_byte, text
                  FROM chunks WHERE file_path = ?1 ORDER BY chunk_index",
@@ -296,7 +379,7 @@ impl Store {
     /// Delete all chunks for a given file.
     pub fn delete_chunks_for_file(&self, file_path: &str) -> Result<()> {
         let _ = self
-            .conn
+            .conn()
             .execute("DELETE FROM chunks WHERE file_path = ?1", params![file_path])
             .map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
@@ -308,7 +391,8 @@ impl Store {
 
     /// Insert or replace edge type records within a transaction.
     pub fn insert_edge_types(&self, edge_types: &[EdgeTypeRecord]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
 
         {
             let mut stmt = tx
@@ -338,8 +422,8 @@ impl Store {
 
     /// List all registered edge types.
     pub fn list_edge_types(&self) -> Result<Vec<EdgeTypeRecord>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare("SELECT name, source, weight, bidirectional, field, config FROM edge_types ORDER BY name")
             .map_err(|e| Error::Database(e.to_string()))?;
 
@@ -367,7 +451,7 @@ impl Store {
     pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
         let updated_at = now_unix();
         let _ = self
-            .conn
+            .conn()
             .execute(
                 "INSERT OR REPLACE INTO corpus_config (key, value, updated_at)
                  VALUES (?1, ?2, ?3)",
@@ -379,8 +463,8 @@ impl Store {
 
     /// Get a configuration value.
     pub fn get_config(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare("SELECT value FROM corpus_config WHERE key = ?1")
             .map_err(|e| Error::Database(e.to_string()))?;
 
@@ -393,6 +477,76 @@ impl Store {
             Some(Err(e)) => Err(Error::Database(e.to_string())),
             None => Ok(None),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Indexing State Tracking (Resumable Paginated Indexing)
+    // ------------------------------------------------------------------
+
+    /// Retrieve the current indexing state for a corpus.
+    pub fn get_indexing_state(&self, corpus_id: &str) -> Result<Option<IndexingState>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT corpus_id, status, total_files, indexed_files, last_processed_path, started_at, updated_at, error_message
+                 FROM indexing_state WHERE corpus_id = ?1",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut rows = stmt
+            .query_map(params![corpus_id], |row| {
+                let status_str: String = row.get(1)?;
+                let status = status_str.parse::<IndexingStatus>().unwrap_or(IndexingStatus::Idle);
+                Ok(IndexingState {
+                    corpus_id: row.get(0)?,
+                    status,
+                    total_files: row.get::<_, i64>(2)? as usize,
+                    indexed_files: row.get::<_, i64>(3)? as usize,
+                    last_processed_path: row.get(4)?,
+                    started_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    error_message: row.get(7)?,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        match rows.next() {
+            Some(Ok(state)) => Ok(Some(state)),
+            Some(Err(e)) => Err(Error::Database(e.to_string())),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or update the indexing state for a corpus.
+    pub fn update_indexing_state(&self, state: &IndexingState) -> Result<()> {
+        let status_str = state.status.to_string();
+        let _ = self
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO indexing_state (corpus_id, status, total_files, indexed_files, last_processed_path, started_at, updated_at, error_message)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    state.corpus_id,
+                    status_str,
+                    state.total_files as i64,
+                    state.indexed_files as i64,
+                    state.last_processed_path,
+                    state.started_at,
+                    state.updated_at,
+                    state.error_message,
+                ],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Reset or delete the indexing state for a corpus.
+    pub fn reset_indexing_state(&self, corpus_id: &str) -> Result<()> {
+        let _ = self
+            .conn()
+            .execute("DELETE FROM indexing_state WHERE corpus_id = ?1", params![corpus_id])
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -419,8 +573,8 @@ mod tests {
 
         // Verify that all expected tables exist by querying sqlite_master.
         let tables: Vec<String> = {
-            let mut stmt = store
-                .conn
+            let conn = store.conn();
+            let mut stmt = conn
                 .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
                 .unwrap();
             stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect()
@@ -593,5 +747,51 @@ mod tests {
 
         // Should still be only one row.
         assert_eq!(store.list_files().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_indexing_state_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+
+        // Initially None
+        assert!(store.get_indexing_state("corpus_a").unwrap().is_none());
+
+        let state = IndexingState {
+            corpus_id: "corpus_a".to_string(),
+            status: IndexingStatus::Indexing,
+            total_files: 100,
+            indexed_files: 45,
+            last_processed_path: Some("docs/intro.md".to_string()),
+            started_at: 1700000000,
+            updated_at: 1700000050,
+            error_message: None,
+        };
+
+        store.update_indexing_state(&state).unwrap();
+
+        let retrieved = store.get_indexing_state("corpus_a").unwrap().expect("should find state");
+        assert_eq!(retrieved.corpus_id, "corpus_a");
+        assert_eq!(retrieved.status, IndexingStatus::Indexing);
+        assert_eq!(retrieved.total_files, 100);
+        assert_eq!(retrieved.indexed_files, 45);
+        assert_eq!(retrieved.last_processed_path.as_deref(), Some("docs/intro.md"));
+        assert_eq!(retrieved.started_at, 1700000000);
+        assert_eq!(retrieved.updated_at, 1700000050);
+        assert!(retrieved.error_message.is_none());
+
+        // Update to Completed
+        let mut completed = state.clone();
+        completed.status = IndexingStatus::Completed;
+        completed.indexed_files = 100;
+        completed.updated_at = 1700000100;
+        store.update_indexing_state(&completed).unwrap();
+
+        let updated = store.get_indexing_state("corpus_a").unwrap().unwrap();
+        assert_eq!(updated.status, IndexingStatus::Completed);
+        assert_eq!(updated.indexed_files, 100);
+
+        // Reset
+        store.reset_indexing_state("corpus_a").unwrap();
+        assert!(store.get_indexing_state("corpus_a").unwrap().is_none());
     }
 }

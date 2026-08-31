@@ -21,8 +21,14 @@ use ctxvault_core::template::Template;
 // Registry types
 // ---------------------------------------------------------------------------
 
-/// MCP tool handler function signature.
-pub type ToolHandler = fn(&mut Engine, Value) -> Result<Value>;
+/// MCP tool handler function signature for read-only vs mutating tools.
+#[derive(Clone)]
+pub enum ToolHandler {
+    /// Read-only handler (can execute concurrently under reader lock).
+    ReadOnly(fn(&Engine, Value) -> Result<Value>),
+    /// Mutating handler (requires exclusive writer lock).
+    ReadWrite(fn(&mut Engine, Value) -> Result<Value>),
+}
 
 /// Metadata and handler for a single MCP tool.
 #[derive(Clone)]
@@ -37,6 +43,13 @@ pub struct ToolInfo {
     pub handler: ToolHandler,
 }
 
+impl ToolInfo {
+    /// Check whether the tool is read-only.
+    pub fn is_read_only(&self) -> bool {
+        matches!(self.handler, ToolHandler::ReadOnly(_))
+    }
+}
+
 /// Registry of all available MCP tools.
 pub struct ToolRegistry {
     tools: HashMap<String, ToolInfo>,
@@ -48,26 +61,63 @@ impl ToolRegistry {
         Self { tools: HashMap::new() }
     }
 
+    /// Register a single tool.
+    pub fn register(&mut self, info: ToolInfo) {
+        let _ = self.tools.insert(info.name.clone(), info);
+    }
+
+    /// Register a read-only tool handler.
+    pub fn register_read(
+        &mut self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        handler: fn(&Engine, Value) -> Result<Value>,
+    ) {
+        self.register(ToolInfo {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema,
+            handler: ToolHandler::ReadOnly(handler),
+        });
+    }
+
+    /// Register a mutating tool handler.
+    pub fn register_write(
+        &mut self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        handler: fn(&mut Engine, Value) -> Result<Value>,
+    ) {
+        self.register(ToolInfo {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema,
+            handler: ToolHandler::ReadWrite(handler),
+        });
+    }
+
     /// Register all available tools.
     pub fn register_all(&mut self) {
         // Read tools
-        self.register(ToolInfo {
-            name: "read_note".to_string(),
-            description: "Read a note's full content and frontmatter metadata.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "read_note",
+            "Read a note's full content and frontmatter metadata.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path to the note within the corpus" }
                 },
                 "required": ["path"]
             }),
-            handler: handle_read_note,
-        });
+            handle_read_note,
+        );
 
-        self.register(ToolInfo {
-            name: "list_notes".to_string(),
-            description: "List all indexed notes with metadata (path, title, template, content_hash).".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "list_notes",
+            "List all indexed notes with metadata (path, title, template, content_hash).",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "limit": { "type": "number", "description": "Maximum number of notes to return (default 100)" },
@@ -75,27 +125,27 @@ impl ToolRegistry {
                 },
                 "required": []
             }),
-            handler: handle_list_notes,
-        });
+            handle_list_notes,
+        );
 
-        self.register(ToolInfo {
-            name: "get_frontmatter".to_string(),
-            description: "Get the parsed YAML frontmatter of a note as JSON.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "get_frontmatter",
+            "Get the parsed YAML frontmatter of a note as JSON.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path to the note within the corpus" }
                 },
                 "required": ["path"]
             }),
-            handler: handle_get_frontmatter,
-        });
+            handle_get_frontmatter,
+        );
 
         // Search tools
-        self.register(ToolInfo {
-            name: "search_bm25".to_string(),
-            description: "Full-text BM25 keyword search across all indexed notes.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_bm25",
+            "Full-text BM25 keyword search across all indexed notes.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
@@ -103,13 +153,13 @@ impl ToolRegistry {
                 },
                 "required": ["query"]
             }),
-            handler: handle_search_bm25,
-        });
+            handle_search_bm25,
+        );
 
-        self.register(ToolInfo {
-            name: "search_semantic".to_string(),
-            description: "Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_semantic",
+            "Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
@@ -118,13 +168,13 @@ impl ToolRegistry {
                 },
                 "required": ["query"]
             }),
-            handler: handle_search_semantic,
-        });
+            handle_search_semantic,
+        );
 
-        self.register(ToolInfo {
-            name: "search_hybrid".to_string(),
-            description: "BM25 + graph-boosted hybrid search combining keyword relevance with graph proximity.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_hybrid",
+            "BM25 + graph-boosted hybrid search combining keyword relevance with graph proximity.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
@@ -136,13 +186,13 @@ impl ToolRegistry {
                 },
                 "required": ["query"]
             }),
-            handler: handle_search_hybrid,
-        });
+            handle_search_hybrid,
+        );
 
-        self.register(ToolInfo {
-            name: "search_graph".to_string(),
-            description: "Typed graph traversal search: finds nodes reachable from query matches via graph edges.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_graph",
+            "Typed graph traversal search: finds nodes reachable from query matches via graph edges.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query to find seed nodes" },
@@ -153,13 +203,13 @@ impl ToolRegistry {
                 },
                 "required": ["query"]
             }),
-            handler: handle_search_graph,
-        });
+            handle_search_graph,
+        );
 
-        self.register(ToolInfo {
-            name: "search_related".to_string(),
-            description: "Find related documents via graph-based Personalized PageRank approximation.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_related",
+            "Find related documents via graph-based Personalized PageRank approximation.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "seeds": { "type": "array", "items": { "type": "string" }, "description": "Seed document paths to find related notes for" },
@@ -167,13 +217,13 @@ impl ToolRegistry {
                 },
                 "required": ["seeds"]
             }),
-            handler: handle_search_related,
-        });
+            handle_search_related,
+        );
 
-        self.register(ToolInfo {
-            name: "search_explain".to_string(),
-            description: "Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "search_explain",
+            "Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
@@ -184,14 +234,14 @@ impl ToolRegistry {
                 },
                 "required": ["query"]
             }),
-            handler: handle_search_explain,
-        });
+            handle_search_explain,
+        );
 
         // Graph tools
-        self.register(ToolInfo {
-            name: "backlinks".to_string(),
-            description: "Get all notes that link TO a given note, grouped by edge type.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "backlinks",
+            "Get all notes that link TO a given note, grouped by edge type.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Path of the target note" },
@@ -199,13 +249,13 @@ impl ToolRegistry {
                 },
                 "required": ["path"]
             }),
-            handler: handle_backlinks,
-        });
+            handle_backlinks,
+        );
 
-        self.register(ToolInfo {
-            name: "forwardlinks".to_string(),
-            description: "Get all notes that a given note links TO, grouped by edge type.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "forwardlinks",
+            "Get all notes that a given note links TO, grouped by edge type.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Path of the source note" },
@@ -213,13 +263,13 @@ impl ToolRegistry {
                 },
                 "required": ["path"]
             }),
-            handler: handle_forwardlinks,
-        });
+            handle_forwardlinks,
+        );
 
-        self.register(ToolInfo {
-            name: "graph_path".to_string(),
-            description: "Find the shortest path between two notes in the knowledge graph.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "graph_path",
+            "Find the shortest path between two notes in the knowledge graph.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "from": { "type": "string", "description": "Source note path" },
@@ -229,24 +279,24 @@ impl ToolRegistry {
                 },
                 "required": ["from", "to"]
             }),
-            handler: handle_graph_path,
-        });
+            handle_graph_path,
+        );
 
-        self.register(ToolInfo {
-            name: "graph_stats".to_string(),
-            description: "Get graph statistics: node count, edge count, orphans, most connected nodes, edge type distribution.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "graph_stats",
+            "Get graph statistics: node count, edge count, orphans, most connected nodes, edge type distribution.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_graph_stats,
-        });
+            handle_graph_stats,
+        );
 
-        self.register(ToolInfo {
-            name: "graph_subgraph".to_string(),
-            description: "Get the N-hop neighborhood (subgraph) around a node via BFS traversal.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "graph_subgraph",
+            "Get the N-hop neighborhood (subgraph) around a node via BFS traversal.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Starting node path" },
@@ -256,39 +306,39 @@ impl ToolRegistry {
                 },
                 "required": ["path"]
             }),
-            handler: handle_graph_subgraph,
-        });
+            handle_graph_subgraph,
+        );
 
-        self.register(ToolInfo {
-            name: "graph_communities".to_string(),
-            description: "Detect communities in the knowledge graph using the Louvain modularity algorithm. Returns community assignments with modularity scores.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "graph_communities",
+            "Detect communities in the knowledge graph using the Louvain modularity algorithm. Returns community assignments with modularity scores.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
                 },
                 "required": []
             }),
-            handler: handle_graph_communities,
-        });
+            handle_graph_communities,
+        );
 
-        self.register(ToolInfo {
-            name: "list_edge_types".to_string(),
-            description: "List all configured edge types in the taxonomy with their classes, sources, descriptions, template constraints, and live edge counts.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "list_edge_types",
+            "List all configured edge types in the taxonomy with their classes, sources, descriptions, template constraints, and live edge counts.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "edge_class": { "type": "string", "enum": ["structural", "semantic", "all", "hybrid"], "description": "Filter by edge class (default: all)" }
                 },
                 "required": []
             }),
-            handler: handle_list_edge_types,
-        });
+            handle_list_edge_types,
+        );
 
-        self.register(ToolInfo {
-            name: "traverse_lineage".to_string(),
-            description: "Deterministically traverse the knowledge graph along a structural edge type (e.g. supersedes, implements, depends_on) in outgoing, incoming, or both directions.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "traverse_lineage",
+            "Deterministically traverse the knowledge graph along a structural edge type (e.g. supersedes, implements, depends_on) in outgoing, incoming, or both directions.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "start_path": { "type": "string", "description": "Starting document path" },
@@ -298,14 +348,14 @@ impl ToolRegistry {
                 },
                 "required": ["start_path", "edge_type"]
             }),
-            handler: handle_traverse_lineage,
-        });
+            handle_traverse_lineage,
+        );
 
         // Write tools
-        self.register(ToolInfo {
-            name: "create_note".to_string(),
-            description: "Create a new note with optional frontmatter and content.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "create_note",
+            "Create a new note with optional frontmatter and content.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path for the new note (e.g. 'projects/my-note.md')" },
@@ -315,13 +365,13 @@ impl ToolRegistry {
                 },
                 "required": ["path"]
             }),
-            handler: handle_create_note,
-        });
+            handle_create_note,
+        );
 
-        self.register(ToolInfo {
-            name: "update_note".to_string(),
-            description: "Update an existing note's content (overwrite, append, or prepend).".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "update_note",
+            "Update an existing note's content (overwrite, append, or prepend).",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path to the note to update" },
@@ -330,26 +380,26 @@ impl ToolRegistry {
                 },
                 "required": ["path", "content"]
             }),
-            handler: handle_update_note,
-        });
+            handle_update_note,
+        );
 
-        self.register(ToolInfo {
-            name: "delete_note".to_string(),
-            description: "Delete a note from disk and remove it from all indices.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "delete_note",
+            "Delete a note from disk and remove it from all indices.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path to the note to delete" }
                 },
                 "required": ["path"]
             }),
-            handler: handle_delete_note,
-        });
+            handle_delete_note,
+        );
 
-        self.register(ToolInfo {
-            name: "move_note".to_string(),
-            description: "Move/rename a note, updating wikilinks in other notes that reference it.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "move_note",
+            "Move/rename a note, updating wikilinks in other notes that reference it.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "from": { "type": "string", "description": "Current relative path of the note" },
@@ -357,13 +407,13 @@ impl ToolRegistry {
                 },
                 "required": ["from", "to"]
             }),
-            handler: handle_move_note,
-        });
+            handle_move_note,
+        );
 
-        self.register(ToolInfo {
-            name: "promote_concept".to_string(),
-            description: "Crystallize fluid memory notes into a consolidated, templated concept note. Validates schema before writing and indexing, with atomic rollback on validation failure.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "promote_concept",
+            "Crystallize fluid memory notes into a consolidated, templated concept note. Validates schema before writing and indexing, with atomic rollback on validation failure.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "source_notes": { "type": "array", "items": { "type": "string" }, "description": "Source note paths being consolidated" },
@@ -375,52 +425,51 @@ impl ToolRegistry {
                 },
                 "required": ["source_notes", "target_path", "content"]
             }),
-            handler: handle_promote_concept,
-        });
+            handle_promote_concept,
+        );
 
         // Validation tools
-        self.register(ToolInfo {
-            name: "validate_note".to_string(),
-            description: "Validate a note against its declared template (checks required fields, types, sections).".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "validate_note",
+            "Validate a note against its declared template (checks required fields, types, sections).",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path to the note within the corpus" }
                 },
                 "required": ["path"]
             }),
-            handler: handle_validate_note,
-        });
+            handle_validate_note,
+        );
 
-        self.register(ToolInfo {
-            name: "validate_corpus".to_string(),
-            description: "Validate all templated notes in the corpus, returning only those with issues.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "validate_corpus",
+            "Validate all templated notes in the corpus, returning only those with issues.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "limit": { "type": "number", "description": "Maximum number of results to return (default: all)" }
                 },
                 "required": []
             }),
-            handler: handle_validate_corpus,
-        });
+            handle_validate_corpus,
+        );
 
-        self.register(ToolInfo {
-            name: "list_templates".to_string(),
-            description: "List all available templates with their field schemas and content rules."
-                .to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "list_templates",
+            "List all available templates with their field schemas and content rules.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_list_templates,
-        });
+            handle_list_templates,
+        );
 
-        self.register(ToolInfo {
-            name: "validate_taxonomy".to_string(),
-            description: "Ontology & structural graph integrity linter: checks for broken wikilinks, circular dependencies in DAG relations (supersedes, depends_on), orphan ADRs, and template constraints.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "validate_taxonomy",
+            "Ontology & structural graph integrity linter: checks for broken wikilinks, circular dependencies in DAG relations (supersedes, depends_on), orphan ADRs, and template constraints.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "check_broken": { "type": "boolean", "description": "Check for broken links (default true)" },
@@ -429,27 +478,27 @@ impl ToolRegistry {
                 },
                 "required": []
             }),
-            handler: handle_validate_taxonomy,
-        });
+            handle_validate_taxonomy,
+        );
 
         // Analytics tools
-        self.register(ToolInfo {
-            name: "analyze_density".to_string(),
-            description: "Analyze graph density: orphans, hubs, edge distribution, overall connectivity.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "analyze_density",
+            "Analyze graph density: orphans, hubs, edge distribution, overall connectivity.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "top_hubs": { "type": "number", "description": "Number of top hub nodes to return (default 10)" }
                 },
                 "required": []
             }),
-            handler: handle_analyze_density,
-        });
+            handle_analyze_density,
+        );
 
-        self.register(ToolInfo {
-            name: "find_semantic_gaps".to_string(),
-            description: "Find queries where BM25 and vector search disagree — potential embedding blind spots.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "find_semantic_gaps",
+            "Find queries where BM25 and vector search disagree — potential embedding blind spots.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "queries": { "type": "array", "items": { "type": "string" }, "description": "Test queries to evaluate" },
@@ -457,26 +506,26 @@ impl ToolRegistry {
                 },
                 "required": ["queries"]
             }),
-            handler: handle_find_semantic_gaps,
-        });
+            handle_find_semantic_gaps,
+        );
 
-        self.register(ToolInfo {
-            name: "suggest_splits".to_string(),
-            description: "Identify chunks with low coherence that may benefit from splitting.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "suggest_splits",
+            "Identify chunks with low coherence that may benefit from splitting.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "max_chunk_chars": { "type": "number", "description": "Character threshold for 'too long' chunks (default 2000)" }
                 },
                 "required": []
             }),
-            handler: handle_suggest_splits,
-        });
+            handle_suggest_splits,
+        );
 
-        self.register(ToolInfo {
-            name: "coverage_report".to_string(),
-            description: "For a set of test queries, identify which notes are never retrieved (dead zones).".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "coverage_report",
+            "For a set of test queries, identify which notes are never retrieved (dead zones).",
+            serde_json::json!({
                 "type": "object",
                 "properties": {
                     "queries": { "type": "array", "items": { "type": "string" }, "description": "Test queries to evaluate coverage" },
@@ -484,84 +533,96 @@ impl ToolRegistry {
                 },
                 "required": ["queries"]
             }),
-            handler: handle_coverage_report,
-        });
+            handle_coverage_report,
+        );
 
         // System tools
-        self.register(ToolInfo {
-            name: "corpus_list".to_string(),
-            description:
-                "List all configured corpora with their modes, file counts, and index stats."
-                    .to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "corpus_list",
+            "List all configured corpora with their modes, file counts, and index stats.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_corpus_list,
-        });
+            handle_corpus_list,
+        );
 
-        self.register(ToolInfo {
-            name: "reembed_corpus".to_string(),
-            description: "Re-embed all chunks with the current embedding model. Use after changing models to update vectors without losing data.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "reembed_corpus",
+            "Re-embed all chunks with the current embedding model. Use after changing models to update vectors without losing data.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_reembed_corpus,
-        });
+            handle_reembed_corpus,
+        );
 
-        self.register(ToolInfo {
-            name: "sync_corpus".to_string(),
-            description: "Delta sync: compare filesystem against the index, add new files, update modified files, remove deleted files. Lightweight — only processes changes since last sync.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "sync_corpus",
+            "Delta sync: compare filesystem against the index, add new files, update modified files, remove deleted files in configurable batches.",
+            serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" }
+                },
                 "required": []
             }),
-            handler: handle_sync_corpus,
-        });
+            handle_sync_corpus,
+        );
 
-        self.register(ToolInfo {
-            name: "reindex_corpus".to_string(),
-            description: "Full reindex: clear all indices and re-index every file in the corpus from scratch. Use when the index is corrupted or after major changes to chunking/config.".to_string(),
-            input_schema: serde_json::json!({
+        self.register_write(
+            "reindex_corpus",
+            "Full reindex: re-index corpus files in configurable batches with automatic resumption support.",
+            serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "batch_size": { "type": "number", "description": "Batch size for intermediate checkpoints (default 50)" },
+                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" }
+                },
                 "required": []
             }),
-            handler: handle_reindex_corpus,
-        });
+            handle_reindex_corpus,
+        );
 
-        self.register(ToolInfo {
-            name: "get_status".to_string(),
-            description:
-                "Get corpus statistics, indexing status, document counts, and configuration."
-                    .to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "get_status",
+            "Get corpus statistics, indexing status, document counts, and configuration.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_get_status_single,
-        });
+            handle_get_status_single,
+        );
 
-        self.register(ToolInfo {
-            name: "get_corpus_stats".to_string(),
-            description: "Get corpus statistics, indexing status, document counts, and configuration (alias for get_status).".to_string(),
-            input_schema: serde_json::json!({
+        self.register_read(
+            "get_corpus_stats",
+            "Get corpus statistics, indexing status, document counts, and configuration (alias for get_status).",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            handler: handle_get_status_single,
-        });
+            handle_get_status_single,
+        );
+
+        self.register_read(
+            "get_indexing_status",
+            "Get current indexing progress, throughput statistics, and estimated time remaining.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            handle_get_indexing_status,
+        );
     }
 
-    /// Register a single tool.
-    fn register(&mut self, info: ToolInfo) {
-        let _ = self.tools.insert(info.name.clone(), info);
+    /// Check if a tool is read-only.
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.tools.get(name).map(|t| t.is_read_only()).unwrap_or(false)
     }
 
     /// Get a tool by name.
@@ -576,13 +637,35 @@ impl ToolRegistry {
         tools
     }
 
-    /// Execute a tool by name with given arguments.
-    pub fn execute(&self, name: &str, engine: &mut Engine, args: Value) -> Result<Value> {
+    /// Execute a read-only tool with shared immutable access to the Engine.
+    pub fn execute_read(&self, name: &str, engine: &Engine, args: Value) -> Result<Value> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| Error::NotFound(format!("tool not found: {}", name)))?;
-        (tool.handler)(engine, args)
+        match &tool.handler {
+            ToolHandler::ReadOnly(h) => h(engine, args),
+            ToolHandler::ReadWrite(_) => {
+                Err(Error::Config(format!("tool '{}' is mutating and requires write lock", name)))
+            }
+        }
+    }
+
+    /// Execute a tool with exclusive mutable access to the Engine.
+    pub fn execute_write(&self, name: &str, engine: &mut Engine, args: Value) -> Result<Value> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| Error::NotFound(format!("tool not found: {}", name)))?;
+        match &tool.handler {
+            ToolHandler::ReadOnly(h) => h(engine, args),
+            ToolHandler::ReadWrite(h) => h(engine, args),
+        }
+    }
+
+    /// Execute a tool by name with given arguments (backward compatible wrapper around execute_write).
+    pub fn execute(&self, name: &str, engine: &mut Engine, args: Value) -> Result<Value> {
+        self.execute_write(name, engine, args)
     }
 }
 
@@ -616,16 +699,18 @@ impl MultiCorpusToolRegistry {
         Self { registry }
     }
 
+    /// Check if a tool is read-only.
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.registry.is_read_only(name)
+    }
+
     /// List all registered tools (for MCP `tools/list`).
     pub fn list(&self) -> Vec<&ToolInfo> {
         self.registry.list()
     }
 
-    /// Execute a tool call, routing to the correct corpus engine.
-    ///
-    /// Extracts the optional `corpus` field from arguments, resolves the engine
-    /// from the CorpusManager, and dispatches to the tool handler.
-    pub fn execute(&self, name: &str, manager: &mut CorpusManager, args: Value) -> Result<Value> {
+    /// Execute a read-only tool call, routing to the correct corpus engine concurrently.
+    pub fn execute_read(&self, name: &str, manager: &CorpusManager, args: Value) -> Result<Value> {
         // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
         if name == "get_status" || name == "get_corpus_stats" {
             return handle_get_status(manager);
@@ -634,11 +719,38 @@ impl MultiCorpusToolRegistry {
         // Extract and remove the `corpus` param from arguments.
         let (corpus_name, clean_args) = extract_corpus_param(args);
 
-        // Resolve the engine.
+        // Resolve the engine immutably.
+        let engine = manager.resolve_engine(corpus_name.as_deref())?;
+
+        // Execute the read-only tool.
+        self.registry.execute_read(name, engine, clean_args)
+    }
+
+    /// Execute a tool call with exclusive access to the CorpusManager.
+    pub fn execute_write(
+        &self,
+        name: &str,
+        manager: &mut CorpusManager,
+        args: Value,
+    ) -> Result<Value> {
+        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
+        if name == "get_status" || name == "get_corpus_stats" {
+            return handle_get_status(manager);
+        }
+
+        // Extract and remove the `corpus` param from arguments.
+        let (corpus_name, clean_args) = extract_corpus_param(args);
+
+        // Resolve the engine mutably.
         let engine = manager.resolve_engine_mut(corpus_name.as_deref())?;
 
         // Execute the tool.
-        self.registry.execute(name, engine, clean_args)
+        self.registry.execute_write(name, engine, clean_args)
+    }
+
+    /// Execute a tool call, routing to the correct corpus engine.
+    pub fn execute(&self, name: &str, manager: &mut CorpusManager, args: Value) -> Result<Value> {
+        self.execute_write(name, manager, args)
     }
 
     /// Get underlying registry reference (for listing tools etc).
@@ -884,6 +996,17 @@ struct CoverageReportParams {
     top_k: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct SyncCorpusParams {
+    batch_size: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ReindexCorpusParams {
+    batch_size: Option<usize>,
+    resume: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Response structs
 // ---------------------------------------------------------------------------
@@ -916,7 +1039,7 @@ struct SubgraphNode {
 // ---------------------------------------------------------------------------
 
 /// Read a note's full content + frontmatter.
-fn handle_read_note(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_read_note(engine: &Engine, args: Value) -> Result<Value> {
     let params: ReadNoteParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -940,7 +1063,7 @@ fn handle_read_note(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// List all indexed notes with metadata.
-fn handle_list_notes(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListNotesParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -965,7 +1088,7 @@ fn handle_list_notes(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Get parsed frontmatter as JSON.
-fn handle_get_frontmatter(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
     let params: GetFrontmatterParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -983,7 +1106,7 @@ fn handle_get_frontmatter(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Full-text BM25 keyword search.
-fn handle_search_bm25(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchBm25Params = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -995,7 +1118,7 @@ fn handle_search_bm25(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Semantic vector search using embedding similarity.
-fn handle_search_semantic(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchSemanticParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1018,15 +1141,20 @@ fn handle_search_semantic(engine: &mut Engine, args: Value) -> Result<Value> {
         }
     };
 
-    let mut results =
-        search::search_semantic_dual(engine.vector_index(), embedder, &params.query, limit, depth)?;
+    let mut results = search::search_semantic_dual(
+        engine.vector_index(),
+        &embedder,
+        &params.query,
+        limit,
+        depth,
+    )?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// BM25 + vector + graph hybrid search (true 3-signal fusion via RRF).
-fn handle_search_hybrid(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchHybridParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1042,8 +1170,9 @@ fn handle_search_hybrid(engine: &mut Engine, args: Value) -> Result<Value> {
 
     // Try to get a query embedding for full 3-signal hybrid.
     // If embedder is not available, fall back to BM25+graph only.
+    let embedder_opt = engine.embedder_ref();
     let query_embedding =
-        engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
+        embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
     let results = if params.decompose == Some(true) {
         // Multi-hop query decomposition mode.
@@ -1051,7 +1180,7 @@ fn handle_search_hybrid(engine: &mut Engine, args: Value) -> Result<Value> {
             engine.bm25(),
             engine.vector_index(),
             engine.graph(),
-            engine.embedder_ref(),
+            embedder_opt.as_deref(),
             &params.query,
             query_embedding.as_deref(),
             limit,
@@ -1076,7 +1205,7 @@ fn handle_search_hybrid(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Typed graph traversal search.
-fn handle_search_graph(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchGraphParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1104,7 +1233,7 @@ fn handle_search_graph(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Find related documents via PPR approximation.
-fn handle_search_related(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchRelatedParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1116,7 +1245,7 @@ fn handle_search_related(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Full scoring breakdown — returns detailed per-result explanation.
-fn handle_search_explain(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchExplainParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1145,7 +1274,7 @@ fn handle_search_explain(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// All notes linking TO a note, grouped by edge type.
-fn handle_backlinks(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_backlinks(engine: &Engine, args: Value) -> Result<Value> {
     let params: BacklinksParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1156,7 +1285,7 @@ fn handle_backlinks(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// All notes a note links TO, grouped by edge type.
-fn handle_forwardlinks(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_forwardlinks(engine: &Engine, args: Value) -> Result<Value> {
     let params: ForwardlinksParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1167,7 +1296,7 @@ fn handle_forwardlinks(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Shortest path between two notes.
-fn handle_graph_path(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_graph_path(engine: &Engine, args: Value) -> Result<Value> {
     let params: GraphPathParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1190,14 +1319,14 @@ fn handle_graph_path(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Graph statistics.
-fn handle_graph_stats(engine: &mut Engine, _args: Value) -> Result<Value> {
+fn handle_graph_stats(engine: &Engine, _args: Value) -> Result<Value> {
     let stats = engine.graph().stats();
 
     serde_json::to_value(stats).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// N-hop neighborhood around a node.
-fn handle_graph_subgraph(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_graph_subgraph(engine: &Engine, args: Value) -> Result<Value> {
     let params: GraphSubgraphParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1219,7 +1348,7 @@ fn handle_graph_subgraph(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Detect communities via Louvain algorithm.
-fn handle_graph_communities(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
     let params: GraphCommunitiesParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1246,7 +1375,7 @@ fn handle_graph_communities(engine: &mut Engine, args: Value) -> Result<Value> {
 // ---------------------------------------------------------------------------
 
 /// Corpus list: reports on the current engine as a corpus.
-fn handle_corpus_list(engine: &mut Engine, _args: Value) -> Result<Value> {
+fn handle_corpus_list(engine: &Engine, _args: Value) -> Result<Value> {
     let file_count = engine.store().list_files().map(|f| f.len()).unwrap_or(0);
     let info = serde_json::json!([{
         "name": engine.config().name,
@@ -1279,9 +1408,12 @@ fn handle_reembed_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
     }))
 }
 
-/// Delta sync: index new/modified files, remove deleted files.
-fn handle_sync_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
-    let result = engine.delta_scan()?;
+/// Delta sync: index new/modified files, remove deleted files in configurable batches.
+fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
+    let params: SyncCorpusParams =
+        serde_json::from_value(args).unwrap_or(SyncCorpusParams { batch_size: None });
+    let batch_size = params.batch_size.unwrap_or(50);
+    let result = engine.delta_scan_paginated(batch_size)?;
 
     Ok(serde_json::json!({
         "status": "complete",
@@ -1294,18 +1426,24 @@ fn handle_sync_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
     }))
 }
 
-/// Full reindex: clear all indices and rebuild from scratch.
-fn handle_reindex_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
-    let count = engine.full_reindex()?;
+/// Full reindex: clear all indices and rebuild from scratch or resume in configurable batches.
+fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
+    let params: ReindexCorpusParams = serde_json::from_value(args)
+        .unwrap_or(ReindexCorpusParams { batch_size: None, resume: None });
+    let batch_size = params.batch_size.unwrap_or(50);
+    let resume = params.resume.unwrap_or(true);
+    let count = engine.full_reindex_paginated(batch_size, resume)?;
 
     Ok(serde_json::json!({
         "status": "complete",
         "files_indexed": count,
+        "batch_size": batch_size,
+        "resumed": resume,
     }))
 }
 
 /// Single-corpus status handler.
-fn handle_get_status_single(engine: &mut Engine, _args: Value) -> Result<Value> {
+fn handle_get_status_single(engine: &Engine, _args: Value) -> Result<Value> {
     let files = engine.store().list_files()?;
     let is_indexed = engine.is_indexed();
     Ok(serde_json::json!({
@@ -1320,8 +1458,14 @@ fn handle_get_status_single(engine: &mut Engine, _args: Value) -> Result<Value> 
     }))
 }
 
+/// Get detailed indexing status and progress throughput.
+fn handle_get_indexing_status(engine: &Engine, _args: Value) -> Result<Value> {
+    let status = engine.get_indexing_status()?;
+    serde_json::to_value(status).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+}
+
 /// Graph density analysis.
-fn handle_analyze_density(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_analyze_density(engine: &Engine, args: Value) -> Result<Value> {
     let params: AnalyzeDensityParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1332,7 +1476,7 @@ fn handle_analyze_density(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Find semantic gaps between BM25 and vector search.
-fn handle_find_semantic_gaps(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
     let params: FindSemanticGapsParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1366,7 +1510,7 @@ fn handle_find_semantic_gaps(engine: &mut Engine, args: Value) -> Result<Value> 
 }
 
 /// Suggest chunks that may benefit from splitting.
-fn handle_suggest_splits(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_suggest_splits(engine: &Engine, args: Value) -> Result<Value> {
     let params: SuggestSplitsParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1377,7 +1521,7 @@ fn handle_suggest_splits(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Coverage report: which notes are never retrieved.
-fn handle_coverage_report(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_coverage_report(engine: &Engine, args: Value) -> Result<Value> {
     let params: CoverageReportParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1707,7 +1851,7 @@ fn load_corpus_templates(engine: &Engine) -> Result<HashMap<String, Template>> {
 }
 
 /// Validate a single note against its declared template.
-fn handle_validate_note(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_validate_note(engine: &Engine, args: Value) -> Result<Value> {
     let params: ValidateNoteParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1754,7 +1898,7 @@ fn handle_validate_note(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Validate all templated notes in the corpus.
-fn handle_validate_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_validate_corpus(engine: &Engine, args: Value) -> Result<Value> {
     let params: ValidateCorpusParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1816,7 +1960,7 @@ fn handle_validate_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// List all available templates.
-fn handle_list_templates(engine: &mut Engine, _args: Value) -> Result<Value> {
+fn handle_list_templates(engine: &Engine, _args: Value) -> Result<Value> {
     let templates = load_corpus_templates(engine)?;
 
     let mut list: Vec<&Template> = templates.values().collect();
@@ -1826,7 +1970,7 @@ fn handle_list_templates(engine: &mut Engine, _args: Value) -> Result<Value> {
 }
 
 /// List all edge types in the taxonomy.
-fn handle_list_edge_types(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_list_edge_types(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListEdgeTypesParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1874,7 +2018,7 @@ fn handle_list_edge_types(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Traverse knowledge graph along a structural edge type.
-fn handle_traverse_lineage(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_traverse_lineage(engine: &Engine, args: Value) -> Result<Value> {
     let params: TraverseLineageParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -2019,7 +2163,7 @@ fn handle_promote_concept(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Validate ontology and graph integrity.
-fn handle_validate_taxonomy(engine: &mut Engine, args: Value) -> Result<Value> {
+fn handle_validate_taxonomy(engine: &Engine, args: Value) -> Result<Value> {
     let params: ValidateTaxonomyParams =
         serde_json::from_value(args).unwrap_or(ValidateTaxonomyParams {
             check_broken: Some(true),
@@ -2135,7 +2279,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 36, "Expected 36 tools registered");
+        assert_eq!(tools.len(), 37, "Expected 37 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -2175,11 +2319,37 @@ mod tests {
             "reindex_corpus",
             "get_status",
             "get_corpus_stats",
+            "get_indexing_status",
         ];
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
         }
+
+        // Verify read-only classification
+        assert!(registry.is_read_only("read_note"));
+        assert!(registry.is_read_only("search_bm25"));
+        assert!(registry.is_read_only("get_indexing_status"));
+        assert!(!registry.is_read_only("create_note"));
+        assert!(!registry.is_read_only("reindex_corpus"));
+    }
+
+    #[test]
+    fn test_read_only_tool_execution() {
+        let tmp = TempDir::new().unwrap();
+        let engine = create_test_engine(&tmp);
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Read tool with immutable &engine should succeed
+        let result = registry.execute_read("list_notes", &engine, serde_json::json!({})).unwrap();
+        let notes: Vec<Value> = serde_json::from_value(result).unwrap();
+        assert!(notes.is_empty());
+
+        // Calling mutating tool with execute_read should return error
+        let err =
+            registry.execute_read("create_note", &engine, serde_json::json!({ "path": "fail.md" }));
+        assert!(err.is_err());
     }
 
     #[test]
@@ -2528,12 +2698,16 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 36 tools.
-        assert_eq!(tools.len(), 36, "Expected 36 tools in multi-corpus registry");
+        // Should have 37 tools.
+        assert_eq!(tools.len(), 37, "Expected 37 tools in multi-corpus registry");
         assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
         assert!(
             registry.registry().get("get_corpus_stats").is_some(),
             "get_corpus_stats should be registered"
+        );
+        assert!(
+            registry.registry().get("get_indexing_status").is_some(),
+            "get_indexing_status should be registered"
         );
     }
 

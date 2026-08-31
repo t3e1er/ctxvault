@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-cli"
-version = "0.0.24"
+version = "0.0.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-common"
-version = "0.0.24"
+version = "0.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-core"
-version = "0.0.24"
+version = "0.0.22"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -744,6 +744,7 @@ dependencies = [
  "blake3",
  "ctxvault-common",
  "fastembed",
+ "fs4",
  "hnsw_rs",
  "notify",
  "notify-debouncer-full",
@@ -763,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-mcp"
-version = "0.0.24"
+version = "0.0.22"
 dependencies = [
  "anyhow",
  "async-trait",
