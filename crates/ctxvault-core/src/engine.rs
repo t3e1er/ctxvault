@@ -198,16 +198,95 @@ impl Engine {
     /// Index a single file. Parses, chunks, stores metadata, indexes in Tantivy,
     /// embeds in vector index (if embedder available), and builds graph edges.
     pub fn index_file(&mut self, rel_path: &str, content: &str) -> Result<()> {
+        let path = Path::new(rel_path);
+        let modified_at = now_unix();
+
+        if crate::parser::code::is_code_file(path) {
+            let parse_res = crate::parser::code::chunker::CodeChunker::parse_and_chunk(
+                path,
+                content,
+                &self.config.chunking,
+            );
+
+            let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let file_title =
+                path.file_name().and_then(|n| n.to_str()).unwrap_or(rel_path).to_string();
+
+            // 1. Store file record in persistence
+            self.store.insert_file(
+                rel_path,
+                &content_hash,
+                modified_at,
+                None,
+                Some(&file_title),
+            )?;
+
+            // 2. Chunks and symbols
+            if let Some(res) = parse_res {
+                self.store.delete_chunks_for_file(rel_path)?;
+                let chunk_records: Vec<ChunkRecord> = res
+                    .chunks
+                    .iter()
+                    .map(|c| ChunkRecord {
+                        chunk_index: c.chunk_index,
+                        start_byte: c.start_byte,
+                        end_byte: c.end_byte,
+                        text: c.text.clone(),
+                    })
+                    .collect();
+                self.store.insert_chunks(rel_path, &chunk_records)?;
+                self.store.save_code_symbols(rel_path, &res.symbols)?;
+
+                // 3. BM25
+                self.bm25.remove_document(rel_path)?;
+                self.bm25.add_document(rel_path, Some(&file_title), &[], &res.chunks)?;
+
+                // 4. Vector index
+                self.vector_index.remove_document(rel_path);
+                if let Some(embedder) = self.embedder_ref() {
+                    let texts: Vec<&str> = res.chunks.iter().map(|c| c.text.as_str()).collect();
+                    if !texts.is_empty() {
+                        if let Ok(embeddings) = embedder.embed_batch(&texts) {
+                            let chunk_indices: Vec<Option<usize>> =
+                                res.chunks.iter().map(|c| Some(c.chunk_index)).collect();
+                            let _ = self.vector_index.add_batch(
+                                &embeddings,
+                                rel_path,
+                                &chunk_indices,
+                                false,
+                            );
+                            if let Some(doc_embedding) = Embedder::average_embeddings(&embeddings) {
+                                let _ = self.vector_index.add(&doc_embedding, rel_path, None, true);
+                            }
+                        }
+                    }
+                }
+
+                // 5. Code Graph
+                let all_symbols = self.store.get_all_code_symbols().unwrap_or_default();
+                self.graph.remove_edges_for_node(rel_path);
+                let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
+                    path,
+                    content,
+                    &res.symbols,
+                    &all_symbols,
+                );
+                for edge in &edges {
+                    self.graph.add_code_edge(edge);
+                }
+            }
+
+            debug!("Indexed code file: {}", rel_path);
+            return Ok(());
+        }
+
         // 1. Parse document.
         let doc = parser::parse_document(Path::new(rel_path), content)?;
 
         // 2. Chunk document.
         let chunks = chunker::chunk_document(rel_path, &doc.content, &self.config.chunking);
 
-        // 3. Compute modified_at timestamp.
-        let modified_at = now_unix();
-
-        // 4. Store file record in persistence.
+        // 3. Store file record in persistence.
         self.store.insert_file(
             rel_path,
             &doc.content_hash,
@@ -216,7 +295,7 @@ impl Engine {
             doc.title.as_deref(),
         )?;
 
-        // 5. Delete old chunks and insert new ones.
+        // 4. Delete old chunks and insert new ones.
         self.store.delete_chunks_for_file(rel_path)?;
         let chunk_records: Vec<ChunkRecord> = chunks
             .iter()
@@ -229,11 +308,11 @@ impl Engine {
             .collect();
         self.store.insert_chunks(rel_path, &chunk_records)?;
 
-        // 6. Remove old document from BM25, add new.
+        // 5. Remove old document from BM25, add new.
         self.bm25.remove_document(rel_path)?;
         self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
 
-        // 7. Embed chunks and add to vector index (if embedder is available).
+        // 6. Embed chunks and add to vector index (if embedder is available).
         self.vector_index.remove_document(rel_path);
         if let Some(embedder) = self.embedder_ref() {
             // Build context-prefixed text for embedding (original text preserved for BM25/snippets).
@@ -279,7 +358,7 @@ impl Engine {
             }
         }
 
-        // 8. Remove old edges and rebuild from document.
+        // 7. Remove old edges and rebuild from document.
         //    Note: pass empty slice for all_docs — tag edges are only built during full_reindex.
         self.graph.remove_edges_for_node(rel_path);
         self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
@@ -492,82 +571,16 @@ impl Engine {
                 }
             }
 
-            // 1. Parse document.
-            let doc = parser::parse_document(Path::new(rel_path.as_str()), &content)?;
-            let chunks = chunker::chunk_document(rel_path, &doc.content, &self.config.chunking);
+            // Index the file (handles both markdown and polyglot code files)
+            self.index_file(rel_path, &content)?;
 
-            // 2. Insert file record into SQLite.
-            let modified_at = now_unix();
-            self.store.insert_file(
-                rel_path,
-                &doc.content_hash,
-                modified_at,
-                doc.template.as_deref(),
-                doc.title.as_deref(),
-            )?;
-
-            // 3. Insert chunk records into SQLite.
-            self.store.delete_chunks_for_file(rel_path)?;
-            let chunk_records: Vec<ChunkRecord> = chunks
-                .iter()
-                .map(|c| ChunkRecord {
-                    chunk_index: c.chunk_index,
-                    start_byte: c.start_byte,
-                    end_byte: c.end_byte,
-                    text: c.text.clone(),
-                })
-                .collect();
-            self.store.insert_chunks(rel_path, &chunk_records)?;
-
-            // 4. Tantivy BM25.
-            self.bm25.remove_document(rel_path)?;
-            self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
-
-            // 5. Vector index (embed chunks if embedder available).
-            self.vector_index.remove_document(rel_path);
-            if let Some(embedder) = self.embedder_ref() {
-                let doc_title = doc.title.as_deref().unwrap_or(rel_path);
-                let texts_for_embedding: Vec<String> = chunks
-                    .iter()
-                    .map(|c| {
-                        if let Some(ref chain) = c.heading_chain {
-                            format!("{} > {}: {}", doc_title, chain, c.text)
-                        } else if let Some(ref title) = doc.title {
-                            format!("{}: {}", title, c.text)
-                        } else {
-                            c.text.clone()
-                        }
-                    })
-                    .collect();
-                let texts: Vec<&str> = texts_for_embedding.iter().map(|s| s.as_str()).collect();
-                if !texts.is_empty() {
-                    match embedder.embed_batch(&texts) {
-                        Ok(embeddings) => {
-                            let chunk_indices: Vec<Option<usize>> =
-                                chunks.iter().map(|c| Some(c.chunk_index)).collect();
-                            let _ = self.vector_index.add_batch(
-                                &embeddings,
-                                rel_path,
-                                &chunk_indices,
-                                false,
-                            );
-
-                            if let Some(doc_embedding) = Embedder::average_embeddings(&embeddings) {
-                                let _ = self.vector_index.add(&doc_embedding, rel_path, None, true);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to embed chunks for {}: {}", rel_path, e);
-                        }
-                    }
+            // If markdown, parse document for global tag edge building at the end
+            if !crate::parser::code::is_code_file(Path::new(rel_path)) {
+                if let Ok(doc) = parser::parse_document(Path::new(rel_path), &content) {
+                    all_docs.push(doc);
                 }
             }
 
-            // 6. Build document non-tag graph edges.
-            self.graph.remove_edges_for_node(rel_path);
-            self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
-
-            all_docs.push(doc);
             processed_in_current_batch += 1;
             newly_indexed_count += 1;
             state.indexed_files += 1;
@@ -807,13 +820,14 @@ impl Engine {
                 let chunk_records = self.store.get_chunks_for_file(&file.path)?;
                 let chunks: Vec<ctxvault_common::types::Chunk> = chunk_records
                     .into_iter()
-                    .map(|cr| ctxvault_common::types::Chunk {
-                        doc_path: file.path.clone(),
-                        chunk_index: cr.chunk_index,
-                        text: cr.text,
-                        start_byte: cr.start_byte,
-                        end_byte: cr.end_byte,
-                        heading_chain: None,
+                    .map(|cr| {
+                        ctxvault_common::types::Chunk::new(
+                            file.path.clone(),
+                            cr.chunk_index,
+                            cr.text,
+                            cr.start_byte,
+                            cr.end_byte,
+                        )
                     })
                     .collect();
                 (chunks, file.title.clone())
@@ -909,20 +923,31 @@ fn walk_dir_recursive(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            // Skip hidden directories (e.g., .index, .templates, .git).
+            // Skip hidden directories and common build/dependency artifacts
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "dist"
+                    || name == "build"
+                    || name == "venv"
+                    || name == ".venv"
+                {
                     continue;
                 }
             }
             walk_dir_recursive(root, &path, results)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = path.strip_prefix(root).map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            })?;
-            // Normalize path separators to forward slashes.
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            results.push((rel_str, path.clone()));
+        } else {
+            let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
+            let is_code = crate::parser::code::is_code_file(&path);
+            if is_md || is_code {
+                let rel = path.strip_prefix(root).map_err(|e| {
+                    Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                })?;
+                // Normalize path separators to forward slashes.
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                results.push((rel_str, path.clone()));
+            }
         }
     }
     Ok(())
@@ -935,6 +960,7 @@ fn walk_dir_recursive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ctxvault_common::types::CodeSymbolType;
     use tempfile::TempDir;
 
     /// Create a minimal corpus config pointing at the given path.
@@ -1283,5 +1309,119 @@ mod tests {
 
         let files = resumed_engine.store().list_files().unwrap();
         assert_eq!(files.len(), 15);
+    }
+
+    #[test]
+    fn test_polyglot_codebase_indexing_and_cross_modal_search() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(corpus_dir.join("docs/adr")).unwrap();
+        fs::create_dir_all(corpus_dir.join("src")).unwrap();
+        fs::create_dir_all(corpus_dir.join("scripts")).unwrap();
+        let index_dir = tmp.path().join("index");
+
+        // 1. Write markdown ADR
+        let adr_content = r#"---
+title: ADR-0001 Hybrid Search
+tags: [search, rrf, architecture]
+---
+# ADR-0001: Reciprocal Rank Fusion Search
+
+We implement 4-way RRF hybrid search combining BM25, embeddings, and graph traversal.
+"#;
+        fs::write(corpus_dir.join("docs/adr/0001-hybrid-search.md"), adr_content).unwrap();
+
+        // 2. Write Rust file
+        let rust_code = r#"
+/// Search engine implementation
+pub struct Engine;
+
+impl Engine {
+    /// Execute hybrid search across all modalities
+    pub fn search_hybrid(&self, query: &str) -> Vec<String> {
+        let results = execute_rrf(query);
+        results
+    }
+}
+
+pub fn execute_rrf(q: &str) -> Vec<String> {
+    vec![q.to_string()]
+}
+"#;
+        fs::write(corpus_dir.join("src/search.rs"), rust_code).unwrap();
+
+        // 3. Write TypeScript file
+        let ts_code = r#"
+export interface UserProfile {
+    id: string;
+    email: string;
+}
+
+export class UserService {
+    /** Fetch user by ID */
+    async getUser(id: string): Promise<UserProfile> {
+        return { id, email: "user@example.com" };
+    }
+}
+"#;
+        fs::write(corpus_dir.join("src/user.ts"), ts_code).unwrap();
+
+        // 4. Write Python script
+        let py_code = r#"
+class DataIngest:
+    """Batch data ingestion pipeline."""
+    def run_pipeline(self, batch):
+        return len(batch)
+"#;
+        fs::write(corpus_dir.join("scripts/process.py"), py_code).unwrap();
+
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        // Perform full reindex
+        let count = engine.full_reindex().unwrap();
+        assert_eq!(count, 4, "Should index 1 markdown file + 3 polyglot code files");
+
+        // Verify BM25 search across modalities
+        let adr_hits = engine.bm25().search("Reciprocal Rank Fusion", 5).unwrap();
+        assert!(!adr_hits.is_empty());
+        assert_eq!(adr_hits[0].path, "docs/adr/0001-hybrid-search.md");
+
+        let rust_hits = engine.bm25().search("search_hybrid modalities", 5).unwrap();
+        assert!(!rust_hits.is_empty());
+        assert_eq!(rust_hits[0].path, "src/search.rs");
+
+        let ts_hits = engine.bm25().search("UserProfile getUser", 5).unwrap();
+        assert!(!ts_hits.is_empty());
+        assert_eq!(ts_hits[0].path, "src/user.ts");
+
+        // Verify SQLite code_symbols catalog
+        let rust_symbols = engine.store().get_code_symbols_for_file("src/search.rs").unwrap();
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "Engine" && s.symbol_type == CodeSymbolType::Struct));
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "search_hybrid" && s.symbol_type == CodeSymbolType::Function));
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "execute_rrf" && s.symbol_type == CodeSymbolType::Function));
+
+        let ts_symbols = engine.store().get_code_symbols_for_file("src/user.ts").unwrap();
+        assert!(ts_symbols
+            .iter()
+            .any(|s| s.name == "UserService" && s.symbol_type == CodeSymbolType::Class));
+        assert!(ts_symbols
+            .iter()
+            .any(|s| s.name == "getUser" && s.symbol_type == CodeSymbolType::Method));
+
+        // Verify graph edges (defines and calls)
+        let edges = engine.graph().get_all_edges();
+        assert!(edges.iter().any(|e| e.edge_type == "defines"
+            && e.source == "src/search.rs"
+            && e.target == "Engine"));
+        assert!(edges.iter().any(|e| e.edge_type == "calls"
+            && e.source == "Engine > search_hybrid"
+            && e.target == "execute_rrf"));
     }
 }

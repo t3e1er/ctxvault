@@ -1,4 +1,4 @@
-﻿//! Text chunking strategies for embedding preparation.
+//! Text chunking strategies for embedding preparation.
 //!
 //! Supports multiple strategies configurable per-corpus:
 //! - **heading**: Split at markdown headings, track heading hierarchy.
@@ -18,6 +18,17 @@ pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
         ChunkingStrategy::Paragraph => chunk_by_paragraph(doc_path, body, config),
         ChunkingStrategy::Semantic => chunk_by_semantic(doc_path, body, config),
         ChunkingStrategy::Fixed => chunk_by_fixed(doc_path, body, config),
+        ChunkingStrategy::CodeAst => {
+            if let Some(res) = super::code::CodeChunker::parse_and_chunk(
+                std::path::Path::new(doc_path),
+                body,
+                config,
+            ) {
+                res.chunks
+            } else {
+                chunk_by_heading(doc_path, body, config)
+            }
+        }
     };
 
     // Apply overlap if configured.
@@ -163,14 +174,10 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
 
             let trimmed = merged_text.trim();
             if trimmed.len() >= min_chars {
-                chunks.push(Chunk {
-                    doc_path: doc_path.to_string(),
-                    chunk_index: chunks.len(),
-                    text: trimmed.to_string(),
-                    start_byte: merged_start,
-                    end_byte: merged_end,
-                    heading_chain: merged_chain,
-                });
+                chunks.push(
+                    Chunk::new(doc_path, chunks.len(), trimmed, merged_start, merged_end)
+                        .with_heading_chain(merged_chain),
+                );
             }
         } else if section_chars > max_chars {
             // Section too large — split at paragraph boundaries within it.
@@ -184,14 +191,10 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
             for sub_text in sub_chunks {
                 let trimmed = sub_text.text.trim();
                 if trimmed.len() >= min_chars {
-                    chunks.push(Chunk {
-                        doc_path: doc_path.to_string(),
-                        chunk_index: chunks.len(),
-                        text: trimmed.to_string(),
-                        start_byte: sub_text.start,
-                        end_byte: sub_text.end,
-                        heading_chain: heading_chain.clone(),
-                    });
+                    chunks.push(
+                        Chunk::new(doc_path, chunks.len(), trimmed, sub_text.start, sub_text.end)
+                            .with_heading_chain(heading_chain.clone()),
+                    );
                 }
             }
             i += 1;
@@ -206,24 +209,28 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                         last.text.push_str(trimmed);
                         last.end_byte = section.end_byte;
                     } else {
-                        chunks.push(Chunk {
-                            doc_path: doc_path.to_string(),
-                            chunk_index: chunks.len(),
-                            text: trimmed.to_string(),
-                            start_byte: section.start_byte,
-                            end_byte: section.end_byte,
-                            heading_chain,
-                        });
+                        chunks.push(
+                            Chunk::new(
+                                doc_path,
+                                chunks.len(),
+                                trimmed,
+                                section.start_byte,
+                                section.end_byte,
+                            )
+                            .with_heading_chain(heading_chain),
+                        );
                     }
                 } else {
-                    chunks.push(Chunk {
-                        doc_path: doc_path.to_string(),
-                        chunk_index: chunks.len(),
-                        text: trimmed.to_string(),
-                        start_byte: section.start_byte,
-                        end_byte: section.end_byte,
-                        heading_chain,
-                    });
+                    chunks.push(
+                        Chunk::new(
+                            doc_path,
+                            chunks.len(),
+                            trimmed,
+                            section.start_byte,
+                            section.end_byte,
+                        )
+                        .with_heading_chain(heading_chain),
+                    );
                 }
             }
             i += 1;
@@ -231,14 +238,7 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
     }
 
     if chunks.is_empty() && !body.trim().is_empty() {
-        chunks.push(Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: 0,
-            text: body.trim().to_string(),
-            start_byte: 0,
-            end_byte: body.len(),
-            heading_chain: None,
-        });
+        chunks.push(Chunk::new(doc_path, 0, body.trim(), 0, body.len()));
     }
 
     chunks
@@ -561,14 +561,13 @@ fn chunk_by_paragraph(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
             if !current_text.is_empty() {
                 let trimmed = current_text.trim().to_string();
                 if trimmed.len() >= min_chars {
-                    chunks.push(Chunk {
-                        doc_path: doc_path.to_string(),
-                        chunk_index: chunks.len(),
-                        text: trimmed,
-                        start_byte: current_start,
-                        end_byte: byte_pos,
-                        heading_chain: None,
-                    });
+                    chunks.push(Chunk::new(
+                        doc_path,
+                        chunks.len(),
+                        trimmed,
+                        current_start,
+                        byte_pos,
+                    ));
                 }
                 current_text = String::new();
             }
@@ -576,14 +575,7 @@ fn chunk_by_paragraph(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
             let sub_chunks =
                 split_oversized_paragraph(para, byte_pos, target_chars, max_chars, min_chars);
             for sc in sub_chunks {
-                chunks.push(Chunk {
-                    doc_path: doc_path.to_string(),
-                    chunk_index: chunks.len(),
-                    text: sc.text,
-                    start_byte: sc.start,
-                    end_byte: sc.end,
-                    heading_chain: None,
-                });
+                chunks.push(Chunk::new(doc_path, chunks.len(), sc.text, sc.start, sc.end));
             }
             byte_pos += para_len + if i < paragraphs.len() - 1 { 2 } else { 0 };
             current_start = byte_pos;
@@ -594,14 +586,7 @@ fn chunk_by_paragraph(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
             // Emit current chunk.
             let trimmed = current_text.trim().to_string();
             if trimmed.len() >= min_chars {
-                chunks.push(Chunk {
-                    doc_path: doc_path.to_string(),
-                    chunk_index: chunks.len(),
-                    text: trimmed,
-                    start_byte: current_start,
-                    end_byte: byte_pos,
-                    heading_chain: None,
-                });
+                chunks.push(Chunk::new(doc_path, chunks.len(), trimmed, current_start, byte_pos));
             }
             current_text = String::new();
             current_start = byte_pos;
@@ -617,14 +602,7 @@ fn chunk_by_paragraph(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
     // Emit remainder.
     let trimmed = current_text.trim().to_string();
     if trimmed.len() >= min_chars {
-        chunks.push(Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: chunks.len(),
-            text: trimmed,
-            start_byte: current_start,
-            end_byte: body.len(),
-            heading_chain: None,
-        });
+        chunks.push(Chunk::new(doc_path, chunks.len(), trimmed, current_start, body.len()));
     }
 
     chunks
@@ -669,14 +647,7 @@ fn chunk_by_semantic(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec
             let slice_end = line_end.min(body.len());
             let text = body[current_start..slice_end].trim();
             if text.len() >= min_chars {
-                chunks.push(Chunk {
-                    doc_path: doc_path.to_string(),
-                    chunk_index: chunks.len(),
-                    text: text.to_string(),
-                    start_byte: current_start,
-                    end_byte: slice_end,
-                    heading_chain: None,
-                });
+                chunks.push(Chunk::new(doc_path, chunks.len(), text, current_start, slice_end));
             }
             current_start = slice_end;
             current_len = 0;
@@ -687,14 +658,7 @@ fn chunk_by_semantic(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec
     if current_start < body.len() {
         let text = body[current_start..].trim();
         if text.len() >= min_chars {
-            chunks.push(Chunk {
-                doc_path: doc_path.to_string(),
-                chunk_index: chunks.len(),
-                text: text.to_string(),
-                start_byte: current_start,
-                end_byte: body.len(),
-                heading_chain: None,
-            });
+            chunks.push(Chunk::new(doc_path, chunks.len(), text, current_start, body.len()));
         }
     }
 
@@ -724,14 +688,7 @@ fn chunk_by_fixed(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<Ch
         }
         let text = body[start..end].trim();
         if text.len() >= min_chars {
-            chunks.push(Chunk {
-                doc_path: doc_path.to_string(),
-                chunk_index: chunks.len(),
-                text: text.to_string(),
-                start_byte: start,
-                end_byte: end,
-                heading_chain: None,
-            });
+            chunks.push(Chunk::new(doc_path, chunks.len(), text, start, end));
         }
         start = end;
     }

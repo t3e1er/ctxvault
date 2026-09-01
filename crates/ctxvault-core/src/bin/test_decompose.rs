@@ -19,7 +19,10 @@ fn main() {
         eprintln!("{bt}");
     }));
 
-    let corpus_path = PathBuf::from(r"c:\dev\semantic\corpus");
+    let corpus_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"c:\dev\ctx\ctxcorpus\anthropic"));
     let config_path = corpus_path.join("corpus.toml");
 
     eprintln!("Loading config from {:?}", config_path);

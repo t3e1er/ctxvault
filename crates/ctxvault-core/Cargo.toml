@@ -51,6 +51,23 @@ fs4 = { workspace = true }
 # Hashing
 blake3 = { workspace = true }
 
+# AST Code Parsing (Polyglot)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.23"
+tree-sitter-swift = "=0.6.0"
+tree-sitter-elixir = "0.3"
+tree-sitter-lua = "=0.2.0"
+tree-sitter-bash = "0.23"
+
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }

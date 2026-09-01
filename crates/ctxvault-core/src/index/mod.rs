@@ -290,19 +290,17 @@ impl BM25Index {
 
             let score_f64 = score as f64;
 
-            results.push(SearchResult {
-                path,
-                score: score_f64,
-                snippet,
-                chunk_index: Some(chunk_index),
-                score_components: Some(ScoreBreakdown {
-                    bm25: score_f64,
-                    vector: 0.0,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            });
+            results.push(
+                SearchResult::new(path, score_f64)
+                    .with_snippet(snippet)
+                    .with_chunk_index(Some(chunk_index))
+                    .with_score_components(ScoreBreakdown {
+                        bm25: score_f64,
+                        vector: 0.0,
+                        graph_boost: 0.0,
+                        graph_hops: None,
+                    }),
+            );
         }
 
         Ok(results)
@@ -316,14 +314,7 @@ mod tests {
 
     /// Helper to create a simple chunk.
     fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
-        Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: index,
-            text: text.to_string(),
-            start_byte: 0,
-            end_byte: text.len(),
-            heading_chain: None,
-        }
+        Chunk::new(doc_path, index, text, 0, text.len())
     }
 
     #[test]

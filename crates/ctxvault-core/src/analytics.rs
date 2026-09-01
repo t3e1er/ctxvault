@@ -1,4 +1,4 @@
-﻿//! Analytics tools: density analysis, semantic gap detection, split suggestions, coverage reports.
+//! Analytics tools: density analysis, semantic gap detection, split suggestions, coverage reports.
 //!
 //! These tools provide insights into corpus quality, index coverage, and opportunities
 //! for improving retrieval performance.
@@ -424,14 +424,7 @@ mod tests {
         let mut vi = VectorIndex::new(4, 100, 200, 16);
 
         // BM25 has doc A, vector has doc B.
-        let chunks = vec![Chunk {
-            doc_path: "A".to_string(),
-            chunk_index: 0,
-            text: "alpha beta gamma".to_string(),
-            start_byte: 0,
-            end_byte: 16,
-            heading_chain: None,
-        }];
+        let chunks = vec![Chunk::new("A", 0, "alpha beta gamma", 0, 16)];
         bm25.add_document("A", Some("Alpha"), &[], &chunks).unwrap();
         bm25.commit().unwrap();
 
@@ -455,22 +448,8 @@ mod tests {
 
         let mut bm25 = BM25Index::open_in_memory().unwrap();
 
-        let chunks_a = vec![Chunk {
-            doc_path: "A".to_string(),
-            chunk_index: 0,
-            text: "rust systems programming".to_string(),
-            start_byte: 0,
-            end_byte: 24,
-            heading_chain: None,
-        }];
-        let chunks_b = vec![Chunk {
-            doc_path: "B".to_string(),
-            chunk_index: 0,
-            text: "python data science".to_string(),
-            start_byte: 0,
-            end_byte: 19,
-            heading_chain: None,
-        }];
+        let chunks_a = vec![Chunk::new("A", 0, "rust systems programming", 0, 24)];
+        let chunks_b = vec![Chunk::new("B", 0, "python data science", 0, 19)];
         bm25.add_document("A", Some("Rust"), &[], &chunks_a).unwrap();
         bm25.add_document("B", Some("Python"), &[], &chunks_b).unwrap();
         bm25.commit().unwrap();

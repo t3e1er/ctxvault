@@ -618,6 +618,60 @@ impl ToolRegistry {
             }),
             handle_get_indexing_status,
         );
+
+        // Code Intelligence & Architecture Tools
+        self.register_read(
+            "get_symbol_definition",
+            "Find code symbol definition (function, method, struct, class, trait, interface) with exact source lines, docstrings, and incoming caller count.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Symbol name to look up" },
+                    "file_path": { "type": "string", "description": "Optional file path to disambiguate symbols with the same name" }
+                },
+                "required": ["name"]
+            }),
+            handle_get_symbol_definition,
+        );
+
+        self.register_read(
+            "find_callers",
+            "Find all inbound call sites and callers for a given code symbol or method across polyglot source files.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": { "type": "string", "description": "Symbol name to find callers for" }
+                },
+                "required": ["symbol_name"]
+            }),
+            handle_find_callers,
+        );
+
+        self.register_read(
+            "get_architecture",
+            "Get high-level architectural component overview via Louvain community clustering across the cross-modal knowledge graph.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "resolution": { "type": "number", "description": "Community detection resolution parameter (default 1.0)" }
+                },
+                "required": []
+            }),
+            handle_get_architecture,
+        );
+
+        self.register_write(
+            "detect_changes",
+            "Detect modified files and calculate their impact radius (impacted symbols and upstream callers).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "since": { "type": "string", "description": "Optional revision/reference" }
+                },
+                "required": []
+            }),
+            handle_detect_changes,
+        );
     }
 
     /// Check if a tool is read-only.
@@ -2223,6 +2277,194 @@ fn handle_validate_taxonomy(engine: &Engine, args: Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Structural Code Tools Handlers
+// ---------------------------------------------------------------------------
+
+fn handle_get_symbol_definition(engine: &Engine, params: Value) -> Result<Value> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| Error::Config("missing required parameter: name".to_string()))?;
+    let file_path_filter = params["file_path"].as_str();
+
+    let symbols = engine.store().find_symbols_by_name(name)?;
+    let filtered: Vec<_> = symbols
+        .into_iter()
+        .filter(|s| {
+            if let Some(fp) = file_path_filter {
+                s.file_path == fp
+            } else {
+                s.name == name || s.scope_path.ends_with(name)
+            }
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    let corpus_root = Path::new(&engine.config().path);
+
+    for sym in &filtered {
+        let full_path = corpus_root.join(&sym.file_path);
+        let snippet = if let Ok(content) = fs::read_to_string(&full_path) {
+            let lines: Vec<&str> = content.lines().collect();
+            if sym.start_line > 0 && sym.start_line <= lines.len() {
+                let start_idx = sym.start_line - 1;
+                let end_idx = sym.end_line.min(lines.len());
+                Some(lines[start_idx..end_idx].join("\n"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let edges = engine.graph().get_all_edges();
+        let callers_count = edges
+            .iter()
+            .filter(|e| {
+                e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
+            })
+            .count();
+
+        results.push(serde_json::json!({
+            "name": sym.name,
+            "scope_path": sym.scope_path,
+            "symbol_type": sym.symbol_type,
+            "language": sym.language,
+            "file_path": sym.file_path,
+            "start_line": sym.start_line,
+            "end_line": sym.end_line,
+            "signature": sym.signature,
+            "docstring": sym.docstring,
+            "snippet": snippet,
+            "incoming_callers_count": callers_count,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "symbol_name": name,
+        "matches_count": results.len(),
+        "definitions": results,
+    }))
+}
+
+fn handle_find_callers(engine: &Engine, params: Value) -> Result<Value> {
+    let symbol_name = params["symbol_name"]
+        .as_str()
+        .ok_or_else(|| Error::Config("missing required parameter: symbol_name".to_string()))?;
+
+    let edges = engine.graph().get_all_edges();
+    let caller_edges: Vec<_> = edges
+        .into_iter()
+        .filter(|e| {
+            e.edge_type == "calls"
+                && (e.target == symbol_name || e.target.ends_with(&format!(" > {}", symbol_name)))
+        })
+        .collect();
+
+    let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+    let mut callers = Vec::new();
+
+    for edge in &caller_edges {
+        let sym = all_symbols.iter().find(|s| s.scope_path == edge.source || s.name == edge.source);
+        callers.push(serde_json::json!({
+            "caller_symbol": edge.source,
+            "target_symbol": edge.target,
+            "file_path": sym.map(|s| s.file_path.clone()),
+            "start_line": sym.map(|s| s.start_line),
+            "signature": sym.map(|s| s.signature.clone()),
+            "docstring": sym.and_then(|s| s.docstring.clone()),
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "target_symbol": symbol_name,
+        "callers_count": callers.len(),
+        "callers": callers,
+    }))
+}
+
+fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
+    let result = engine.graph().detect_communities();
+    let densities = engine.graph().community_densities();
+    let density_map: HashMap<usize, f64> =
+        densities.into_iter().map(|d| (d.community_id, d.density)).collect();
+
+    let mut clusters = Vec::new();
+    let edges = engine.graph().get_all_edges();
+
+    for comm in &result.communities {
+        let comm_id = comm.id;
+        let mut nodes = comm.members.clone();
+        nodes.sort();
+        let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
+
+        let mut node_degree: HashMap<String, usize> = HashMap::new();
+        for edge in &edges {
+            if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
+                *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
+                *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut key_nodes: Vec<_> =
+            nodes.iter().filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg))).collect();
+        key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
+        let top_key_nodes: Vec<String> = key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
+
+        clusters.push(serde_json::json!({
+            "community_id": comm_id,
+            "node_count": nodes.len(),
+            "density": density,
+            "key_nodes": top_key_nodes,
+            "nodes": nodes,
+        }));
+    }
+
+    clusters.sort_by(|a, b| {
+        b["node_count"].as_u64().unwrap_or(0).cmp(&a["node_count"].as_u64().unwrap_or(0))
+    });
+
+    Ok(serde_json::json!({
+        "total_nodes": engine.graph().node_count(),
+        "total_edges": engine.graph().edge_count(),
+        "modularity": result.modularity,
+        "clusters_count": clusters.len(),
+        "clusters": clusters,
+    }))
+}
+
+fn handle_detect_changes(engine: &mut Engine, _params: Value) -> Result<Value> {
+    let delta = engine.delta_scan()?;
+    let edges = engine.graph().get_all_edges();
+
+    let mut impacted_symbols = Vec::new();
+    for path in &delta.modified_files {
+        let symbols = engine.store().get_code_symbols_for_file(path).unwrap_or_default();
+        for sym in symbols {
+            let callers: Vec<String> = edges
+                .iter()
+                .filter(|e| {
+                    e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
+                })
+                .map(|e| e.source.clone())
+                .collect();
+
+            impacted_symbols.push(serde_json::json!({
+                "symbol": sym.scope_path,
+                "file_path": sym.file_path,
+                "symbol_type": sym.symbol_type,
+                "impacted_callers": callers,
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "new_files": delta.new_files,
+        "modified_files": delta.modified_files,
+        "deleted_files": delta.deleted_files,
+        "impacted_symbols": impacted_symbols,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2279,7 +2521,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 37, "Expected 37 tools registered");
+        assert_eq!(tools.len(), 41, "Expected 41 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -2320,6 +2562,10 @@ mod tests {
             "get_status",
             "get_corpus_stats",
             "get_indexing_status",
+            "get_symbol_definition",
+            "find_callers",
+            "get_architecture",
+            "detect_changes",
         ];
 
         for name in expected {
@@ -2328,6 +2574,14 @@ mod tests {
 
         // Verify read-only classification
         assert!(registry.is_read_only("read_note"));
+        assert!(registry.is_read_only("search_bm25"));
+        assert!(registry.is_read_only("get_indexing_status"));
+        assert!(registry.is_read_only("get_symbol_definition"));
+        assert!(registry.is_read_only("find_callers"));
+        assert!(registry.is_read_only("get_architecture"));
+        assert!(!registry.is_read_only("detect_changes"));
+        assert!(!registry.is_read_only("create_note"));
+        assert!(!registry.is_read_only("reindex_corpus"));
         assert!(registry.is_read_only("search_bm25"));
         assert!(registry.is_read_only("get_indexing_status"));
         assert!(!registry.is_read_only("create_note"));
@@ -2698,8 +2952,8 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 37 tools.
-        assert_eq!(tools.len(), 37, "Expected 37 tools in multi-corpus registry");
+        // Should have 41 tools.
+        assert_eq!(tools.len(), 41, "Expected 41 tools in multi-corpus registry");
         assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
         assert!(
             registry.registry().get("get_corpus_stats").is_some(),
@@ -3082,5 +3336,69 @@ mod tests {
         assert_eq!(result["valid"], false);
         assert!(result["broken_links_count"].as_u64().unwrap() >= 1);
         assert!(result["circular_dependencies_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn test_code_intelligence_mcp_tools() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        // Write polyglot code files
+        let rust_code = r#"
+pub struct QueryParser;
+
+impl QueryParser {
+    pub fn parse_query(&self, raw: &str) -> Vec<String> {
+        tokenize(raw)
+    }
+}
+
+pub fn tokenize(input: &str) -> Vec<String> {
+    vec![input.to_string()]
+}
+"#;
+        fs::write(corpus_dir.join("parser.rs"), rust_code).unwrap();
+        engine.index_file("parser.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Test get_symbol_definition
+        let def_res = registry
+            .execute_read(
+                "get_symbol_definition",
+                &engine,
+                serde_json::json!({ "name": "parse_query" }),
+            )
+            .unwrap();
+
+        assert_eq!(def_res["matches_count"], 1);
+        let def = &def_res["definitions"][0];
+        assert_eq!(def["name"], "parse_query");
+        assert_eq!(def["file_path"], "parser.rs");
+        assert!(def["snippet"].as_str().unwrap().contains("tokenize(raw)"));
+
+        // 2. Test find_callers
+        let callers_res = registry
+            .execute_read("find_callers", &engine, serde_json::json!({ "symbol_name": "tokenize" }))
+            .unwrap();
+
+        assert_eq!(callers_res["callers_count"], 1);
+        assert_eq!(callers_res["callers"][0]["caller_symbol"], "QueryParser > parse_query");
+
+        // 3. Test get_architecture
+        let arch_res =
+            registry.execute_read("get_architecture", &engine, serde_json::json!({})).unwrap();
+
+        assert!(arch_res["total_nodes"].as_u64().unwrap() >= 1);
+        assert!(arch_res["clusters_count"].as_u64().unwrap() >= 1);
+
+        // 4. Test detect_changes
+        let change_res =
+            registry.execute("detect_changes", &mut engine, serde_json::json!({})).unwrap();
+
+        assert_eq!(change_res["new_files"].as_array().unwrap().len(), 0);
     }
 }

@@ -1,4 +1,4 @@
-﻿//! Search strategies: BM25, semantic (vector), hybrid, graph, related, multihop.
+//! Search strategies: BM25, semantic (vector), hybrid, graph, related, multihop.
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,18 +41,15 @@ pub fn search_semantic(
     // 3. Convert to SearchResult.
     let results: Vec<SearchResult> = vector_results
         .into_iter()
-        .map(|vr| SearchResult {
-            path: vr.doc_path,
-            score: vr.score,
-            snippet: None,
-            chunk_index: vr.chunk_index,
-            score_components: Some(ScoreBreakdown {
-                bm25: 0.0,
-                vector: vr.score,
-                graph_boost: 0.0,
-                graph_hops: None,
-            }),
-            lineage: None,
+        .map(|vr| {
+            SearchResult::new(vr.doc_path, vr.score)
+                .with_chunk_index(vr.chunk_index)
+                .with_score_components(ScoreBreakdown {
+                    bm25: 0.0,
+                    vector: vr.score,
+                    graph_boost: 0.0,
+                    graph_hops: None,
+                })
         })
         .collect();
 
@@ -72,18 +69,15 @@ pub fn search_semantic_with_embedding(
 
     let results: Vec<SearchResult> = vector_results
         .into_iter()
-        .map(|vr| SearchResult {
-            path: vr.doc_path,
-            score: vr.score,
-            snippet: None,
-            chunk_index: vr.chunk_index,
-            score_components: Some(ScoreBreakdown {
-                bm25: 0.0,
-                vector: vr.score,
-                graph_boost: 0.0,
-                graph_hops: None,
-            }),
-            lineage: None,
+        .map(|vr| {
+            SearchResult::new(vr.doc_path, vr.score)
+                .with_chunk_index(vr.chunk_index)
+                .with_score_components(ScoreBreakdown {
+                    bm25: 0.0,
+                    vector: vr.score,
+                    graph_boost: 0.0,
+                    graph_hops: None,
+                })
         })
         .collect();
 
@@ -170,13 +164,11 @@ fn rrf_fuse(result_lists: &[&[SearchResult]], limit: usize) -> Vec<SearchResult>
     // Build results sorted by RRF score.
     let mut results: Vec<SearchResult> = rrf_scores
         .into_iter()
-        .map(|(path, (score, snippet, chunk_index, components))| SearchResult {
-            path,
-            score,
-            snippet,
-            chunk_index,
-            score_components: Some(components),
-            lineage: None,
+        .map(|(path, (score, snippet, chunk_index, components))| {
+            SearchResult::new(path, score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(components)
         })
         .collect();
 
@@ -282,19 +274,15 @@ pub fn search_hybrid(
 
             let final_score = bm25_rrf + graph_rrf;
 
-            SearchResult {
-                path,
-                score: final_score,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, final_score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: bm25_score,
                     vector: 0.0,
                     graph_boost,
                     graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -425,19 +413,15 @@ pub fn search_hybrid_full(
     let mut results: Vec<SearchResult> = rrf_map
         .into_iter()
         .map(|(path, (rrf_total, bm25_score, vector_score, snippet, chunk_index, min_hops))| {
-            SearchResult {
-                path,
-                score: rrf_total,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, rrf_total)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: bm25_score,
                     vector: vector_score,
                     graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
                     graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -644,18 +628,13 @@ pub fn search_graph(
     // 3. Build results, sort by score, take top `limit`.
     let mut results: Vec<SearchResult> = score_map
         .into_iter()
-        .map(|(path, (score, min_hops))| SearchResult {
-            path,
-            score,
-            snippet: None,
-            chunk_index: None,
-            score_components: Some(ScoreBreakdown {
+        .map(|(path, (score, min_hops))| {
+            SearchResult::new(path, score).with_score_components(ScoreBreakdown {
                 bm25: 0.0,
                 vector: 0.0,
                 graph_boost: score,
                 graph_hops: Some(min_hops),
-            }),
-            lineage: None,
+            })
         })
         .collect();
 
@@ -711,18 +690,13 @@ pub fn search_related(
     // Build results, sort, truncate.
     let mut results: Vec<SearchResult> = score_map
         .into_iter()
-        .map(|(path, (score, min_hops))| SearchResult {
-            path,
-            score,
-            snippet: None,
-            chunk_index: None,
-            score_components: Some(ScoreBreakdown {
+        .map(|(path, (score, min_hops))| {
+            SearchResult::new(path, score).with_score_components(ScoreBreakdown {
                 bm25: 0.0,
                 vector: 0.0,
                 graph_boost: score,
                 graph_hops: Some(min_hops),
-            }),
-            lineage: None,
+            })
         })
         .collect();
 
@@ -793,13 +767,8 @@ pub fn search_multihop(
                 let vec_res = vector_index.search(&emb, limit * 2, false)?;
                 let vec_search: Vec<SearchResult> = vec_res
                     .into_iter()
-                    .map(|vr| SearchResult {
-                        path: vr.doc_path,
-                        score: vr.score,
-                        snippet: None,
-                        chunk_index: vr.chunk_index,
-                        score_components: None,
-                        lineage: None,
+                    .map(|vr| {
+                        SearchResult::new(vr.doc_path, vr.score).with_chunk_index(vr.chunk_index)
                     })
                     .collect();
                 rrf_fuse(&[&bm25_results, &vec_search], limit * 2)
@@ -825,14 +794,7 @@ pub fn search_multihop(
         let vector_results = vector_index.search(emb, limit * 2, false)?;
         let vector_as_search: Vec<SearchResult> = vector_results
             .into_iter()
-            .map(|vr| SearchResult {
-                path: vr.doc_path,
-                score: vr.score,
-                snippet: None,
-                chunk_index: vr.chunk_index,
-                score_components: None,
-                lineage: None,
-            })
+            .map(|vr| SearchResult::new(vr.doc_path, vr.score).with_chunk_index(vr.chunk_index))
             .collect();
         all_result_lists.push(vector_as_search);
     }
@@ -881,14 +843,7 @@ pub fn search_multihop(
         sorted_bridges.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let bridge_as_search: Vec<SearchResult> = sorted_bridges
             .into_iter()
-            .map(|(path, score)| SearchResult {
-                path,
-                score,
-                snippet: None,
-                chunk_index: None,
-                score_components: None,
-                lineage: None,
-            })
+            .map(|(path, score)| SearchResult::new(path, score))
             .collect();
         all_result_lists.push(bridge_as_search);
     }
@@ -930,19 +885,15 @@ pub fn search_multihop(
         .into_iter()
         .map(|(path, (score, snippet, chunk_index))| {
             let is_bridge = bridge_docs.contains_key(&path);
-            SearchResult {
-                path,
-                score,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: 0.0,
                     vector: 0.0,
                     graph_boost: if is_bridge { 1.0 } else { 0.0 },
                     graph_hops: None,
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -1053,14 +1004,7 @@ mod tests {
 
     /// Helper to create a simple chunk.
     fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
-        Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: index,
-            text: text.to_string(),
-            start_byte: 0,
-            end_byte: text.len(),
-            heading_chain: None,
-        }
+        Chunk::new(doc_path, index, text, 0, text.len())
     }
 
     /// Set up a BM25 index with some test documents.
@@ -1511,60 +1455,26 @@ mod tests {
     fn test_rrf_fuse_merges_lists() {
         // Test the RRF fusion logic directly.
         let list1 = vec![
-            SearchResult {
-                path: "A".to_string(),
-                score: 0.9,
-                snippet: None,
-                chunk_index: Some(0),
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.9,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
-            SearchResult {
-                path: "B".to_string(),
-                score: 0.7,
-                snippet: None,
-                chunk_index: Some(0),
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.7,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
+            SearchResult::new("A", 0.9).with_chunk_index(Some(0)).with_score_components(
+                ScoreBreakdown { bm25: 0.0, vector: 0.9, graph_boost: 0.0, graph_hops: None },
+            ),
+            SearchResult::new("B", 0.7).with_chunk_index(Some(0)).with_score_components(
+                ScoreBreakdown { bm25: 0.0, vector: 0.7, graph_boost: 0.0, graph_hops: None },
+            ),
         ];
         let list2 = vec![
-            SearchResult {
-                path: "B".to_string(),
-                score: 0.95,
-                snippet: None,
-                chunk_index: None,
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.95,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
-            SearchResult {
-                path: "C".to_string(),
-                score: 0.8,
-                snippet: None,
-                chunk_index: None,
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.8,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
+            SearchResult::new("B", 0.95).with_score_components(ScoreBreakdown {
+                bm25: 0.0,
+                vector: 0.95,
+                graph_boost: 0.0,
+                graph_hops: None,
+            }),
+            SearchResult::new("C", 0.8).with_score_components(ScoreBreakdown {
+                bm25: 0.0,
+                vector: 0.8,
+                graph_boost: 0.0,
+                graph_hops: None,
+            }),
         ];
 
         let fused = rrf_fuse(&[&list1, &list2], 5);

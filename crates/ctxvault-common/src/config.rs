@@ -111,6 +111,8 @@ pub enum ChunkingStrategy {
     /// Each heading section is one chunk (best for documentation).
     #[default]
     Heading,
+    /// Tree-sitter AST-guided syntactic node chunking (for polyglot source code).
+    CodeAst,
 }
 
 /// Embedding model configuration.
@@ -188,6 +190,8 @@ pub enum EdgeSource {
     Frontmatter,
     /// Derived from standard `[markdown](links)`.
     Reference,
+    /// Derived from code AST analysis (e.g. calls, defines, imports, implements).
+    Code,
 }
 
 /// Direction of a frontmatter-derived edge relative to the current note.
@@ -224,6 +228,7 @@ impl EdgeClass {
             EdgeSource::Wikilink => EdgeClass::Structural,
             EdgeSource::Frontmatter => EdgeClass::Structural,
             EdgeSource::Reference => EdgeClass::Structural,
+            EdgeSource::Code => EdgeClass::Structural,
         }
     }
 

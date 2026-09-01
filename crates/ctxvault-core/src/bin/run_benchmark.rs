@@ -120,12 +120,15 @@ fn main() {
     println!(" CTXVAULT RETRIEVAL QUALITY BENCHMARK RUNNER");
     println!("============================================================");
 
-    let corpus_dir = PathBuf::from(r"c:\dev\semantic\corpus");
+    let corpus_dir = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"c:\dev\ctx\ctxcorpus\anthropic"));
     let config_path = corpus_dir.join("corpus.toml");
     let index_dir = corpus_dir.join(".index");
-    let queries_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\queries.json");
-    let results_out_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\results_v2.json");
-    let report_out_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\report_v2.md");
+    let queries_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\queries.json");
+    let results_out_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\results_v2.json");
+    let report_out_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\report_v2.md");
 
     // Clean stale lock files
     let lock1 = index_dir.join("tantivy").join(".tantivy-meta.lock");

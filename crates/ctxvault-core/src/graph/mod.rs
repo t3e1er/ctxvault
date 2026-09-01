@@ -1,4 +1,6 @@
-﻿//! Knowledge graph: typed directed edges, traversal, PPR, subgraph extraction.
+//! Knowledge graph: typed directed edges, traversal, PPR, subgraph extraction.
+
+pub mod code;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -130,6 +132,18 @@ impl KnowledgeGraph {
         let _ = self.graph.add_edge(src_idx, tgt_idx, edge);
     }
 
+    /// Add a code edge into the graph with appropriate EdgeClass.
+    pub fn add_code_edge(&mut self, edge: &ctxvault_common::types::Edge) {
+        self.add_edge(
+            &edge.source,
+            &edge.target,
+            &edge.edge_type,
+            edge.weight,
+            edge.provenance.clone(),
+            EdgeClass::Structural,
+        );
+    }
+
     /// Remove all edges where the given path is source or target.
     pub fn remove_edges_for_node(&mut self, path: &str) {
         let Some(&idx) = self.node_map.get(path) else {
@@ -166,6 +180,28 @@ impl KnowledgeGraph {
         self.graph.edge_count()
     }
 
+    /// Retrieve all edges currently in the knowledge graph.
+    pub fn get_all_edges(&self) -> Vec<ctxvault_common::types::Edge> {
+        let mut edges = Vec::new();
+        for edge in self.graph.edge_references() {
+            let source_idx = edge.source();
+            let target_idx = edge.target();
+            if let (Some(source_node), Some(target_node)) =
+                (self.graph.node_weight(source_idx), self.graph.node_weight(target_idx))
+            {
+                let weight_data = edge.weight();
+                edges.push(ctxvault_common::types::Edge {
+                    source: source_node.path.clone(),
+                    target: target_node.path.clone(),
+                    edge_type: weight_data.edge_type.clone(),
+                    weight: weight_data.weight,
+                    provenance: weight_data.provenance.clone(),
+                });
+            }
+        }
+        edges
+    }
+
     // ─── Graph Builder ───────────────────────────────────────────────────────
 
     /// Build edges from a parsed Document based on the given edge type configurations.
@@ -194,6 +230,9 @@ impl KnowledgeGraph {
                     // Standard markdown link edges — similar to wikilinks but from
                     // markdown reference links. Not yet extracted in Document type.
                     // No-op for now.
+                }
+                EdgeSource::Code => {
+                    // Code AST edges are populated via dedicated code graph extraction passes.
                 }
             }
         }
