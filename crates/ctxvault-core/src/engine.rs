@@ -108,22 +108,30 @@ impl Engine {
         };
 
         // 5. Load or create vector index.
+        let configured_model_name =
+            crate::embedding::ModelName::from_str_name(&config.embedding.model).unwrap_or_default();
+        let configured_dimensions = configured_model_name.dimensions();
+        let configured_model_version = configured_model_name.version_string();
+
         let vector_path = index_dir.join("vectors.json");
         let mut vector_index = if vector_path.exists() {
             VectorIndex::load(&vector_path).unwrap_or_else(|e| {
                 warn!("Failed to load vector index from disk, starting fresh: {}", e);
-                VectorIndex::new_default(crate::vector_index::DEFAULT_DIMENSIONS)
+                VectorIndex::new_default(configured_dimensions)
             })
         } else {
-            VectorIndex::new_default(crate::vector_index::DEFAULT_DIMENSIONS)
+            VectorIndex::new_default(configured_dimensions)
         };
 
-        // 5b. Check model version staleness.
-        // Use the configured model from corpus config.
-        let configured_model_name =
-            crate::embedding::ModelName::from_str_name(&config.embedding.model).unwrap_or_default();
-        let configured_model_version = configured_model_name.version_string();
-        if let Some(stored_version) = vector_index.model_version() {
+        // 5b. Check model version staleness and dimension match.
+        if vector_index.dimensions() != configured_dimensions {
+            warn!(
+                "Vector index dimension mismatch: stored={}, configured={}. Vectors marked as stale.",
+                vector_index.dimensions(),
+                configured_dimensions
+            );
+            vector_index.mark_stale();
+        } else if let Some(stored_version) = vector_index.model_version() {
             if stored_version != configured_model_version {
                 warn!(
                     "Embedding model version mismatch: stored='{}', configured='{}'. Vectors marked as stale.",
@@ -1169,10 +1177,10 @@ mod tests {
             "entries": [{
                 "id": 0,
                 "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 384]
+                "vector": vec![0.1f32; 768]
             }],
             "next_id": 1,
-            "dimensions": 384,
+            "dimensions": 768,
             "max_nb_connection": 16,
             "ef_construction": 200,
             "model_version": "some-other-model-v99"
@@ -1201,10 +1209,10 @@ mod tests {
             "entries": [{
                 "id": 0,
                 "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 384]
+                "vector": vec![0.1f32; 768]
             }],
             "next_id": 1,
-            "dimensions": 384,
+            "dimensions": 768,
             "max_nb_connection": 16,
             "ef_construction": 200
         });

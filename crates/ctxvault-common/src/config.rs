@@ -118,13 +118,13 @@ pub enum ChunkingStrategy {
 /// Embedding model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
-    /// fastembed model identifier (e.g., "BAAI/bge-small-en-v1.5").
+    /// fastembed model identifier (e.g., "jinaai/jina-embeddings-v2-base-code").
     #[serde(default = "default_embedding_model")]
     pub model: String,
 }
 
 fn default_embedding_model() -> String {
-    "BAAI/bge-small-en-v1.5".to_string()
+    "jinaai/jina-embeddings-v2-base-code".to_string()
 }
 
 impl Default for EmbeddingConfig {

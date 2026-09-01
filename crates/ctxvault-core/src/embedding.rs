@@ -1,4 +1,4 @@
-﻿//! Embedding generation via fastembed-rs.
+//! Embedding generation via fastembed-rs.
 //!
 //! Provides local ONNX-based inference for generating text embeddings
 //! using models like MiniLM-L6-v2, nomic-embed-text, or BGE-small.
@@ -9,44 +9,53 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 /// Supported embedding model names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelName {
-    /// all-MiniLM-L6-v2 (384 dimensions, fast, good general-purpose).
-    AllMiniLmL6V2,
-    /// BGE-small-en-v1.5 (384 dimensions, better quality).
+    /// jinaai/jina-embeddings-v2-base-code (768 dimensions, 8192 token window, code + NL).
+    JinaEmbeddingsV2BaseCode,
+    /// BGE-small-en-v1.5 (384 dimensions, fast general-purpose).
     BgeSmallEnV15,
+    /// all-MiniLM-L6-v2 (384 dimensions).
+    AllMiniLmL6V2,
 }
 
 impl ModelName {
     /// Get the fastembed model enum variant.
     fn to_fastembed_model(&self) -> EmbeddingModel {
         match self {
-            Self::AllMiniLmL6V2 => EmbeddingModel::AllMiniLML6V2,
+            Self::JinaEmbeddingsV2BaseCode => EmbeddingModel::JinaEmbeddingsV2BaseCode,
             Self::BgeSmallEnV15 => EmbeddingModel::BGESmallENV15,
+            Self::AllMiniLmL6V2 => EmbeddingModel::AllMiniLML6V2,
         }
     }
 
     /// Get output dimensions for this model.
     pub fn dimensions(&self) -> usize {
         match self {
-            Self::AllMiniLmL6V2 => 384,
+            Self::JinaEmbeddingsV2BaseCode => 768,
             Self::BgeSmallEnV15 => 384,
+            Self::AllMiniLmL6V2 => 384,
         }
     }
 
     /// Parse a model name string into a `ModelName`.
     ///
     /// Accepts both short names and full identifiers:
+    /// - "jinaai/jina-embeddings-v2-base-code", "jina-embeddings-v2-base-code", "jina-code", "jina"
     /// - "BAAI/bge-small-en-v1.5", "bge-small-en-v1.5", "bge-small", "bge"
     /// - "Qdrant/all-MiniLM-L6-v2", "all-minilm-l6-v2", "minilm", "all-minilm"
     pub fn from_str_name(s: &str) -> Option<Self> {
         let lower = s.to_lowercase();
-        // Strip org prefix if present (e.g., "baai/bge-small-en-v1.5" -> "bge-small-en-v1.5")
+        // Strip org prefix if present (e.g., "jinaai/jina-embeddings-v2-base-code" -> "jina-embeddings-v2-base-code")
         let name = if let Some(idx) = lower.find('/') { &lower[idx + 1..] } else { &lower };
         match name {
+            "jina-embeddings-v2-base-code" | "jina-code" | "jina" => {
+                Some(Self::JinaEmbeddingsV2BaseCode)
+            }
             "all-minilm-l6-v2" | "minilm" | "all-minilm" => Some(Self::AllMiniLmL6V2),
             "bge-small-en-v1.5" | "bge-small" | "bge" => Some(Self::BgeSmallEnV15),
             _ => {
                 // Try matching against the full lowercased string as well
                 match lower.as_str() {
+                    s if s.contains("jina") => Some(Self::JinaEmbeddingsV2BaseCode),
                     s if s.contains("minilm") => Some(Self::AllMiniLmL6V2),
                     s if s.contains("bge-small") => Some(Self::BgeSmallEnV15),
                     _ => None,
@@ -58,15 +67,16 @@ impl ModelName {
     /// Get the canonical version string for this model.
     pub fn version_string(&self) -> &'static str {
         match self {
-            Self::AllMiniLmL6V2 => "all-minilm-l6-v2",
+            Self::JinaEmbeddingsV2BaseCode => "jina-embeddings-v2-base-code",
             Self::BgeSmallEnV15 => "bge-small-en-v1.5",
+            Self::AllMiniLmL6V2 => "all-minilm-l6-v2",
         }
     }
 }
 
 impl Default for ModelName {
     fn default() -> Self {
-        Self::BgeSmallEnV15
+        Self::JinaEmbeddingsV2BaseCode
     }
 }
 
@@ -194,6 +204,15 @@ mod tests {
 
     #[test]
     fn test_model_name_parsing() {
+        assert_eq!(
+            ModelName::from_str_name("jina-embeddings-v2-base-code"),
+            Some(ModelName::JinaEmbeddingsV2BaseCode)
+        );
+        assert_eq!(
+            ModelName::from_str_name("jinaai/jina-embeddings-v2-base-code"),
+            Some(ModelName::JinaEmbeddingsV2BaseCode)
+        );
+        assert_eq!(ModelName::from_str_name("jina-code"), Some(ModelName::JinaEmbeddingsV2BaseCode));
         assert_eq!(ModelName::from_str_name("minilm"), Some(ModelName::AllMiniLmL6V2));
         assert_eq!(ModelName::from_str_name("all-MiniLM-L6-v2"), Some(ModelName::AllMiniLmL6V2));
         assert_eq!(
@@ -209,12 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn test_default_model_is_bge() {
-        assert_eq!(ModelName::default(), ModelName::BgeSmallEnV15);
+    fn test_default_model_is_jina() {
+        assert_eq!(ModelName::default(), ModelName::JinaEmbeddingsV2BaseCode);
     }
 
     #[test]
     fn test_dimensions() {
+        assert_eq!(ModelName::JinaEmbeddingsV2BaseCode.dimensions(), 768);
         assert_eq!(ModelName::AllMiniLmL6V2.dimensions(), 384);
         assert_eq!(ModelName::BgeSmallEnV15.dimensions(), 384);
     }

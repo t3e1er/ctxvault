@@ -1,4 +1,4 @@
-﻿//! Vector index: HNSW-based approximate nearest neighbor search.
+//! Vector index: HNSW-based approximate nearest neighbor search.
 //!
 //! Wraps `hnsw_rs` to provide add/remove/search/save/load operations
 //! for embedding vectors. Supports both chunk-level and document-level vectors.
@@ -11,8 +11,8 @@ use ctxvault_common::{Error, Result};
 use hnsw_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Default number of dimensions for MiniLM-L6-v2 embeddings.
-pub const DEFAULT_DIMENSIONS: usize = 384;
+/// Default number of dimensions for Jina embeddings (768).
+pub const DEFAULT_DIMENSIONS: usize = 768;
 
 /// Metadata about a stored vector, mapping HNSW internal IDs to documents/chunks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
