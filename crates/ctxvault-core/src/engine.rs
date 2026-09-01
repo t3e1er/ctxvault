@@ -126,10 +126,12 @@ impl Engine {
         // 5b. Check model version staleness and dimension match.
         if vector_index.dimensions() != configured_dimensions {
             warn!(
-                "Vector index dimension mismatch: stored={}, configured={}. Vectors marked as stale.",
+                "Vector index dimension mismatch: stored={}, configured={}. Recreating index with {} dimensions and marking stale.",
                 vector_index.dimensions(),
+                configured_dimensions,
                 configured_dimensions
             );
+            vector_index = VectorIndex::new_default(configured_dimensions);
             vector_index.mark_stale();
         } else if let Some(stored_version) = vector_index.model_version() {
             if stored_version != configured_model_version {
@@ -271,13 +273,12 @@ impl Engine {
                 }
 
                 // 5. Code Graph
-                let all_symbols = self.store.get_all_code_symbols().unwrap_or_default();
                 self.graph.remove_edges_for_node(rel_path);
                 let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
                     path,
                     content,
                     &res.symbols,
-                    &all_symbols,
+                    &res.symbols,
                 );
                 for edge in &edges {
                     self.graph.add_code_edge(edge);

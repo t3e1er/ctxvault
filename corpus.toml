@@ -1,0 +1,29 @@
+name = "ctxvault"
+path = "C:/dev/ctx/ctxvault"
+mode = "read-write"
+
+[chunking]
+strategy = "heading"
+target_tokens = 512
+max_tokens = 1024
+min_chunk_tokens = 50
+overlap_tokens = 64
+respect_headings = true
+
+[embedding]
+model = "jinaai/jina-embeddings-v2-base-code"
+
+[[graph.edge_types]]
+name = "Wikilink"
+source = "wikilink"
+weight = 1.0
+bidirectional = false
+class = "structural"
+
+[[graph.edge_types]]
+name = "SharedTag"
+source = "tag"
+weight = 0.5
+bidirectional = true
+max_frequency = 50
+class = "semantic"
