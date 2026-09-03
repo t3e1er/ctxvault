@@ -12,7 +12,7 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[how-search-pipeline-works]].
 
 ---
 
-## 🛑 The Failure Modes of Single-Modality Search
+##  The Failure Modes of Single-Modality Search
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -20,20 +20,20 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[how-search-pipeline-works]].
 ├──────────────────────────────┬──────────────────────────────────────────────┤
 │ Paradigm                     │ Critical Weakness in Codebases & Docs        │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
-│ ❌ Pure Lexical (BM25)       │ Blind to synonyms, conceptual explanations,  │
+│  Pure Lexical (BM25)         │ Blind to synonyms, conceptual explanations,  │
 │                              │ paraphrasing, and cross-language concepts.   │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
-│ ❌ Pure Dense Vectors (HNSW) │ Fails on exact symbol names, camelCase,      │
+│  Pure Dense Vectors (HNSW)   │ Fails on exact symbol names, camelCase,      │
 │                              │ snake_case, GUIDs, and specific error codes. │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
-│ ❌ Pure Graph Walks          │ Trapped within existing explicit edges;      │
+│  Pure Graph Walks            │ Trapped within existing explicit edges;      │
 │                              │ cannot discover unlinked conceptual nodes.   │
 └──────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎯 The Cross-Modal Advantage
+## The Cross-Modal Advantage
 
 Real-world developer queries span the spectrum between **pure semantic concepts** and **exact syntactic identifiers**:
 
@@ -46,7 +46,7 @@ By combining all three paradigms with **Reciprocal Rank Fusion (RRF)**, ctxvault
 
 ---
 
-## 📐 The Reciprocal Rank Fusion (RRF) Principle
+## The Reciprocal Rank Fusion (RRF) Principle
 
 Instead of attempting fragile linear score combinations ($\alpha \cdot \text{BM25} + \beta \cdot \text{Vector}$), ctxvault scores each document $d$ purely based on its ordinal rank $r_i(d)$ within each retrieval modality $i$:
 

@@ -1,6 +1,9 @@
 //! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
 
+pub mod pipeline;
+
 use std::path::Path;
+
 
 use tantivy::{
     collector::TopDocs,
@@ -99,7 +102,7 @@ impl BM25Index {
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
 
@@ -127,7 +130,7 @@ impl BM25Index {
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
 
@@ -230,8 +233,6 @@ impl BM25Index {
         if let Some(ref mut writer) = self.writer {
             let _ = writer.commit().map_err(|e| Error::Index(e.to_string()))?;
         }
-        // Release writer to drop the exclusive file lock.
-        self.release_writer();
         Ok(())
     }
 

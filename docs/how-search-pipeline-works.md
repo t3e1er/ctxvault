@@ -12,7 +12,7 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[why-hybrid-retrieval]], [[how-
 
 ---
 
-## ⚡ Step-by-Step Retrieval Lifecycle
+## Step-by-Step Retrieval Lifecycle
 
 ```
                            Incoming Search Query
@@ -41,7 +41,7 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[why-hybrid-retrieval]], [[how-
 
 ---
 
-## 🔍 Retrieval Phases Explained
+## Retrieval Phases Explained
 
 ### Phase 1: Tantivy Lexical Search
 * Performs BM25 scoring over title, body, and code chunk fields.

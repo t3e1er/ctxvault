@@ -262,6 +262,50 @@ impl KnowledgeGraph {
         }
     }
 
+    /// High-performance inverted-index tag edge builder across all documents.
+    pub fn build_all_tag_edges(&mut self, configs: &[EdgeTypeConfig], all_docs: &[Document]) {
+        if configs.is_empty() || all_docs.is_empty() {
+            return;
+        }
+
+        let n = all_docs.len() as f32;
+
+        // 1. Build inverted tag postings: tag -> Vec<&str>
+        let mut tag_postings: HashMap<&str, Vec<&str>> = HashMap::new();
+        for d in all_docs {
+            for tag in &d.tags {
+                tag_postings.entry(tag.as_str()).or_default().push(&d.path);
+            }
+        }
+
+        // 2. Add edges for each tag edge config
+        for config in configs {
+            let class = config.class.unwrap_or_else(|| EdgeClass::infer_from_source(&config.source));
+            for (&_tag, paths) in &tag_postings {
+                let doc_freq = paths.len();
+                if let Some(max_freq) = config.max_frequency {
+                    if doc_freq > max_freq {
+                        continue;
+                    }
+                }
+                let idf = (n / doc_freq as f32).ln();
+                let edge_weight = config.weight * idf;
+                if edge_weight <= 0.0 {
+                    continue;
+                }
+
+                for (i, p1) in paths.iter().enumerate() {
+                    for p2 in &paths[i + 1..] {
+                        self.add_edge(p1, p2, &config.name, edge_weight, EdgeProvenance::SharedTag, class);
+                        if config.bidirectional {
+                            self.add_edge(p2, p1, &config.name, edge_weight, EdgeProvenance::SharedTag, class);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn build_tag_edges(&mut self, doc: &Document, config: &EdgeTypeConfig, all_docs: &[Document]) {
         if doc.tags.is_empty() || all_docs.is_empty() {
             return;

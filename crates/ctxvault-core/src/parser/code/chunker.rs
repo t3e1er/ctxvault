@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use ctxvault_common::config::ChunkingConfig;
-use ctxvault_common::types::{Chunk, CodeSymbol, CodeSymbolType};
+use ctxvault_common::types::{Chunk, ChunkEmbedPolicy, CodeSymbol, CodeSymbolType};
 use tree_sitter::{Node, Parser};
 
 use super::languages::{detect_language, SupportedLanguage};
@@ -29,7 +29,7 @@ impl CodeChunker {
     pub fn parse_and_chunk(
         file_path: &Path,
         content: &str,
-        _config: &ChunkingConfig,
+        config: &ChunkingConfig,
     ) -> Option<CodeParseResult> {
         let lang = detect_language(file_path)?;
         let mut parser = Parser::new();
@@ -42,8 +42,9 @@ impl CodeChunker {
             tracing::warn!("Failed to parse content for {}", file_path.display());
             return None;
         };
+        let max_chars = config.max_tokens.max(256) * 4;
         let mut extractor =
-            AstExtractor::new(file_path.to_string_lossy().to_string(), content, lang);
+            AstExtractor::new(file_path.to_string_lossy().to_string(), content, lang, max_chars);
         extractor.traverse(tree.root_node());
 
         Some(CodeParseResult { chunks: extractor.chunks, symbols: extractor.symbols })
@@ -54,6 +55,7 @@ struct AstExtractor<'a> {
     file_path: String,
     content: &'a str,
     language: SupportedLanguage,
+    max_chars: usize,
     scope_stack: Vec<String>,
     chunks: Vec<Chunk>,
     symbols: Vec<CodeSymbol>,
@@ -61,11 +63,12 @@ struct AstExtractor<'a> {
 }
 
 impl<'a> AstExtractor<'a> {
-    fn new(file_path: String, content: &'a str, language: SupportedLanguage) -> Self {
+    fn new(file_path: String, content: &'a str, language: SupportedLanguage, max_chars: usize) -> Self {
         Self {
             file_path,
             content,
             language,
+            max_chars,
             scope_stack: Vec::new(),
             chunks: Vec::new(),
             symbols: Vec::new(),
@@ -145,13 +148,6 @@ impl<'a> AstExtractor<'a> {
                 end_line,
             });
 
-            // Register AST chunk
-            let chunk =
-                Chunk::new(&self.file_path, self.chunk_index, chunk_text, start_byte, end_byte)
-                    .with_code_metadata(lang.name(), &full_scope, start_line, end_line);
-            self.chunks.push(chunk);
-            self.chunk_index += 1;
-
             // If it's a container type (class, struct, trait, impl), push to scope stack and traverse children
             let is_container = matches!(
                 sym_type,
@@ -162,6 +158,33 @@ impl<'a> AstExtractor<'a> {
                     | CodeSymbolType::Module
                     | CodeSymbolType::Enum
             );
+
+            // Large container nodes (e.g. large impl blocks) have their child functions emitted separately.
+            // For the container itself, emit header up to max_chars to describe the container.
+            let emit_text = if is_container && raw_node_text.len() > self.max_chars {
+                let mut truncated = raw_node_text;
+                if let Some((idx, _)) = truncated.char_indices().nth(self.max_chars.saturating_sub(breadcrumb.len())) {
+                    truncated = &truncated[..idx];
+                }
+                format!("{breadcrumb}{truncated}")
+            } else if chunk_text.len() > self.max_chars {
+                let mut truncated = &chunk_text[..];
+                if let Some((idx, _)) = truncated.char_indices().nth(self.max_chars) {
+                    truncated = &truncated[..idx];
+                }
+                truncated.to_string()
+            } else {
+                chunk_text
+            };
+
+            // Register AST chunk
+            let embed_policy = classify_embed_policy(sym_type, raw_node_text, lang, &self.file_path);
+            let chunk =
+                Chunk::new(&self.file_path, self.chunk_index, emit_text, start_byte, end_byte)
+                    .with_code_metadata(lang.name(), &full_scope, start_line, end_line)
+                    .with_embed_policy(embed_policy);
+            self.chunks.push(chunk);
+            self.chunk_index += 1;
 
             if is_container {
                 self.scope_stack.push(name);
@@ -681,6 +704,178 @@ impl<'a> AstExtractor<'a> {
     }
 }
 
+/// Classify whether an AST code symbol should be a semantic anchor (embedded)
+/// or graph-only (BM25 + AST graph only, no dense vector embedding).
+///
+/// Under Option 2 Anchor Embedding:
+/// - Semantic Anchors (dense vector forward pass):
+///   - Top-level domain type definitions (Struct, Class, Trait, Interface, Enum).
+///   - Public modules (`pub mod`).
+///   - Exported / documented public APIs (`pub fn` with doc comments, or top-level public functions).
+/// - Graph-Only (indexed via BM25 exact term matching + Petgraph AST relationships, zero neural forward pass):
+///   - Test files (`/tests/`, `tests.rs`, `_test.go`, etc.) and test functions (`#[test]`, `Test*`).
+///   - `impl` blocks (`impl Trait for Type`, `impl Type`) — the struct and methods are already connected.
+///   - Private/internal functions, leaf expressions, and undocumented internal methods.
+pub fn classify_embed_policy(
+    sym_type: CodeSymbolType,
+    node_text: &str,
+    lang: SupportedLanguage,
+    file_path: &str,
+) -> ChunkEmbedPolicy {
+    // 1. Exclude test files entirely from anchor embeddings
+    let norm_path = file_path.replace('\\', "/");
+    if norm_path.starts_with("tests/")
+        || norm_path.starts_with("test/")
+        || norm_path.contains("/tests/")
+        || norm_path.contains("/test/")
+        || norm_path.ends_with("tests.rs")
+        || norm_path.ends_with("_test.rs")
+        || norm_path.ends_with("_test.go")
+        || norm_path.contains(".test.")
+        || norm_path.contains(".spec.")
+    {
+        return ChunkEmbedPolicy::GraphOnly;
+    }
+
+    let trimmed = node_text.trim();
+
+    // 2. Exclude unit/integration test symbols
+    if trimmed.contains("#[test]") || trimmed.contains("#[cfg(test)]") {
+        return ChunkEmbedPolicy::GraphOnly;
+    }
+
+    // 3. Exclude `impl` blocks from anchor embeddings (they are implementation scopes, not top-level API definitions)
+    if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
+        return ChunkEmbedPolicy::GraphOnly;
+    }
+
+    // 4. Core domain containers (Struct, Class, Trait, Interface, Enum) are always anchors
+    match sym_type {
+        CodeSymbolType::Class
+        | CodeSymbolType::Struct
+        | CodeSymbolType::Trait
+        | CodeSymbolType::Interface
+        | CodeSymbolType::Enum => return ChunkEmbedPolicy::Anchor,
+        CodeSymbolType::Module => {
+            // Only public modules are anchors
+            if lang == SupportedLanguage::Rust {
+                if trimmed.starts_with("pub mod") || trimmed.starts_with("pub(crate) mod") || trimmed.contains("pub mod") {
+                    return ChunkEmbedPolicy::Anchor;
+                } else {
+                    return ChunkEmbedPolicy::GraphOnly;
+                }
+            } else {
+                return ChunkEmbedPolicy::Anchor;
+            }
+        }
+        _ => {}
+    }
+
+    // 5. Only functions and methods can be anchors if public/exported
+    if !matches!(sym_type, CodeSymbolType::Function | CodeSymbolType::Method) {
+        return ChunkEmbedPolicy::GraphOnly;
+    }
+
+    match lang {
+        SupportedLanguage::Rust => {
+            let is_pub = trimmed
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| {
+                    !l.is_empty()
+                        && !l.starts_with("#[")
+                        && !l.starts_with("//")
+                        && !l.starts_with("/*")
+                        && !l.starts_with('*')
+                })
+                .next()
+                .map(|l| {
+                    l.starts_with("pub fn")
+                        || l.starts_with("pub(crate) fn")
+                        || l.starts_with("pub ")
+                        || l.starts_with("pub(")
+                })
+                .unwrap_or(false);
+
+            if is_pub {
+                // To keep anchor density focused on architectural entrypoints:
+                // Require doc comments OR primary top-level visibility
+                let has_docstring = trimmed.contains("///") || trimmed.contains("/**");
+                let is_top_level = !trimmed.contains("&self") && !trimmed.contains("&mut self");
+                if has_docstring || is_top_level {
+                    ChunkEmbedPolicy::Anchor
+                } else {
+                    ChunkEmbedPolicy::GraphOnly
+                }
+            } else {
+                ChunkEmbedPolicy::GraphOnly
+            }
+        }
+        SupportedLanguage::Go => {
+            // In Go: func Name(...) or func (r Receiver) Name(...)
+            let mut text = trimmed;
+            if let Some(rest) = text.strip_prefix("func") {
+                text = rest.trim_start();
+            }
+            if text.starts_with('(') {
+                if let Some(close_idx) = text.find(')') {
+                    text = text[close_idx + 1..].trim_start();
+                }
+            }
+            let is_exported = text
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false);
+
+            if is_exported && !text.starts_with("Test") && !text.starts_with("Benchmark") {
+                ChunkEmbedPolicy::Anchor
+            } else {
+                ChunkEmbedPolicy::GraphOnly
+            }
+        }
+        SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => {
+            let is_exported = trimmed.starts_with("export function")
+                || trimmed.starts_with("export default")
+                || trimmed.starts_with("export const")
+                || trimmed.starts_with("export class")
+                || trimmed.starts_with("export interface")
+                || trimmed.starts_with("export ")
+                || trimmed.contains("export ");
+
+            if is_exported {
+                ChunkEmbedPolicy::Anchor
+            } else {
+                ChunkEmbedPolicy::GraphOnly
+            }
+        }
+        SupportedLanguage::Python => {
+            let mut text = trimmed;
+            if let Some(rest) = text.strip_prefix("async ") {
+                text = rest.trim_start();
+            }
+            if let Some(rest) = text.strip_prefix("def ") {
+                text = rest.trim_start();
+            }
+            let is_private = text.starts_with('_');
+            let is_test = text.starts_with("test_");
+            if is_private || is_test {
+                ChunkEmbedPolicy::GraphOnly
+            } else {
+                ChunkEmbedPolicy::Anchor
+            }
+        }
+        SupportedLanguage::Java | SupportedLanguage::CSharp => {
+            if trimmed.contains("public ") && !trimmed.contains("@Test") {
+                ChunkEmbedPolicy::Anchor
+            } else {
+                ChunkEmbedPolicy::GraphOnly
+            }
+        }
+        _ => ChunkEmbedPolicy::Anchor,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +1090,52 @@ deploy_app() {
             .symbols
             .iter()
             .any(|s| s.name == "deploy_app" && s.symbol_type == CodeSymbolType::Function));
+    }
+
+    #[test]
+    fn test_classify_embed_policy() {
+        // Containers are always anchors (except impl blocks)
+        assert_eq!(classify_embed_policy(CodeSymbolType::Struct, "struct Internal;", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Class, "class Secret {}", SupportedLanguage::TypeScript, "src/lib.ts"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Trait, "trait Handler {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Interface, "interface Api {}", SupportedLanguage::TypeScript, "src/lib.ts"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Enum, "enum Status {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Module, "pub mod internal {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Module, "impl<T> Handler for Service<T> {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+
+        // Test files are always GraphOnly
+        assert_eq!(classify_embed_policy(CodeSymbolType::Struct, "pub struct TestFixture {}", SupportedLanguage::Rust, "src/tests.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub fn test_helper() {}", SupportedLanguage::Rust, "tests/integration.rs"), ChunkEmbedPolicy::GraphOnly);
+
+        // Rust functions/methods
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub fn exported() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub(crate) fn crate_visible() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "#[inline]\npub fn with_attr() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "fn private_helper() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "fn private_method(&self) {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "#[test]\npub fn my_test() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+
+        // Go functions/methods
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "func ExportedFunction() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "func internalHelper() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "func (s *Server) ListenAndServe() error {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "func (s *Server) cleanup() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::GraphOnly);
+
+        // TypeScript / JavaScript
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "export function search() {}", SupportedLanguage::TypeScript, "src/index.ts"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "function localHelper() {}", SupportedLanguage::TypeScript, "src/index.ts"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "export default function handler() {}", SupportedLanguage::JavaScript, "src/index.js"), ChunkEmbedPolicy::Anchor);
+
+        // Python
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "def public_endpoint(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "def _private_worker(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "async def fetch_data(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "async def _internal(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::GraphOnly);
+
+        // Java / C#
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "public void handleRequest() {}", SupportedLanguage::Java, "Server.java"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "private void calculate() {}", SupportedLanguage::Java, "Server.java"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "public async Task Execute() {}", SupportedLanguage::CSharp, "Worker.cs"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "internal void Init() {}", SupportedLanguage::CSharp, "Worker.cs"), ChunkEmbedPolicy::GraphOnly);
     }
 }

@@ -30,7 +30,7 @@ A high modularity score ($Q > 0.7$) indicates tightly-knit internal cohesive mod
 
 ---
 
-## 📊 Cross-Modal Clustering in Action
+## Cross-Modal Clustering in Action
 
 When `get_architecture` is called, the algorithm partitions the knowledge graph:
 1. **Hub Communities**: Connects architecture documents (ADRs) to the subsystems they define.
@@ -39,7 +39,7 @@ When `get_architecture` is called, the algorithm partitions the knowledge graph:
 
 ---
 
-## ⚡ Filesystem Delta Scanning & Blast Radius (`detect_changes`)
+## Filesystem Delta Scanning & Blast Radius (`detect_changes`)
 
 When a developer modifies or deletes a file:
 1. `detect_changes` performs a fast timestamp and SHA-256 hash comparison across the filesystem.

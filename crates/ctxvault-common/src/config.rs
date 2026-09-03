@@ -14,11 +14,14 @@ pub struct CorpusConfig {
     /// Access mode for this corpus.
     #[serde(default)]
     pub mode: CorpusMode,
+    /// Indexing mode: "full" (default) or "fast" (BM25+Graph only, no embedding).
+    #[serde(default)]
+    pub index_mode: IndexMode,
     /// Chunking strategy and parameters.
     #[serde(default)]
     pub chunking: ChunkingConfig,
-    /// Embedding model configuration.
-    #[serde(default)]
+    /// Embedding model configuration (alias: `[embedder]`).
+    #[serde(default, alias = "embedder")]
     pub embedding: EmbeddingConfig,
     /// Graph edge type definitions.
     #[serde(default)]
@@ -30,6 +33,18 @@ pub struct CorpusConfig {
 
 fn default_templates_dir() -> String {
     ".templates".to_string()
+}
+
+/// Indexing mode controlling which index backends are populated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexMode {
+    /// Full indexing: BM25 + Graph + Embedding/Vector (default).
+    #[default]
+    Full,
+    /// Fast mode: BM25 + Graph only. No ONNX model loading, no embedding, no HNSW vector index.
+    /// Semantic/vector search tools are unavailable; BM25 keyword search and graph tools work immediately.
+    Fast,
 }
 
 /// Corpus access mode.
@@ -124,7 +139,7 @@ pub struct EmbeddingConfig {
 }
 
 fn default_embedding_model() -> String {
-    "jinaai/jina-embeddings-v2-base-code".to_string()
+    "jina-embeddings-v2-base-code-int8".to_string()
 }
 
 impl Default for EmbeddingConfig {
@@ -302,5 +317,53 @@ mod tests {
         assert_eq!(config.embedding.model, "BAAI/bge-small-en-v1.5");
         assert_eq!(config.graph.edge_types.len(), 2);
         assert_eq!(config.graph.edge_types[1].name, "Implements");
+    }
+
+    #[test]
+    fn parse_corpus_config_embedder_alias_and_default() {
+        // Test omitting [embedding] completely inherits global default
+        let toml_minimal = r#"
+            name = "default-embedder"
+            path = "./vault"
+        "#;
+        let config_min: CorpusConfig = toml::from_str(toml_minimal).unwrap();
+        assert_eq!(config_min.embedding.model, "jina-embeddings-v2-base-code-int8");
+
+        // Test using [embedder] instead of [embedding]
+        let toml_alias = r#"
+            name = "alias-embedder"
+            path = "./vault"
+
+            [embedder]
+            model = "custom-model"
+        "#;
+        let config_alias: CorpusConfig = toml::from_str(toml_alias).unwrap();
+        assert_eq!(config_alias.embedding.model, "custom-model");
+    }
+
+    #[test]
+    fn parse_corpus_config_index_mode() {
+        let toml_fast = r#"
+            name = "fast-corpus"
+            path = "./src"
+            index_mode = "fast"
+        "#;
+        let config_fast: CorpusConfig = toml::from_str(toml_fast).unwrap();
+        assert_eq!(config_fast.index_mode, IndexMode::Fast);
+
+        let toml_full = r#"
+            name = "full-corpus"
+            path = "./src"
+            index_mode = "full"
+        "#;
+        let config_full: CorpusConfig = toml::from_str(toml_full).unwrap();
+        assert_eq!(config_full.index_mode, IndexMode::Full);
+
+        let toml_default = r#"
+            name = "default-corpus"
+            path = "./src"
+        "#;
+        let config_def: CorpusConfig = toml::from_str(toml_default).unwrap();
+        assert_eq!(config_def.index_mode, IndexMode::Full);
     }
 }

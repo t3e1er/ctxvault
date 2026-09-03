@@ -565,7 +565,8 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" }
+                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" },
+                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" }
                 },
                 "required": []
             }),
@@ -579,7 +580,8 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "batch_size": { "type": "number", "description": "Batch size for intermediate checkpoints (default 50)" },
-                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" }
+                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" },
+                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" }
                 },
                 "required": []
             }),
@@ -1053,12 +1055,14 @@ struct CoverageReportParams {
 #[derive(Deserialize)]
 struct SyncCorpusParams {
     batch_size: Option<usize>,
+    fast: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct ReindexCorpusParams {
     batch_size: Option<usize>,
     resume: Option<bool>,
+    fast: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1177,12 @@ fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
 
 /// Semantic vector search using embedding similarity.
 fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
+    if engine.is_fast_mode() || engine.vector_index().is_none() {
+        return Err(Error::Index(
+            "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+        ));
+    }
+
     let params: SearchSemanticParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1195,8 +1205,10 @@ fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
         }
     };
 
+    let vector_index = engine.vector_index().unwrap();
+
     let mut results = search::search_semantic_dual(
-        engine.vector_index(),
+        vector_index,
         &embedder,
         &params.query,
         limit,
@@ -1228,26 +1240,39 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
     let query_embedding =
         embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
-    let results = if params.decompose == Some(true) {
-        // Multi-hop query decomposition mode.
-        search::search_multihop(
-            engine.bm25(),
-            engine.vector_index(),
-            engine.graph(),
-            embedder_opt.as_deref(),
-            &params.query,
-            query_embedding.as_deref(),
-            limit,
-            graph_depth,
-            edge_type_filter.as_deref(),
-        )?
+    let results = if let Some(vector_index) = engine.vector_index() {
+        if params.decompose == Some(true) {
+            // Multi-hop query decomposition mode.
+            search::search_multihop(
+                engine.bm25(),
+                vector_index,
+                engine.graph(),
+                embedder_opt.as_deref(),
+                &params.query,
+                query_embedding.as_deref(),
+                limit,
+                graph_depth,
+                edge_type_filter.as_deref(),
+            )?
+        } else {
+            search::search_hybrid_full(
+                engine.bm25(),
+                vector_index,
+                engine.graph(),
+                &params.query,
+                query_embedding.as_deref(),
+                limit,
+                graph_depth,
+                edge_type_filter.as_deref(),
+                edge_class_filter,
+            )?
+        }
     } else {
-        search::search_hybrid_full(
+        // Fast Mode fallback: BM25 + Graph
+        search::search_hybrid(
             engine.bm25(),
-            engine.vector_index(),
             engine.graph(),
             &params.query,
-            query_embedding.as_deref(),
             limit,
             graph_depth,
             edge_type_filter.as_deref(),
@@ -1312,9 +1337,18 @@ fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
     let query_embedding =
         engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
+    let dummy_vi;
+    let vector_index = match engine.vector_index() {
+        Some(vi) => vi,
+        None => {
+            dummy_vi = ctxvault_core::vector_index::VectorIndex::new_default(384);
+            &dummy_vi
+        }
+    };
+
     let explanations = search::search_explain(
         engine.bm25(),
-        engine.vector_index(),
+        vector_index,
         engine.graph(),
         &params.query,
         query_embedding.as_deref(),
@@ -1437,7 +1471,7 @@ fn handle_corpus_list(engine: &Engine, _args: Value) -> Result<Value> {
         "mode": format!("{:?}", engine.config().mode),
         "file_count": file_count,
         "embedder_active": engine.embedder_ref().is_some(),
-        "vector_count": engine.vector_index().len(),
+        "vector_count": engine.vector_index().map(|vi| vi.len()).unwrap_or(0),
         "graph_node_count": engine.graph().node_count(),
     }]);
 
@@ -1465,7 +1499,14 @@ fn handle_reembed_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
 /// Delta sync: index new/modified files, remove deleted files in configurable batches.
 fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: SyncCorpusParams =
-        serde_json::from_value(args).unwrap_or(SyncCorpusParams { batch_size: None });
+        serde_json::from_value(args).unwrap_or(SyncCorpusParams { batch_size: None, fast: None });
+    if let Some(fast) = params.fast {
+        engine.config_mut().index_mode = if fast {
+            ctxvault_common::config::IndexMode::Fast
+        } else {
+            ctxvault_common::config::IndexMode::Full
+        };
+    }
     let batch_size = params.batch_size.unwrap_or(50);
     let result = engine.delta_scan_paginated(batch_size)?;
 
@@ -1483,7 +1524,14 @@ fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
 /// Full reindex: clear all indices and rebuild from scratch or resume in configurable batches.
 fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: ReindexCorpusParams = serde_json::from_value(args)
-        .unwrap_or(ReindexCorpusParams { batch_size: None, resume: None });
+        .unwrap_or(ReindexCorpusParams { batch_size: None, resume: None, fast: None });
+    if let Some(fast) = params.fast {
+        engine.config_mut().index_mode = if fast {
+            ctxvault_common::config::IndexMode::Fast
+        } else {
+            ctxvault_common::config::IndexMode::Full
+        };
+    }
     let batch_size = params.batch_size.unwrap_or(50);
     let resume = params.resume.unwrap_or(true);
     let count = engine.full_reindex_paginated(batch_size, resume)?;
@@ -1531,6 +1579,12 @@ fn handle_analyze_density(engine: &Engine, args: Value) -> Result<Value> {
 
 /// Find semantic gaps between BM25 and vector search.
 fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
+    if engine.is_fast_mode() || engine.vector_index().is_none() {
+        return Err(Error::Index(
+            "Semantic gap analysis is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+        ));
+    }
+
     let params: FindSemanticGapsParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1551,10 +1605,11 @@ fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
         }));
     }
 
+    let vector_index = engine.vector_index().unwrap();
     let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
     let gaps = ctxvault_core::analytics::find_semantic_gaps(
         engine.bm25(),
-        engine.vector_index(),
+        vector_index,
         &query_refs,
         &query_embeddings,
         top_k,
@@ -2473,7 +2528,7 @@ mod tests {
     use super::*;
     use ctxvault_common::config::{
         ChunkingConfig, CorpusConfig, CorpusMode, EdgeSource, EdgeTypeConfig, EmbeddingConfig,
-        GraphConfig,
+        GraphConfig, IndexMode,
     };
     use ctxvault_common::types::EdgeProvenance;
     use std::fs;
@@ -2485,6 +2540,7 @@ mod tests {
             name: "test".to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig {
@@ -2977,6 +3033,7 @@ mod tests {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -3020,6 +3077,7 @@ mod tests {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -3029,6 +3087,7 @@ mod tests {
             name: "docs".to_string(),
             path: docs_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -3107,6 +3166,7 @@ mod tests {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -3137,6 +3197,7 @@ mod tests {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -3400,5 +3461,78 @@ pub fn tokenize(input: &str) -> Vec<String> {
             registry.execute("detect_changes", &mut engine, serde_json::json!({})).unwrap();
 
         assert_eq!(change_res["new_files"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_fast_mode_mcp_tools() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("fast_corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        fs::write(
+            corpus_dir.join("guide.md"),
+            "# Architecture Guide\nFast mode provides instant BM25 and graph search without vector models.\n",
+        )
+        .unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = IndexMode::Fast;
+
+        let index_dir = tmp.path().join(".index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+        let files_indexed = engine.full_reindex().unwrap();
+        assert_eq!(files_indexed, 1);
+        assert!(engine.is_fast_mode());
+        assert!(engine.vector_index().is_none());
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Semantic search must fail with the exact fast mode error message
+        let sem_err = registry
+            .execute_read(
+                "search_semantic",
+                &engine,
+                serde_json::json!({ "query": "architecture guide" }),
+            )
+            .unwrap_err();
+        assert!(
+            sem_err.to_string().contains(
+                "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search."
+            ),
+            "Unexpected error: {sem_err}"
+        );
+
+        // 2. Hybrid search must cleanly fall back to BM25+Graph
+        let hyb_res = registry
+            .execute_read(
+                "search_hybrid",
+                &engine,
+                serde_json::json!({ "query": "architecture" }),
+            )
+            .unwrap();
+        let hyb_array = hyb_res.as_array().unwrap();
+        assert_eq!(hyb_array.len(), 1);
+        assert_eq!(hyb_array[0]["path"], "guide.md");
+
+        // 3. Find semantic gaps must fail in fast mode
+        let gaps_err = registry
+            .execute_read(
+                "find_semantic_gaps",
+                &engine,
+                serde_json::json!({ "queries": ["architecture"] }),
+            )
+            .unwrap_err();
+        assert!(gaps_err.to_string().contains("unavailable in fast mode"));
+
+        // 4. Sync corpus with fast: true maintains fast mode
+        let sync_res = registry
+            .execute(
+                "sync_corpus",
+                &mut engine,
+                serde_json::json!({ "fast": true }),
+            )
+            .unwrap();
+        assert_eq!(sync_res["status"], "complete");
+        assert!(engine.is_fast_mode());
     }
 }

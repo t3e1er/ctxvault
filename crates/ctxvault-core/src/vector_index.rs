@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ctxvault_common::{Error, Result};
 use hnsw_rs::prelude::*;
@@ -52,6 +53,8 @@ pub struct VectorIndex {
     model_version: Option<String>,
     /// Whether vectors are stale (model version mismatch detected).
     stale: bool,
+    /// Whether the index has unsaved changes.
+    dirty: AtomicBool,
 }
 
 /// A single vector search result.
@@ -111,12 +114,28 @@ impl VectorIndex {
             ef_construction,
             model_version: None,
             stale: false,
+            dirty: AtomicBool::new(false),
         }
     }
 
     /// Create a new vector index with default parameters suitable for small-medium corpora.
     pub fn new_default(dimensions: usize) -> Self {
         Self::new(dimensions, 10_000, 200, 16)
+    }
+
+    /// Check whether the index has unpersisted changes.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Mark the index as having unpersisted changes.
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear the dirty flag.
+    pub fn clear_dirty(&self) {
+        self.dirty.store(false, Ordering::Relaxed);
     }
 
     /// Get the number of vectors currently in the index.
@@ -142,6 +161,7 @@ impl VectorIndex {
     /// Set the model version for this index.
     pub fn set_model_version(&mut self, version: &str) {
         self.model_version = Some(version.to_string());
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Check whether vectors are marked as stale (model version mismatch).
@@ -152,11 +172,13 @@ impl VectorIndex {
     /// Mark vectors as stale (model version mismatch detected).
     pub fn mark_stale(&mut self) {
         self.stale = true;
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Clear the stale flag (after re-embedding completes).
     pub fn clear_stale(&mut self) {
         self.stale = false;
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Add a single vector to the index.
@@ -188,6 +210,7 @@ impl VectorIndex {
         // Store metadata and vector data.
         let _ = self.meta.insert(id, meta);
         let _ = self.vectors.insert(id, vector.to_vec());
+        self.dirty.store(true, Ordering::Relaxed);
 
         Ok(id)
     }
@@ -226,6 +249,10 @@ impl VectorIndex {
     pub fn remove_document(&mut self, doc_path: &str) {
         let ids_to_remove: Vec<usize> =
             self.meta.iter().filter(|(_, m)| m.doc_path == doc_path).map(|(&id, _)| id).collect();
+
+        if !ids_to_remove.is_empty() {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
 
         for id in ids_to_remove {
             let _ = self.meta.remove(&id);
@@ -338,6 +365,7 @@ impl VectorIndex {
         fs::write(path, json)
             .map_err(|e| Error::Index(format!("cannot write vector index: {}", e)))?;
 
+        self.dirty.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -382,6 +410,7 @@ impl VectorIndex {
             ef_construction: data.ef_construction,
             model_version: data.model_version,
             stale: false,
+            dirty: AtomicBool::new(false),
         })
     }
 }
@@ -592,5 +621,32 @@ mod tests {
             results.iter().filter(|r| r.doc_path == "notes/doc_a.md").collect();
         assert_eq!(doc_a_results.len(), 1);
         assert_eq!(doc_a_results[0].chunk_index, Some(1));
+    }
+
+    #[test]
+    fn test_dirty_tracking_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("vectors.json");
+
+        let mut index = VectorIndex::new_default(384);
+        assert!(!index.is_dirty());
+
+        let v1 = make_vector(1, 384);
+        index.add(&v1, "notes/doc.md", Some(0), false).unwrap();
+        assert!(index.is_dirty());
+
+        index.save(&index_path).unwrap();
+        assert!(!index.is_dirty());
+
+        // Modification marks dirty again
+        index.remove_document("notes/doc.md");
+        assert!(index.is_dirty());
+
+        index.save(&index_path).unwrap();
+        assert!(!index.is_dirty());
+
+        // Loading resets dirty to false
+        let loaded = VectorIndex::load(&index_path).unwrap();
+        assert!(!loaded.is_dirty());
     }
 }

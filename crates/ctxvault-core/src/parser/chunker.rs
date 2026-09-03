@@ -15,9 +15,51 @@ use ctxvault_common::types::Chunk;
 pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<Chunk> {
     let raw_chunks = match config.strategy {
         ChunkingStrategy::Heading => chunk_by_heading(doc_path, body, config),
-        ChunkingStrategy::Paragraph => chunk_by_paragraph(doc_path, body, config),
-        ChunkingStrategy::Semantic => chunk_by_semantic(doc_path, body, config),
-        ChunkingStrategy::Fixed => chunk_by_fixed(doc_path, body, config),
+        ChunkingStrategy::Paragraph => {
+            let mut chunks = chunk_by_paragraph(doc_path, body, config);
+            for (idx, c) in chunks.iter_mut().enumerate() {
+                c.embed_policy = super::markdown::classify_markdown_chunk(
+                    doc_path,
+                    idx,
+                    if idx == 0 { 1 } else { 3 },
+                    None,
+                    idx == 0,
+                    &c.text,
+                    None,
+                );
+            }
+            chunks
+        }
+        ChunkingStrategy::Semantic => {
+            let mut chunks = chunk_by_semantic(doc_path, body, config);
+            for (idx, c) in chunks.iter_mut().enumerate() {
+                c.embed_policy = super::markdown::classify_markdown_chunk(
+                    doc_path,
+                    idx,
+                    if idx == 0 { 1 } else { 3 },
+                    None,
+                    idx == 0,
+                    &c.text,
+                    None,
+                );
+            }
+            chunks
+        }
+        ChunkingStrategy::Fixed => {
+            let mut chunks = chunk_by_fixed(doc_path, body, config);
+            for (idx, c) in chunks.iter_mut().enumerate() {
+                c.embed_policy = super::markdown::classify_markdown_chunk(
+                    doc_path,
+                    idx,
+                    if idx == 0 { 1 } else { 3 },
+                    None,
+                    idx == 0,
+                    &c.text,
+                    None,
+                );
+            }
+            chunks
+        }
         ChunkingStrategy::CodeAst => {
             if let Some(res) = super::code::CodeChunker::parse_and_chunk(
                 std::path::Path::new(doc_path),
@@ -30,6 +72,7 @@ pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
             }
         }
     };
+
 
     // Apply overlap if configured.
     if config.overlap_tokens > 0 && raw_chunks.len() > 1 {
@@ -174,9 +217,19 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
 
             let trimmed = merged_text.trim();
             if trimmed.len() >= min_chars {
+                let policy = super::markdown::classify_markdown_chunk(
+                    doc_path,
+                    chunks.len(),
+                    section.level,
+                    merged_chain.as_deref(),
+                    true,
+                    trimmed,
+                    None,
+                );
                 chunks.push(
                     Chunk::new(doc_path, chunks.len(), trimmed, merged_start, merged_end)
-                        .with_heading_chain(merged_chain),
+                        .with_heading_chain(merged_chain)
+                        .with_embed_policy(policy),
                 );
             }
         } else if section_chars > max_chars {
@@ -188,12 +241,22 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                 max_chars,
                 min_chars,
             );
-            for sub_text in sub_chunks {
+            for (sub_i, sub_text) in sub_chunks.into_iter().enumerate() {
                 let trimmed = sub_text.text.trim();
                 if trimmed.len() >= min_chars {
+                    let policy = super::markdown::classify_markdown_chunk(
+                        doc_path,
+                        chunks.len(),
+                        section.level,
+                        heading_chain.as_deref(),
+                        sub_i == 0,
+                        trimmed,
+                        None,
+                    );
                     chunks.push(
                         Chunk::new(doc_path, chunks.len(), trimmed, sub_text.start, sub_text.end)
-                            .with_heading_chain(heading_chain.clone()),
+                            .with_heading_chain(heading_chain.clone())
+                            .with_embed_policy(policy),
                     );
                 }
             }
@@ -209,6 +272,15 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                         last.text.push_str(trimmed);
                         last.end_byte = section.end_byte;
                     } else {
+                        let policy = super::markdown::classify_markdown_chunk(
+                            doc_path,
+                            chunks.len(),
+                            section.level,
+                            heading_chain.as_deref(),
+                            true,
+                            trimmed,
+                            None,
+                        );
                         chunks.push(
                             Chunk::new(
                                 doc_path,
@@ -217,10 +289,20 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                                 section.start_byte,
                                 section.end_byte,
                             )
-                            .with_heading_chain(heading_chain),
+                            .with_heading_chain(heading_chain)
+                            .with_embed_policy(policy),
                         );
                     }
                 } else {
+                    let policy = super::markdown::classify_markdown_chunk(
+                        doc_path,
+                        chunks.len(),
+                        section.level,
+                        heading_chain.as_deref(),
+                        true,
+                        trimmed,
+                        None,
+                    );
                     chunks.push(
                         Chunk::new(
                             doc_path,
@@ -229,7 +311,8 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                             section.start_byte,
                             section.end_byte,
                         )
-                        .with_heading_chain(heading_chain),
+                        .with_heading_chain(heading_chain)
+                        .with_embed_policy(policy),
                     );
                 }
             }
@@ -238,8 +321,12 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
     }
 
     if chunks.is_empty() && !body.trim().is_empty() {
-        chunks.push(Chunk::new(doc_path, 0, body.trim(), 0, body.len()));
+        chunks.push(
+            Chunk::new(doc_path, 0, body.trim(), 0, body.len())
+                .with_embed_policy(ctxvault_common::types::ChunkEmbedPolicy::Anchor),
+        );
     }
+
 
     chunks
 }

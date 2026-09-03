@@ -60,6 +60,10 @@ struct Cli {
     #[arg(long)]
     no_resume: bool,
 
+    /// Fast Mode: skip dense embedding and vector indexing for instant BM25+Graph indexing.
+    #[arg(long)]
+    fast: bool,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -149,7 +153,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let corpus_path = PathBuf::from(&cli.corpora[0]);
-    let config = load_or_default_config(&corpus_path)?;
+    let mut config = load_or_default_config(&corpus_path)?;
+    if cli.fast {
+        config.index_mode = ctxvault_common::config::IndexMode::Fast;
+    }
     let index_dir = corpus_path.join(".index");
 
     let mut engine = Engine::open(config, &index_dir)?;
@@ -211,6 +218,7 @@ fn load_or_default_config(corpus_path: &Path) -> anyhow::Result<CorpusConfig> {
             name: corpus_path.file_name().and_then(|n| n.to_str()).unwrap_or("default").to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: ctxvault_common::config::CorpusMode::ReadWrite,
+            index_mode: ctxvault_common::config::IndexMode::Full,
             chunking: ctxvault_common::config::ChunkingConfig::default(),
             embedding: ctxvault_common::config::EmbeddingConfig::default(),
             graph: ctxvault_common::config::GraphConfig {

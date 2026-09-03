@@ -10,9 +10,6 @@ min_chunk_tokens = 50
 overlap_tokens = 64
 respect_headings = true
 
-[embedding]
-model = "jinaai/jina-embeddings-v2-base-code"
-
 [[graph.edge_types]]
 name = "Wikilink"
 source = "wikilink"

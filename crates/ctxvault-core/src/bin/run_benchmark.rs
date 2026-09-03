@@ -159,7 +159,9 @@ fn main() {
     let graph_bin = index_dir.join("graph.bin");
     engine.graph().save(&graph_bin).expect("Save graph");
     let vector_json = index_dir.join("vectors.json");
-    engine.vector_index().save(&vector_json).expect("Save vectors");
+    if let Some(vi) = engine.vector_index() {
+        vi.save(&vector_json).expect("Save vectors");
+    }
 
     // Graph Stats
     let stats = engine.graph().stats();
@@ -190,7 +192,7 @@ fn main() {
 
         // 2. Semantic Search (Precise direct chunk)
         let sem_res = search::search_semantic_dual(
-            engine.vector_index(),
+            engine.vector_index().expect("Vector index"),
             &embedder,
             &q.query,
             10,
@@ -207,7 +209,7 @@ fn main() {
         let hyb_res = if is_multihop {
             search::search_multihop(
                 engine.bm25(),
-                engine.vector_index(),
+                engine.vector_index().expect("Vector index"),
                 engine.graph(),
                 Some(&*embedder),
                 &q.query,
@@ -220,7 +222,7 @@ fn main() {
         } else {
             search::search_hybrid_full(
                 engine.bm25(),
-                engine.vector_index(),
+                engine.vector_index().expect("Vector index"),
                 engine.graph(),
                 &q.query,
                 query_embedding.as_deref(),

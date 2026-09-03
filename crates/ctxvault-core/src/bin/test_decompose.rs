@@ -54,7 +54,7 @@ fn main() {
     eprintln!("Calling search_multihop...");
     match search::search_multihop(
         engine.bm25(),
-        engine.vector_index(),
+        engine.vector_index().expect("vector index"),
         engine.graph(),
         engine.embedder_ref().as_deref(),
         query,

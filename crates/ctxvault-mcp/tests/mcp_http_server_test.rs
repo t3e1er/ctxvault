@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use ctxvault_common::config::{
-    ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig,
+    ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode,
 };
 use ctxvault_core::engine::Engine;
 use ctxvault_mcp::client::McpClient;
@@ -45,6 +45,7 @@ async fn test_mcp_http_server_and_client_e2e() {
         name: "test-corpus".to_string(),
         path: corpus_path.to_string_lossy().to_string(),
         mode: CorpusMode::ReadWrite,
+        index_mode: IndexMode::Full,
         chunking: ChunkingConfig::default(),
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
@@ -174,6 +175,7 @@ async fn test_mcp_http_server_sse_and_proxy() {
         name: "proxy-corpus".to_string(),
         path: corpus_path.to_string_lossy().to_string(),
         mode: CorpusMode::ReadWrite,
+        index_mode: IndexMode::Full,
         chunking: ChunkingConfig::default(),
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
@@ -256,6 +258,7 @@ async fn test_concurrent_reads_and_health_during_write() {
         name: "concurrent-corpus".to_string(),
         path: corpus_path.to_string_lossy().to_string(),
         mode: CorpusMode::ReadWrite,
+        index_mode: IndexMode::Full,
         chunking: ChunkingConfig::default(),
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),

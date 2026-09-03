@@ -151,7 +151,7 @@ impl CorpusManager {
                     mode,
                     file_count,
                     embedder_active: engine.embedder_ref().is_some(),
-                    vector_count: engine.vector_index().len(),
+                    vector_count: engine.vector_index().map(|vi| vi.len()).unwrap_or(0),
                     graph_node_count: engine.graph().node_count(),
                 }
             })
@@ -177,7 +177,7 @@ impl CorpusManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ctxvault_common::config::{ChunkingConfig, CorpusMode, EmbeddingConfig, GraphConfig};
+    use ctxvault_common::config::{ChunkingConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode};
     use std::fs;
     use tempfile::TempDir;
 
@@ -186,6 +186,7 @@ mod tests {
             name: name.to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },

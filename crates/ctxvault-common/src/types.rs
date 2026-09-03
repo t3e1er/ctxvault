@@ -128,6 +128,22 @@ pub struct CodeSymbol {
     pub end_line: usize,
 }
 
+/// Policy for whether a chunk should receive a dense vector embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChunkEmbedPolicy {
+    /// Always embed: documentation, ADRs, exported interfaces, public API surfaces.
+    Anchor,
+    /// Never embed: internal helpers, private methods, leaf implementations.
+    /// Searchable via BM25 lexical index and navigable via AST graph.
+    GraphOnly,
+}
+
+impl Default for ChunkEmbedPolicy {
+    fn default() -> Self {
+        Self::Anchor
+    }
+}
+
 /// A text chunk ready for embedding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
@@ -154,6 +170,9 @@ pub struct Chunk {
     /// Entity kind for this chunk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_kind: Option<EntityKind>,
+    /// Embedding policy for this chunk (anchor vs graph-only).
+    #[serde(default)]
+    pub embed_policy: ChunkEmbedPolicy,
 }
 
 impl Chunk {
@@ -175,6 +194,7 @@ impl Chunk {
             language: None,
             scope_path: None,
             entity_kind: Some(EntityKind::Documentation),
+            embed_policy: ChunkEmbedPolicy::Anchor,
         }
     }
 
@@ -198,6 +218,12 @@ impl Chunk {
         self.scope_path = Some(scope.clone());
         self.entity_kind =
             Some(EntityKind::CodeChunk { language: lang, scope_path: scope, start_line, end_line });
+        self
+    }
+
+    /// Set embedding policy.
+    pub fn with_embed_policy(mut self, embed_policy: ChunkEmbedPolicy) -> Self {
+        self.embed_policy = embed_policy;
         self
     }
 }

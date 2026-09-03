@@ -12,7 +12,7 @@ See also: [[docs/index]], [[why-hybrid-retrieval]], [[how-cast-chunking-works]],
 
 ---
 
-## 🏗️ Architectural Layers
+## Architectural Layers
 
 ```
                      ┌──────────────────────────────────────────────┐

@@ -14,6 +14,9 @@ ctxvault-common = { path = "../ctxvault-common" }
 
 # Async
 tokio = { workspace = true }
+crossbeam-channel = { workspace = true }
+sysinfo = { workspace = true }
+
 
 # Serialization
 serde = { workspace = true }
@@ -34,8 +37,8 @@ tantivy = { workspace = true }
 # Vector search
 hnsw_rs = { workspace = true }
 
-# Embeddings
-fastembed = { workspace = true }
+# Embeddings & Hardware Acceleration
+tokenizers = { workspace = true }
 
 # Graph
 petgraph = { workspace = true }
@@ -72,6 +75,10 @@ tree-sitter-bash = "0.23"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
+[features]
+default = []
+
+
 [dev-dependencies]
 tempfile = { workspace = true }
 assert_fs = { workspace = true }
@@ -83,3 +90,12 @@ path = "src/bin/test_decompose.rs"
 [[bin]]
 name = "run_benchmark"
 path = "src/bin/run_benchmark.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["directml", "copy-dylibs", "download-binaries"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["coreml", "copy-dylibs", "download-binaries"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["copy-dylibs", "download-binaries"] }

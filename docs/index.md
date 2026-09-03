@@ -10,7 +10,7 @@ Welcome to the central architectural documentation for **ctxvault**, a high-perf
 
 ---
 
-## 🧭 Navigation & Knowledge Graph
+## Navigation & Knowledge Graph
 
 ```
                    ┌──────────────────────────────────────┐
@@ -36,7 +36,7 @@ Welcome to the central architectural documentation for **ctxvault**, a high-perf
 
 ---
 
-## 📚 Core Documentation Topics
+## Core Documentation Topics
 
 ### 1. [[what-is-ctxvault]]
 * **The WHAT**: Comprehensive system architecture overview of ctxvault.
@@ -58,9 +58,13 @@ Welcome to the central architectural documentation for **ctxvault**, a high-perf
 * **The HOW (Code Intelligence & Graph)**: High-level architectural clustering via the Louvain modularity algorithm.
 * **Analysis**: Calculating cross-modal modularity scores ($Q$), detecting interface bridge hub nodes, and computing filesystem delta blast radii via `detect_changes`.
 
+### 6. [[optimisation]]
+* **Hardware & Runtime Strategies**: Comprehensive performance engineering for embedding generation, batching physics, and cross-platform acceleration.
+* **Analysis**: Algorithmic multi-chunk batching (3x-5x gain), pure-Rust ML runtime deep-dive (Hugging Face `Candle` vs Tracel AI `Burn`/`wgpu`), device-tier batch heuristics, and developer machine portability (Apple Silicon Metal, Windows DirectML, Linux CUDA, APUs).
+
 ---
 
-## 🏷️ Semantic Graph Tags
+## Semantic Graph Tags
 
 * `#architecture`: System design, module boundaries, and high-level architectural decisions.
 * `#search`: Hybrid retrieval, RRF ranking, BM25 scoring, and vector indexing.

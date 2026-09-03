@@ -14,7 +14,7 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[how-search-pipeline-works]].
 
 ---
 
-## 🌳 16 Supported Modern Languages
+## 16 Supported Modern Languages
 
 | Tier | Language Grammars | AST Structural Node Types Extracted |
 | :--- | :--- | :--- |
@@ -24,7 +24,7 @@ See also: [[docs/index]], [[what-is-ctxvault]], [[how-search-pipeline-works]].
 
 ---
 
-## 🧩 Scope Breadcrumb Injection
+## Scope Breadcrumb Injection
 
 When an embedding model vectorizes a code snippet, an isolated function `def authenticate(...)` loses its enclosing context (`AuthManager`).
 
@@ -47,7 +47,7 @@ end
 
 ---
 
-## 🗄️ SQLite Symbol Extraction
+## SQLite Symbol Extraction
 
 As `cAST` traverses the syntax tree, every symbol is recorded in SQLite:
 * `name`: Symbol identifier (`"authenticate"`).
