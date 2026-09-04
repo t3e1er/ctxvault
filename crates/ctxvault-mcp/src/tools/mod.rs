@@ -150,7 +150,7 @@ impl ToolRegistry {
         // Read tools
         self.register_read(
             "read_note",
-            "Read a note's full content and frontmatter metadata.",
+            "Tier 3 (last resort): full-file read of a markdown note's content and frontmatter. Prefer search → get_snippet first; only read the whole note when you truly need full document context.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -159,6 +159,39 @@ impl ToolRegistry {
                 "required": ["path"]
             }),
             handle_read_note,
+        );
+
+        self.register_read(
+            "get_snippet",
+            "Tier 2 fetch: retrieve exactly one code symbol's source (by qualified_name) or one doc chunk (by path+chunk_index), bounded by max_lines. Call this for the specific handles a search returned — do NOT read whole files unless necessary.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path — for a DOC chunk fetch (with chunk_index) or a code FILE hint" },
+                    "chunk_index": { "type": "integer", "description": "With path, fetch that specific doc chunk (zero-based)" },
+                    "qualified_name": { "type": "string", "description": "Code symbol scope_path (exact) or name (fuzzy) to fetch one symbol's source" },
+                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 500)" },
+                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code callers/callees as handles, or adjacent doc chunks (default false)" }
+                },
+                "required": []
+            }),
+            handle_get_snippet,
+        );
+
+        self.register_read(
+            "read_code_file",
+            "Tier 3 (last resort): read a whole source file (or a line range). Prefer search → get_snippet first.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path to the source file within the corpus" },
+                    "start_line": { "type": "integer", "description": "Optional 1-based start line to bound the read" },
+                    "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive) to bound the read" },
+                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 1000)" }
+                },
+                "required": ["path"]
+            }),
+            handle_read_code_file,
         );
 
         self.register_read(
@@ -191,13 +224,14 @@ impl ToolRegistry {
         // Search tools
         self.register_read(
             "search_bm25",
-            "Full-text BM25 keyword search across all indexed notes.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Full-text BM25 keyword search across all indexed notes and code.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
@@ -206,14 +240,15 @@ impl ToolRegistry {
 
         self.register_read(
             "search_semantic",
-            "Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
                     "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Retrieval depth: precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
@@ -222,7 +257,7 @@ impl ToolRegistry {
 
         self.register_read(
             "search_hybrid",
-            "BM25 + graph-boosted hybrid search combining keyword relevance with graph proximity.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. BM25 + vector + graph-boosted hybrid search combining keyword relevance with graph proximity.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -232,7 +267,8 @@ impl ToolRegistry {
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
                     "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph boost traversal by edge class (default: semantic)" },
                     "decompose": { "type": "boolean", "description": "Enable query decomposition for multi-hop queries (default: false)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
@@ -241,7 +277,7 @@ impl ToolRegistry {
 
         self.register_read(
             "search_graph",
-            "Typed graph traversal search: finds nodes reachable from query matches via graph edges.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Typed graph traversal search: finds nodes reachable from query matches via graph edges.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -250,7 +286,8 @@ impl ToolRegistry {
                     "max_depth": { "type": "number", "description": "Maximum traversal depth (default 3)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter traversal by edge types" },
                     "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class (default: structural)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
@@ -259,13 +296,14 @@ impl ToolRegistry {
 
         self.register_read(
             "search_related",
-            "Find related documents via graph-based Personalized PageRank approximation.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Find related documents via graph-based Personalized PageRank approximation.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "seeds": { "type": "array", "items": { "type": "string" }, "description": "Seed document paths to find related notes for" },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["seeds"]
             }),
@@ -274,7 +312,7 @@ impl ToolRegistry {
 
         self.register_read(
             "search_explain",
-            "Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.",
+            "Tier 1: returns handles (paths/qualified names + line ranges) plus scoring breakdown, not bodies; fetch source with get_snippet, read whole files only as a last resort. Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -283,7 +321,8 @@ impl ToolRegistry {
                     "graph_depth": { "type": "number", "description": "Max graph traversal depth (default 2)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
                     "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph traversal by edge class" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
@@ -1133,10 +1172,29 @@ struct GetFrontmatterParams {
 }
 
 #[derive(Deserialize)]
+struct GetSnippetParams {
+    path: Option<String>,
+    chunk_index: Option<usize>,
+    qualified_name: Option<String>,
+    max_lines: Option<usize>,
+    #[serde(default)]
+    include_neighbors: bool,
+}
+
+#[derive(Deserialize)]
+struct ReadCodeFileParams {
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    max_lines: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct SearchBm25Params {
     query: String,
     limit: Option<usize>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1145,6 +1203,7 @@ struct SearchSemanticParams {
     limit: Option<usize>,
     depth: Option<String>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1156,6 +1215,7 @@ struct SearchHybridParams {
     edge_class: Option<String>,
     decompose: Option<bool>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1166,6 +1226,7 @@ struct SearchGraphParams {
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1173,6 +1234,7 @@ struct SearchRelatedParams {
     seeds: Vec<String>,
     limit: Option<usize>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1183,6 +1245,7 @@ struct SearchExplainParams {
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
     modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1378,6 +1441,264 @@ fn handle_read_note(engine: &Engine, args: Value) -> Result<Value> {
     serde_json::to_value(response).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
+/// Detect a source language from a file extension. Returns `"text"` when unknown.
+fn language_from_path(path: &str) -> &'static str {
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("rs") => "rust",
+        Some("ts") | Some("tsx") => "typescript",
+        Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript",
+        Some("py") => "python",
+        Some("go") => "go",
+        Some("java") => "java",
+        Some("c") | Some("h") => "c",
+        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") | Some("hh") => "cpp",
+        Some("md") | Some("markdown") => "markdown",
+        _ => "text",
+    }
+}
+
+/// Bound a body of source lines to `max_lines`, joining with newlines and
+/// reporting whether truncation occurred.
+fn cap_lines(lines: &[&str], max_lines: usize) -> (String, bool) {
+    if lines.len() > max_lines {
+        (lines[..max_lines].join("\n"), true)
+    } else {
+        (lines.join("\n"), false)
+    }
+}
+
+/// Build a bare handle (no body) for a code symbol: scope_path + file + line range.
+fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
+    serde_json::json!({
+        "scope_path": sym.scope_path,
+        "name": sym.name,
+        "file_path": sym.file_path,
+        "start_line": sym.start_line,
+        "end_line": sym.end_line,
+        "language": sym.language,
+        "symbol_type": sym.symbol_type,
+    })
+}
+
+/// Tier 2 fetch: return exactly one code symbol's source or one doc chunk,
+/// bounded by `max_lines`, with optional neighbor expansion.
+fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
+    let params: GetSnippetParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let max_lines = params.max_lines.unwrap_or(500).max(1);
+    let corpus_root = Path::new(&engine.config().path);
+
+    if let Some(qualified_name) = params.qualified_name.as_deref() {
+        return fetch_code_symbol(
+            engine,
+            corpus_root,
+            qualified_name,
+            max_lines,
+            params.include_neighbors,
+        );
+    }
+
+    if let Some(path) = params.path.as_deref() {
+        if let Some(chunk_index) = params.chunk_index {
+            return fetch_doc_chunk(engine, path, chunk_index, max_lines, params.include_neighbors);
+        }
+        return Err(Error::Config(format!(
+            "get_snippet needs a chunk_index for a doc fetch on '{path}'. \
+             For a whole file use Tier 3: read_note (docs) or read_code_file (code).",
+        )));
+    }
+
+    Err(Error::Config(
+        "get_snippet requires either `qualified_name` (code) or `path`+`chunk_index` (doc)."
+            .to_string(),
+    ))
+}
+
+/// Fetch a single code symbol's bounded source by qualified name (or fuzzy name),
+/// optionally attaching caller/callee handles.
+fn fetch_code_symbol(
+    engine: &Engine,
+    corpus_root: &Path,
+    qualified_name: &str,
+    max_lines: usize,
+    include_neighbors: bool,
+) -> Result<Value> {
+    let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
+    if matches.is_empty() {
+        matches = engine.store().find_symbols_by_name(qualified_name)?;
+    }
+
+    match matches.len() {
+        0 => Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'"))),
+        1 => {
+            let sym = &matches[0];
+            let full_path = corpus_root.join(&sym.file_path);
+            let content = fs::read_to_string(&full_path)
+                .map_err(|e| Error::NotFound(format!("cannot read {}: {}", sym.file_path, e)))?;
+            let file_lines: Vec<&str> = content.lines().collect();
+
+            let (source, truncated) = if sym.start_line > 0 && sym.start_line <= file_lines.len() {
+                let start_idx = sym.start_line - 1;
+                let end_idx = sym.end_line.min(file_lines.len());
+                cap_lines(&file_lines[start_idx..end_idx], max_lines)
+            } else {
+                (String::new(), false)
+            };
+
+            let mut out = serde_json::json!({
+                "kind": "code_symbol",
+                "path": sym.file_path,
+                "scope_path": sym.scope_path,
+                "name": sym.name,
+                "language": sym.language,
+                "symbol_type": sym.symbol_type,
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+                "signature": sym.signature,
+                "docstring": sym.docstring,
+                "source": source,
+                "truncated": truncated,
+            });
+
+            if include_neighbors {
+                let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+                let edges = engine.graph().get_all_edges();
+                let matches_sym =
+                    |candidate: &str| candidate == sym.scope_path || candidate == sym.name;
+
+                // Callers: "calls" edges whose TARGET is this symbol → source is a caller.
+                let callers: Vec<Value> = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.target))
+                    .filter_map(|e| {
+                        all_symbols
+                            .iter()
+                            .find(|s| s.scope_path == e.source || s.name == e.source)
+                            .map(code_symbol_handle)
+                    })
+                    .collect();
+
+                // Callees: "calls" edges whose SOURCE is this symbol → target is a callee.
+                let callees: Vec<Value> = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.source))
+                    .filter_map(|e| {
+                        all_symbols
+                            .iter()
+                            .find(|s| s.scope_path == e.target || s.name == e.target)
+                            .map(code_symbol_handle)
+                    })
+                    .collect();
+
+                out["callers"] = Value::Array(callers);
+                out["callees"] = Value::Array(callees);
+            }
+
+            Ok(out)
+        }
+        _ => {
+            let candidates: Vec<Value> = matches.iter().map(code_symbol_handle).collect();
+            Ok(serde_json::json!({
+                "kind": "ambiguous",
+                "note": format!(
+                    "'{qualified_name}' is ambiguous ({} matches); disambiguate with an exact scope_path.",
+                    candidates.len()
+                ),
+                "candidates": candidates,
+            }))
+        }
+    }
+}
+
+/// Fetch a single doc chunk's bounded text, optionally with adjacent chunks.
+fn fetch_doc_chunk(
+    engine: &Engine,
+    path: &str,
+    chunk_index: usize,
+    max_lines: usize,
+    include_neighbors: bool,
+) -> Result<Value> {
+    let chunks = engine.store().get_chunks_for_file(path)?;
+    if chunks.is_empty() {
+        return Err(Error::NotFound(format!("no indexed chunks for '{path}'")));
+    }
+
+    let chunk = chunks
+        .iter()
+        .find(|c| c.chunk_index == chunk_index)
+        .ok_or_else(|| Error::NotFound(format!("chunk {chunk_index} not found for '{path}'")))?;
+
+    let text_lines: Vec<&str> = chunk.text.lines().collect();
+    let (text, truncated) = cap_lines(&text_lines, max_lines);
+
+    let mut out = serde_json::json!({
+        "kind": "doc_chunk",
+        "path": path,
+        "chunk_index": chunk.chunk_index,
+        "start_byte": chunk.start_byte,
+        "end_byte": chunk.end_byte,
+        "text": text,
+        "truncated": truncated,
+    });
+
+    if include_neighbors {
+        let neighbor_cap = (max_lines / 2).max(1);
+        let neighbor = |target: usize| -> Option<Value> {
+            chunks.iter().find(|c| c.chunk_index == target).map(|c| {
+                let nlines: Vec<&str> = c.text.lines().collect();
+                let (ntext, ntrunc) = cap_lines(&nlines, neighbor_cap);
+                serde_json::json!({
+                    "chunk_index": c.chunk_index,
+                    "start_byte": c.start_byte,
+                    "end_byte": c.end_byte,
+                    "text": ntext,
+                    "truncated": ntrunc,
+                })
+            })
+        };
+
+        out["previous"] = chunk_index.checked_sub(1).and_then(neighbor).unwrap_or(Value::Null);
+        out["next"] = neighbor(chunk_index + 1).unwrap_or(Value::Null);
+    }
+
+    Ok(out)
+}
+
+/// Tier 3 fetch: read a whole source file (or a bounded line range) as raw text.
+fn handle_read_code_file(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ReadCodeFileParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let corpus_root = Path::new(&engine.config().path);
+    let full_path = corpus_root.join(&params.path);
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
+
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_line_count = all_lines.len();
+    let max_lines = params.max_lines.unwrap_or(1000).max(1);
+
+    // Resolve an optional 1-based inclusive line window.
+    let start_idx =
+        params.start_line.map(|s| s.saturating_sub(1).min(total_line_count)).unwrap_or(0);
+    let end_idx =
+        params.end_line.map(|e| e.min(total_line_count)).unwrap_or(total_line_count).max(start_idx);
+
+    let windowed = &all_lines[start_idx..end_idx];
+    let (body, truncated) = cap_lines(windowed, max_lines);
+
+    Ok(serde_json::json!({
+        "path": params.path,
+        "language": language_from_path(&params.path),
+        "total_line_count": total_line_count,
+        "start_line": start_idx + 1,
+        "end_line": start_idx + windowed.len().min(max_lines),
+        "content": body,
+        "truncated": truncated,
+    }))
+}
+
 /// List all indexed notes with metadata.
 fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListNotesParams = serde_json::from_value(args)
@@ -1422,6 +1743,25 @@ fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
 }
 
 /// Full-text BM25 keyword search.
+/// Apply Tier-1 progressive-disclosure verbosity to a set of search results.
+///
+/// `detail == "ids"` strips the `snippet` from every result, leaving bare
+/// handles (path/qualified-name + line range + metadata carried by
+/// `entity_kind`/`language`/`chunk_index`). Any other value (including the
+/// omitted default) keeps the existing short snippet. Full bodies are never
+/// emitted here — callers fetch source via `get_snippet`.
+fn apply_detail(
+    mut results: Vec<ctxvault_common::types::SearchResult>,
+    detail: Option<&str>,
+) -> Vec<ctxvault_common::types::SearchResult> {
+    if detail == Some("ids") {
+        for r in &mut results {
+            r.snippet = None;
+        }
+    }
+    results
+}
+
 fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchBm25Params = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
@@ -1434,6 +1774,7 @@ fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
         .unwrap_or_default();
     let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
+    let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -1484,6 +1825,7 @@ fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
         modality,
     )?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
+    let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -1515,7 +1857,7 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
     let query_embedding =
         embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
-    let results = if let Some(vector_index) = engine.vector_index() {
+    let results_raw = if let Some(vector_index) = engine.vector_index() {
         if params.decompose == Some(true) {
             // Multi-hop query decomposition mode.
             search::search_multihop(
@@ -1561,6 +1903,7 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
         )?
     };
 
+    let results = apply_detail(results_raw, params.detail.as_deref());
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
@@ -1596,6 +1939,7 @@ fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
         modality,
         &code_paths,
     )?;
+    let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -1622,6 +1966,7 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
         modality,
         &code_paths,
     )?;
+    let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -1655,7 +2000,7 @@ fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
         }
     };
 
-    let explanations = search::search_explain(
+    let mut explanations = search::search_explain(
         engine.bm25(),
         vector_index,
         engine.graph(),
@@ -1668,6 +2013,13 @@ fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
         modality,
         &code_paths,
     )?;
+
+    // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
+    if params.detail.as_deref() == Some("ids") {
+        for e in &mut explanations {
+            e.snippet = None;
+        }
+    }
 
     serde_json::to_value(explanations).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -2891,11 +3243,13 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 41, "Expected 41 tools registered");
+        assert_eq!(tools.len(), 43, "Expected 43 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
             "read_note",
+            "get_snippet",
+            "read_code_file",
             "list_notes",
             "get_frontmatter",
             "search_bm25",
@@ -2949,6 +3303,8 @@ mod tests {
         assert!(registry.is_read_only("get_symbol_definition"));
         assert!(registry.is_read_only("find_callers"));
         assert!(registry.is_read_only("get_architecture"));
+        assert!(registry.is_read_only("get_snippet"));
+        assert!(registry.is_read_only("read_code_file"));
         assert!(!registry.is_read_only("detect_changes"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
@@ -3322,8 +3678,8 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 41 tools.
-        assert_eq!(tools.len(), 41, "Expected 41 tools in multi-corpus registry");
+        // Should have 43 tools.
+        assert_eq!(tools.len(), 43, "Expected 43 tools in multi-corpus registry");
         assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
         assert!(
             registry.registry().get("get_corpus_stats").is_some(),
@@ -3910,5 +4266,178 @@ pub fn tokenize(input: &str) -> Vec<String> {
             .unwrap();
         assert_eq!(sync_res["status"], "complete");
         assert!(engine.is_fast_mode());
+    }
+
+    // ─── Progressive Disclosure Tests (Tier 1 → 2 → 3) ─────────────────
+
+    #[test]
+    fn test_progressive_disclosure_handle_fetch_full() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        // A markdown note with two headings → two chunks.
+        let md = "# Alpha Section\n\nAlpha talks about retrieval and ranking.\n\n\
+                  # Beta Section\n\nBeta talks about graph traversal and edges.\n";
+        fs::write(corpus_dir.join("notes.md"), md).unwrap();
+        engine.index_file("notes.md", md).unwrap();
+
+        // A Rust file with a caller/callee pair.
+        let rust = r#"
+pub struct Router;
+
+impl Router {
+    pub fn dispatch(&self, q: &str) -> Vec<String> {
+        normalize(q)
+    }
+}
+
+pub fn normalize(input: &str) -> Vec<String> {
+    vec![input.to_lowercase()]
+}
+"#;
+        fs::write(corpus_dir.join("router.rs"), rust).unwrap();
+        engine.index_file("router.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Tier 1: a search with detail="ids" returns handles with snippet == None.
+        let ids_res = registry
+            .execute_read(
+                "search_bm25",
+                &engine,
+                serde_json::json!({ "query": "retrieval ranking", "detail": "ids" }),
+            )
+            .unwrap();
+        let ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(ids_res).unwrap();
+        assert!(!ids_results.is_empty(), "detail=ids should still return handles");
+        assert!(
+            ids_results.iter().all(|r| r.snippet.is_none()),
+            "detail=ids must strip snippets (bare handles only)"
+        );
+
+        // Default detail keeps a short snippet.
+        let default_res = registry
+            .execute_read(
+                "search_bm25",
+                &engine,
+                serde_json::json!({ "query": "retrieval ranking" }),
+            )
+            .unwrap();
+        let default_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(default_res).unwrap();
+        assert!(default_results.iter().any(|r| r.snippet.is_some()), "default keeps a snippet");
+
+        // Tier 2 (doc): fetch exactly one chunk by path + chunk_index, bounded.
+        let chunk_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "path": "notes.md", "chunk_index": 0, "max_lines": 100 }),
+            )
+            .unwrap();
+        assert_eq!(chunk_res["kind"], "doc_chunk");
+        assert_eq!(chunk_res["chunk_index"], 0);
+        assert!(chunk_res["text"].as_str().unwrap().contains("Alpha"));
+
+        // Tier 2 (doc) neighbor expansion: adjacent chunk is returned.
+        let chunk_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({
+                    "path": "notes.md",
+                    "chunk_index": 0,
+                    "include_neighbors": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(chunk_nb["previous"], Value::Null, "chunk 0 has no previous");
+        assert!(chunk_nb["next"].is_object(), "chunk 0 should have a next neighbor");
+        assert!(chunk_nb["next"]["text"].as_str().unwrap().contains("Beta"));
+
+        // Tier 2 (code): fetch one symbol's source by qualified_name.
+        let sym_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Router > dispatch" }),
+            )
+            .unwrap();
+        assert_eq!(sym_res["kind"], "code_symbol");
+        assert_eq!(sym_res["path"], "router.rs");
+        assert!(sym_res["source"].as_str().unwrap().contains("normalize(q)"));
+        assert!(sym_res["start_line"].as_u64().unwrap() >= 1);
+        assert!(
+            sym_res["end_line"].as_u64().unwrap() >= sym_res["start_line"].as_u64().unwrap(),
+            "line range must be well-formed"
+        );
+
+        // Tier 2 (code) neighbor expansion: callees include the called symbol.
+        let sym_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({
+                    "qualified_name": "Router > dispatch",
+                    "include_neighbors": true
+                }),
+            )
+            .unwrap();
+        let callees = sym_nb["callees"].as_array().unwrap();
+        assert!(
+            callees.iter().any(|c| c["name"] == "normalize" || c["scope_path"] == "normalize"),
+            "dispatch should list normalize as a callee handle"
+        );
+        // Callees are HANDLES only — no body field.
+        assert!(
+            callees.iter().all(|c| c.get("source").is_none()),
+            "neighbors are handles, not bodies"
+        );
+
+        // Callers of normalize should include dispatch.
+        let normalize_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "normalize", "include_neighbors": true }),
+            )
+            .unwrap();
+        let callers = normalize_nb["callers"].as_array().unwrap();
+        assert!(
+            callers.iter().any(|c| c["scope_path"] == "Router > dispatch"),
+            "normalize should list Router > dispatch as a caller handle"
+        );
+
+        // Tier 2 bounding: max_lines truncates the body.
+        let capped = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Router > dispatch", "max_lines": 1 }),
+            )
+            .unwrap();
+        assert_eq!(capped["truncated"], true, "max_lines=1 must truncate a multi-line symbol");
+        assert_eq!(capped["source"].as_str().unwrap().lines().count(), 1);
+
+        // Tier 3 (code): read the whole file raw.
+        let file_res = registry
+            .execute_read("read_code_file", &engine, serde_json::json!({ "path": "router.rs" }))
+            .unwrap();
+        assert_eq!(file_res["language"], "rust");
+        assert!(file_res["content"].as_str().unwrap().contains("pub struct Router;"));
+        assert!(file_res["content"].as_str().unwrap().contains("pub fn normalize"));
+        assert!(file_res["total_line_count"].as_u64().unwrap() >= 5);
+
+        // A bare path (no chunk_index / qualified_name) is redirected to Tier 3.
+        let hint = registry.execute_read(
+            "get_snippet",
+            &engine,
+            serde_json::json!({ "path": "router.rs" }),
+        );
+        assert!(hint.is_err(), "bare path must hint toward Tier 3");
     }
 }

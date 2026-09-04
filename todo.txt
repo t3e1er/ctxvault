@@ -110,7 +110,7 @@ Verify: just clippy && just check ; targeted test asserting modality filtering p
 Commit: feat(phase4): bi-modal search with docs|code|both modality filter
 
 ================================================================================
-[ ] PHASE 5 — Progressive disclosure for code AND docs (Goal 4)
+[x] PHASE 5 — Progressive disclosure for code AND docs (Goal 4)
 --------------------------------------------------------------------------------
 Goal: Adopt+adapt codebase-memory's tiered disclosure; apply it to markdown docs too.
 Scope:
