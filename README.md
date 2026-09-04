@@ -50,6 +50,25 @@ irm https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.ps1 | iex
 cargo install --locked --path crates/ctxvault-cli
 ```
 
+### Embedding model (sidecar)
+
+Semantic/vector search uses a local ONNX embedding model
+([`jinaai/jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code),
+Apache-2.0). The release archives **bundle it as a sidecar** next to the binary
+(`<binary-dir>/models/jina-embeddings-v2-base-code/`), and `install.sh` /
+`install.ps1` place it automatically — no separate download.
+
+For source builds (or to run the test suite), fetch it once — the on-disk layout
+mirrors the Hugging Face repo 1:1:
+```bash
+just fetch-model                      # downloads into ./models
+export CTX_MODELS_DIR="$(pwd)/models" # point ctxvault (and cargo test) at it
+```
+The embedder resolves the model from `CTX_MODELS_DIR`, then a `models/` sidecar next
+to the binary, then `../models/` (for `cargo test`). Without it, BM25 + graph search
+still work (and `--fast` mode skips embeddings entirely); only vector/semantic search
+needs the model.
+
 ---
 
 ## MCP Client Configuration

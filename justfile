@@ -72,6 +72,14 @@ deps:
 deps-dupes:
     cargo tree --workspace --duplicates
 
+# ── Embedding model (sidecar) ────────────────────────
+
+# Download the embedding model (HF-mirrored layout) into ./models.
+# Export CTX_MODELS_DIR so `just test` / the binary can resolve it:
+#   export CTX_MODELS_DIR="$(pwd)/models"
+fetch-model:
+    bash scripts/fetch-model.sh ./models
+
 # ── Documentation ────────────────────────────────────
 
 # Build documentation

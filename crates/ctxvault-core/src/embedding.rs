@@ -158,9 +158,14 @@ impl ModelName {
         "jina-embeddings-v2-base-code"
     }
 
-    /// Candidate subpaths to check for cached models (prioritizes INT8 dynamic quantization).
+    /// Candidate ONNX subpaths to probe within a model directory, in preference order.
+    ///
+    /// These mirror the upstream Hugging Face repo layout 1:1 (no renaming) so a
+    /// plain `hf download`/`git clone` of `jinaai/jina-embeddings-v2-base-code`
+    /// into the sidecar directory works as-is. The quantized weights are preferred
+    /// (smallest, INT8 dynamic quantization); the fp32 `model.onnx` is the fallback.
     pub fn onnx_candidate_subpaths(&self) -> &[&'static str] {
-        &["model_int8.onnx", "model.onnx"]
+        &["onnx/model_quantized.onnx", "onnx/model.onnx"]
     }
 
     /// Maximum context token sequence length.
@@ -553,7 +558,13 @@ fn check_directory_for_model(
     None
 }
 
-/// Locate model files (model_int8.onnx and tokenizer.json) using sidecar resolution:
+/// Locate the ONNX model + `tokenizer.json` using sidecar resolution.
+///
+/// The expected directory mirrors the upstream Hugging Face repo layout 1:1
+/// (`onnx/model_quantized.onnx` + `tokenizer.json`), so a plain download/clone of
+/// `jinaai/jina-embeddings-v2-base-code` into the sidecar dir works with no renaming.
+///
+/// Directories are probed in priority order:
 /// 1. `CTX_MODELS_DIR` environment variable
 /// 2. Sidecar `<exe_dir>/models/jina-embeddings-v2-base-code/` (production path)
 /// 3. Cargo test/deps `<exe_dir>/../models/jina-embeddings-v2-base-code/`
@@ -607,7 +618,10 @@ fn resolve_model_files(model_name: &ModelName) -> Result<(PathBuf, PathBuf)> {
     }
 
     Err(Error::Index(format!(
-        "Embedding model '{}' not found. Please place 'model_int8.onnx' and 'tokenizer.json' in '<exe_dir>/models/{}/' or set the 'CTX_MODELS_DIR' environment variable.",
+        "Embedding model '{}' not found. Mirror the Hugging Face repo layout: place \
+         'onnx/model_quantized.onnx' and 'tokenizer.json' under '<exe_dir>/models/{}/' \
+         (or set 'CTX_MODELS_DIR' to the parent models directory). Run scripts/fetch-model.sh \
+         (or scripts/fetch-model.ps1) to download them.",
         model_name.version_string(),
         model_name.model_dir_name()
     )))
