@@ -6,4 +6,4 @@ pub mod scope;
 
 pub use chunker::{CodeChunker, CodeParseResult};
 pub use languages::{detect_language, is_code_file, SupportedLanguage};
-pub use scope::normalize_scope_path;
+pub use scope::{normalize_scope_path, scope_matches};

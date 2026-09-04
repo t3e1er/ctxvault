@@ -613,8 +613,9 @@ impl Store {
             })
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        let exact_matches: Vec<ctxvault_common::types::CodeSymbol> =
-            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))?;
+        let exact_matches: Vec<ctxvault_common::types::CodeSymbol> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         drop(stmt);
         drop(conn);
@@ -662,15 +663,15 @@ impl Store {
             })
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        let candidates: Vec<ctxvault_common::types::CodeSymbol> =
-            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))?;
+        let candidates: Vec<ctxvault_common::types::CodeSymbol> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         let matched: Vec<ctxvault_common::types::CodeSymbol> = candidates
             .into_iter()
             .filter(|sym| {
                 let norm_candidate = crate::parser::code::normalize_scope_path(&sym.scope_path);
-                norm_candidate == norm_query
-                    || norm_candidate.ends_with(&format!(" > {norm_query}"))
+                crate::parser::code::scope_matches(&norm_candidate, &norm_query)
             })
             .collect();
 
@@ -1111,7 +1112,8 @@ mod tests {
         store.save_code_symbols("other.rs", &[sym3]).unwrap();
 
         // 1. Exact match works
-        let exact = store.find_symbols_by_qualified_name("EarlyBinder<'tcx, T> > instantiate").unwrap();
+        let exact =
+            store.find_symbols_by_qualified_name("EarlyBinder<'tcx, T> > instantiate").unwrap();
         assert_eq!(exact.len(), 1);
         assert_eq!(exact[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
 
@@ -1121,7 +1123,8 @@ mod tests {
         assert_eq!(normalized[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
 
         // Direct call to find_symbols_by_normalized_scope
-        let direct_norm = store.find_symbols_by_normalized_scope("EarlyBinder > instantiate").unwrap();
+        let direct_norm =
+            store.find_symbols_by_normalized_scope("EarlyBinder > instantiate").unwrap();
         assert_eq!(direct_norm.len(), 1);
         assert_eq!(direct_norm[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
 

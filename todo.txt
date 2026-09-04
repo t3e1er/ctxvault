@@ -121,18 +121,18 @@ PHASE 4: LIVE EVALUATION & REGRESSION VERIFICATION
 Goal: Re-run the evaluation harness against the `rust` corpus to confirm real token
 savings and zero regressions across the 39-tool surface.
 
-[ ] Task 4.1: Re-run `eval_progressive.ps1` against `c:\dev\ctx\ctxcorpus\rust`
+[x] Task 4.1: Re-run `eval_progressive.ps1` against `c:\dev\ctx\ctxcorpus\rust`
     - Verify Case 1.1: `detail="ids"` drops from 5,931 tokens to <150 tokens.
     - Verify Case 3.1: `EarlyBinder > instantiate` resolves cleanly to the method body
       in ~200 tokens without returning 404.
     - Verify all other cases remain green.
 
-[ ] Task 4.2: Full CI & Workspace Validation
+[x] Task 4.2: Full CI & Workspace Validation
     - Run `just fmt-check` (or `cargo fmt --all -- --check`).
     - Run `just clippy` (`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`).
     - Run `just test` (`cargo test --workspace --all-features --locked`).
     - Update `walkthrough.md` with post-fix token comparison metrics.
 
-[ ] Task 4.3: Phase 4 Commit
+[x] Task 4.3: Phase 4 Commit
     - Git commit: `test(eval): verify progressive disclosure token reduction and generic resolution`
 ================================================================================

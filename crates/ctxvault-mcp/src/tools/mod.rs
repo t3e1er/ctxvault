@@ -1575,10 +1575,8 @@ fn fetch_code_symbol(
         0 => {
             let leaf = qualified_name.split(" > ").last().unwrap_or(qualified_name).trim();
             let leaf_candidates = engine.store().find_symbols_by_name(leaf).unwrap_or_default();
-            let leaf_matches: Vec<_> = leaf_candidates
-                .into_iter()
-                .filter(|s| s.name.eq_ignore_ascii_case(leaf))
-                .collect();
+            let leaf_matches: Vec<_> =
+                leaf_candidates.into_iter().filter(|s| s.name.eq_ignore_ascii_case(leaf)).collect();
 
             if !leaf_matches.is_empty() {
                 let candidates: Vec<Value> = leaf_matches.iter().map(code_symbol_handle).collect();
@@ -4690,7 +4688,10 @@ impl Service {
         for r in &code_ids_results {
             assert!(r.snippet.is_none(), "code hit snippet must be None with detail=ids");
             assert!(r.lineage.is_none(), "code hit lineage must be None with detail=ids");
-            assert!(r.score_components.is_none(), "code hit score_components must be None with detail=ids");
+            assert!(
+                r.score_components.is_none(),
+                "code hit score_components must be None with detail=ids"
+            );
         }
 
         // 2. detail="ids" on doc search with lineage: snippet, lineage, and score_components must all be None
@@ -4712,7 +4713,10 @@ impl Service {
         for r in &doc_ids_results {
             assert!(r.snippet.is_none(), "doc hit snippet must be None with detail=ids");
             assert!(r.lineage.is_none(), "doc hit lineage must be None with detail=ids");
-            assert!(r.score_components.is_none(), "doc hit score_components must be None with detail=ids");
+            assert!(
+                r.score_components.is_none(),
+                "doc hit score_components must be None with detail=ids"
+            );
         }
 
         // 3. detail="default" preserves snippet, lineage, and score_components
@@ -4734,7 +4738,10 @@ impl Service {
         let legacy_hit = default_results.iter().find(|r| r.path.contains("legacy.md")).unwrap();
         assert!(legacy_hit.snippet.is_some(), "snippet must be preserved with detail=default");
         assert!(legacy_hit.lineage.is_some(), "lineage must be preserved with detail=default");
-        assert!(legacy_hit.score_components.is_some(), "score_components must be preserved with detail=default");
+        assert!(
+            legacy_hit.score_components.is_some(),
+            "score_components must be preserved with detail=default"
+        );
 
         // 4. mode="explain" preserves score breakdown even with detail="ids"
         let explain_res = registry
@@ -4815,7 +4822,9 @@ impl<'a, A> OtherBinder<'a, A> {
                 serde_json::json!({ "qualified_name": "Nonexistent > missing" }),
             )
             .unwrap_err();
-        assert!(err.to_string().contains("not found") || err.to_string().contains("no code symbol"));
+        assert!(
+            err.to_string().contains("not found") || err.to_string().contains("no code symbol")
+        );
 
         // 3. Ambiguous method: two EarlyBinder > instantiate in different files
         let rust_code_2 = r#"

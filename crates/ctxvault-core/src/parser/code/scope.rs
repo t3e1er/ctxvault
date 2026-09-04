@@ -30,6 +30,30 @@ pub fn normalize_scope_path(scope: &str) -> String {
     segments.join(" > ")
 }
 
+/// Check whether a candidate scope path matches a query scope path, allowing
+/// module path prefixes (e.g. `ty::EarlyBinder` matching `EarlyBinder`) and
+/// hierarchy prefixes (e.g. `Outer > Inner > method` matching `Inner > method`).
+pub fn scope_matches(norm_candidate: &str, norm_query: &str) -> bool {
+    let q_segs: Vec<&str> = norm_query.split(" > ").map(str::trim).collect();
+    let c_segs: Vec<&str> = norm_candidate.split(" > ").map(str::trim).collect();
+
+    if q_segs.is_empty() || q_segs.len() > c_segs.len() {
+        return false;
+    }
+
+    let offset = c_segs.len() - q_segs.len();
+    for (i, &q_seg) in q_segs.iter().enumerate() {
+        let c_seg = c_segs[offset + i];
+        let matches = c_seg == q_seg
+            || c_seg.ends_with(&format!("::{q_seg}"))
+            || c_seg.ends_with(&format!(".{q_seg}"));
+        if !matches {
+            return false;
+        }
+    }
+    true
+}
+
 fn strip_loose_lifetimes(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -68,27 +92,18 @@ mod tests {
     #[test]
     fn test_normalize_scope_path_nested_generics() {
         assert_eq!(normalize_scope_path("Foo<Bar<T>> > baz"), "Foo > baz");
-        assert_eq!(
-            normalize_scope_path("Outer<A<B>, C<D<E>>> > method"),
-            "Outer > method"
-        );
+        assert_eq!(normalize_scope_path("Outer<A<B>, C<D<E>>> > method"), "Outer > method");
     }
 
     #[test]
     fn test_normalize_scope_path_lifetimes() {
         assert_eq!(normalize_scope_path("Closure<'a>"), "Closure");
-        assert_eq!(
-            normalize_scope_path("Ref<'a, 'b, T> > borrow"),
-            "Ref > borrow"
-        );
+        assert_eq!(normalize_scope_path("Ref<'a, 'b, T> > borrow"), "Ref > borrow");
     }
 
     #[test]
     fn test_normalize_scope_path_already_clean() {
-        assert_eq!(
-            normalize_scope_path("Router > dispatch"),
-            "Router > dispatch"
-        );
+        assert_eq!(normalize_scope_path("Router > dispatch"), "Router > dispatch");
         assert_eq!(normalize_scope_path("simple_fn"), "simple_fn");
     }
 
