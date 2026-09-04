@@ -1,804 +1,138 @@
 ================================================================================
-ctxvault — PORTS & ADAPTERS REWRITE (todo.txt)
+ctxvault — PROGRESSIVE DISCLOSURE AUDIT FIXES & ENHANCEMENTS (todo.txt)
 ================================================================================
 
 SCOPE (read this first, it is binding)
 --------------------------------------------------------------------------------
-This is a STRUCTURAL refactor ONLY. Ports-and-adapters (hexagonal) + dependency
-injection at the composition root. Rust-idiomatic.
-
-  * NO new features. NO new tools. NO new backends (no SQLite-graph, no Postgres,
-    no S3, no dynamic language packs, no pipeline-stage plugins). Those are FUTURE
-    work that this refactor merely UNBLOCKS.
-  * NO behaviour change. Every MCP tool, every search mode, every CLI flag must
-    behave identically before and after. Same on-disk index layout
-    (meta.db / tantivy/ / graph.bin / vectors.json). Indices remain rebuildable.
-  * The DELIVERABLE is seams: trait-based ports for every major concern, the
-    existing concrete types demoted to adapters implementing those ports, and a
-    single composition root that injects them.
+Fix the critical defects and ergonomic shortcomings uncovered during the live
+empirical token audit of ctxvault's 3-tier progressive disclosure retrieval mode:
+  1. Fix Tier-1 `detail="ids"` token bloat (stripping `lineage` and heavy metadata
+     so handles consume <150 tokens instead of ~6,000 tokens).
+  2. Implement generic-normalized scope path matching so queries like
+     `EarlyBinder > instantiate` resolve against `EarlyBinder<'tcx, T> > instantiate`
+     instead of returning 404 Not Found.
+  3. Polish Tier-2 `get_snippet` candidate suggestions and context enrichment.
+  4. Validate token savings and regression-test against the `rust` corpus.
 
 INVARIANTS (from steering — do not violate)
 --------------------------------------------------------------------------------
   * 100% safe Rust. unsafe_code = forbid. MSRV 1.80, edition 2021.
-  * No backwards-compat shims, no aliased/duplicate paths, no dead code. When a
-    type/accessor is replaced, DELETE the old shape in the SAME task.
-  * missing_docs = warn: every new public trait/type/method gets a doc comment.
-  * Clippy runs with -D warnings; do NOT silence with blanket #[allow]. Fix roots.
-  * Layering stays: common (no deps) <- core <- mcp <- cli. Ports live low; no
-    upward or circular deps. Adapters never leak their concrete backend types
-    (rusqlite::Connection, tantivy::*, hnsw_rs::*, petgraph::*) across a port.
+  * Greenfield discipline: No backwards-compatibility shims, no legacy aliased handlers.
+  * Clippy runs with -D warnings. Fix roots; never silence with blanket #[allow].
+  * Hexagonal architecture: domain types in ctxvault-common, persistence logic
+    behind MetadataCatalog port, tools in ctxvault-mcp.
+  * Every phase must produce a clean, passing, dedicated git commit on branch
+    `feature/fix-progressive-disclosure`.
 
-VERIFICATION STANDARD (run after EVERY task; a task is not done until green)
+VERIFICATION STANDARD (run after EVERY task)
 --------------------------------------------------------------------------------
-  1. just fmt
-  2. just clippy      # must pass with -D warnings, zero new allows
-  3. just test        # full suite (156+ tests) must pass, zero regressions
-  4. just docs        # no missing-docs warnings on new public items
-A command exiting 0 is not proof of correctness — confirm the change satisfies
-the task's stated goal and the SCOPE/INVARIANTS above.
-
-DEFINITION OF DONE (per task)
---------------------------------------------------------------------------------
-  [x] Goal met exactly as written, nothing extra.
-  [x] Old/replaced code deleted (no dead code, grep clean).
-  [x] fmt + clippy + test + docs all green.
-  [x] No new feature/behaviour introduced.
-  [x] Public items documented.
-
-  *** ALL 22 TASKS COMPLETE (Phases 0-5). Final gate: just ci GREEN on a clean
-      tree; 208 tests (== Phase 0 baseline); ports-and-adapters (Approach B)
-      landed with byte-identical behaviour. ***
+  1. cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  2. cargo test --workspace --all-features --locked
+  3. No compiler warnings, no missing-docs warnings on new public items.
 
 TASK STATUS LEGEND:  [ ] todo   [~] in-progress   [x] done   [!] blocked
 ================================================================================
 
-
-TARGET ARCHITECTURE (reference — the shape all phases build toward)
+PHASE 1: TIER-1 HANDLE STRIPPING & LINEAGE LEAK FIX
 --------------------------------------------------------------------------------
-Ports (traits) — the contracts. Candidate home: ctxvault-common (or a new
-ctxvault-ports module if common would gain heavy deps; prefer keeping port
-TRAITS dep-light and letting ADAPTERS in core pull the heavy crates):
+Goal: Ensure `detail="ids"` fulfills its contract as a true bare handle (<150 tokens)
+by stripping both `snippet` and `lineage` graphs, and suppressing heavy score breakdowns.
 
-  MetadataCatalog   — file records, chunks, code_symbols, edge_types,
-                      templates, indexing_state, corpus_config (today: Store)
-  TextIndex         — add/remove/commit/search_with_modality       (today: BM25Index)
-  VectorStore       — add/add_batch/remove/search/save/load/dirty  (today: VectorIndex)
-  GraphStore        — nodes/edges/traverse/backlinks/communities/save/load
-                                                                    (today: KnowledgeGraph)
-  EmbeddingProvider — embed_query/embed_batch/dimensions/model_ver (today: Embedder)
-  SearchService     — search(mode, query, opts) -> results; owns the mode dispatch
-                      currently living in the mcp handle_search match.
+[x] Task 1.1: Update `apply_detail` in `crates/ctxvault-mcp/src/tools/mod.rs`
+    - When `detail == Some("ids")`, set `r.snippet = None` AND `r.lineage = None`.
+    - Also set `r.score_components = None` unless `mode == "explain"`.
+    - Ensure `handle_search` and `handle_search_related` apply this stripping uniformly.
 
-Adapters (implement the ports; keep concrete backend crates encapsulated):
-  SqliteCatalog(Store) · TantivyTextIndex(BM25Index) · HnswVectorStore(VectorIndex)
-  PetgraphStore(KnowledgeGraph) · OnnxEmbedder(Embedder)
+[x] Task 1.2: Add unit tests for `detail="ids"` in `crates/ctxvault-mcp/src/tools/mod.rs`
+    - Test that `detail="ids"` on a code symbol search hit returns `snippet == None`,
+      `lineage == None`, and `score_components == None`.
+    - Test that `detail="default"` preserves the short snippet and lineage.
+    - Test that `mode="explain"` preserves `score_components` even with `detail="ids"`.
 
-Composition root: ctxvault-cli/main.rs builds concrete adapters and injects them
-via an EngineBuilder; CorpusManager routes over port-typed engines. mcp depends
-on port traits + SearchService, never on concrete core internals.
-
-Rust DI policy:
-  * Generics + trait bounds for the stable hot path (monomorphized, zero-cost).
-  * Trait objects (Arc<dyn ...>/Box<dyn ...>) only where runtime swap is the point.
-  * Constructor injection assembled once at the composition root (main.rs).
-  Decide generic-vs-dyn per port in Phase 1 and record it (Task 1.5).
+[x] Task 1.3: Verification & Phase 1 Commit
+    - Verify `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`.
+    - Verify `cargo test --workspace --all-features --locked`.
+    - Git commit: `fix(mcp): strip lineage and score components in search detail=ids`
 
 
+PHASE 2: GENERIC-NORMALIZED SCOPE PATH RESOLUTION FOR CODE SYMBOLS
+--------------------------------------------------------------------------------
+Goal: Enable Tier-2 `get_snippet(qualified_name = "...")` to resolve qualified names
+with omitted generic type/lifetime parameters (e.g. `Type > method` matching
+`Type<'tcx, T> > method`) instead of returning 404 Not Found.
+
+[ ] Task 2.1: Add generic-normalization helper in `ctxvault-core`
+    - Implement a pure function `normalize_scope_path(scope: &str) -> String` that
+      strips balanced angle brackets `<...>` and lifetime annotations while preserving
+      scope hierarchy separators (` > `).
+    - Example: `EarlyBinder<'tcx, T> > instantiate` -> `EarlyBinder > instantiate`.
+    - Add unit tests covering nested generics (e.g. `Foo<Bar<T>> > baz`, `Closure<'a>`).
+
+[ ] Task 2.2: Add normalized query fallback to `MetadataCatalog` / SQLite catalog
+    - In `crates/ctxvault-core/src/persistence/mod.rs`:
+      - When `find_symbols_by_qualified_name(qualified_name)` yields 0 exact matches:
+        - Query SQLite with a component-matching pattern: split `qualified_name` by ` > `,
+          and match candidate symbols where the symbol `name` matches the leaf and
+          `scope_path` matches the enclosing scope prefix ignoring generics.
+        - Alternatively query via SQL `LIKE` wildcard: `replace(query, ' > ', '% > %')`.
+        - If multiple matches result, return all candidates for disambiguation.
+
+[ ] Task 2.3: Wire fallback into `fetch_code_symbol` in `crates/ctxvault-mcp/src/tools/mod.rs`
+    - Ensure `fetch_code_symbol` invokes the normalized fallback when exact lookup fails.
+    - If disambiguation is needed, return the candidate list with exact `scope_path`s.
+
+[ ] Task 2.4: Unit tests for generic scope path resolution
+    - Test that `EarlyBinder > instantiate` resolves to `EarlyBinder<'tcx, T> > instantiate`.
+    - Test that nonexistent symbols still return clean `404 Not Found`.
+    - Test that ambiguous methods return disambiguation candidates.
+
+[ ] Task 2.5: Verification & Phase 2 Commit
+    - Verify `cargo clippy` and `cargo test`.
+    - Git commit: `feat(core): normalize generic parameters in code symbol qualified name resolution`
+
+
+PHASE 3: TIER-2 `get_snippet` ERGONOMICS & CONTEXT ENRICHMENT
+--------------------------------------------------------------------------------
+Goal: Improve symbol retrieval UX so agents receive surrounding context hints
+(e.g., file header breadcrumbs or candidate suggestions on near-misses).
+
+[ ] Task 3.1: Candidate suggestions on symbol lookup failure
+    - When `fetch_code_symbol` fails to find any match for `qualified_name`,
+      query by leaf name (`name = leaf`) across the catalog.
+    - If matches exist under different scope paths, return an informative
+      candidate list rather than an opaque `no code symbol matches` error.
+
+[ ] Task 3.2: Scope breadcrumbs and context enrichment in `get_snippet`
+    - Ensure `get_snippet` response for code symbols includes:
+      - `scope_path`: fully qualified container path.
+      - `signature`: parsed method/function signature.
+      - `docstring`: doc comments if present.
+      - `language` and `path`.
+    - Ensure empty caller/callee arrays in `include_neighbors` are serialized
+      cleanly without crashing callers.
+
+[ ] Task 3.3: Verification & Phase 3 Commit
+    - Verify `cargo clippy` and `cargo test`.
+    - Git commit: `feat(mcp): enhance get_snippet candidate suggestion and context enrichment`
+
+
+PHASE 4: LIVE EVALUATION & REGRESSION VERIFICATION
+--------------------------------------------------------------------------------
+Goal: Re-run the evaluation harness against the `rust` corpus to confirm real token
+savings and zero regressions across the 39-tool surface.
+
+[ ] Task 4.1: Re-run `eval_progressive.ps1` against `c:\dev\ctx\ctxcorpus\rust`
+    - Verify Case 1.1: `detail="ids"` drops from 5,931 tokens to <150 tokens.
+    - Verify Case 3.1: `EarlyBinder > instantiate` resolves cleanly to the method body
+      in ~200 tokens without returning 404.
+    - Verify all other cases remain green.
+
+[ ] Task 4.2: Full CI & Workspace Validation
+    - Run `just fmt-check` (or `cargo fmt --all -- --check`).
+    - Run `just clippy` (`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`).
+    - Run `just test` (`cargo test --workspace --all-features --locked`).
+    - Update `walkthrough.md` with post-fix token comparison metrics.
+
+[ ] Task 4.3: Phase 4 Commit
+    - Git commit: `test(eval): verify progressive disclosure token reduction and generic resolution`
 ================================================================================
-PHASE 0 — BASELINE & GUARDRAILS
-================================================================================
-[x] 0.1  Capture a green baseline. Run: just fmt-check, just clippy, just test,
-         just docs. Record the exact test count and that all pass. This is the
-         regression oracle for every later phase. If anything is red at HEAD,
-         STOP and report — do not start the refactor on a red baseline.
-         --- BASELINE (green, 2026-09-04) @ HEAD ---
-         fmt-check: PASS (exit 0; rustfmt unstable-option warnings only, harmless)
-         clippy:    PASS with -D warnings, zero warnings
-         docs:      PASS, no missing-docs warnings
-         test:      PASS — 208 tests, 0 failed. Breakdown:
-                      ctxvault-common lib .......... 4
-                      ctxvault-core   lib .......... 164
-                      ctxvault-mcp    lib .......... 37
-                      mcp_http_server_test (integ) . 3
-                      (bin/doc-test targets ........ 0)
-                      TOTAL REGRESSION ORACLE = 208 passing (must not drop).
-         ENV REQUIREMENT (critical for all later tasks): the ONNX embedding model
-         lives at ./models/jina-embeddings-v2-base-code/. Tests that load the
-         embedder FAIL unless CTX_MODELS_DIR is exported. Always run verification
-         with:  export CTX_MODELS_DIR="$(pwd)/models"  (per justfile fetch-model
-         note). Without it, 2 pipeline tests panic on model-not-found — that is an
-         env issue, NOT a code regression.
-
-[x] 0.2  Inventory the coupling surface. [DONE — full map in APPENDIX A below.] Produce a short notes section (append to
-         this file under an APPENDIX, or a scratch note) listing every Engine
-         accessor that leaks a concrete backend (bm25(), vector_index(),
-         graph(), graph_mut(), store(), vector_index_mut(), code_paths_set(),
-         embedder_ref(), ...) and every mcp/core call site that consumes them
-         (grep handle_* in tools/mod.rs, search/mod.rs, corpus_manager.rs).
-         This is the map the port extraction must cover; no code change here.
-
-
-================================================================================
-PHASE 1 — DEFINE THE PORTS (traits only; no wiring change yet)
-================================================================================
-Goal: introduce the port traits and IMPLEMENT them on the existing concrete
-structs. Nothing consumes the traits yet. Fully additive, so it stays green.
-
-[x] 1.1  Decide the port home. [DONE — all 6 port traits will live in
-         ctxvault-common::ports (all consumed surfaces are domain-typed; no heavy
-         dep forced into common; Modality already in common::types). Created
-         crates/ctxvault-common/src/ports.rs (doc-comments only, NO trait bodies)
-         + pub mod ports; in common/lib.rs. Recorded constraint: VectorStore's
-         return types VectorSearchResult/VectorMeta are core-local (vector_index.rs)
-         and must be relocated to common when VectorStore is defined (Task 1.4) so
-         the trait can stay in common. Verified: fmt/clippy green, 208 tests, docs
-         no warnings. Grep-confirmed zero trait/fn/impl bodies.] Prefer trait definitions in ctxvault-common with
-         only light deps (std + ctxvault_common::types + Result). If a trait
-         signature would force a heavy crate into common, keep the trait in
-         core::ports instead. Create the module scaffolding (ports module) with
-         doc comments explaining the hexagonal intent. No logic.
-
-[x] 1.2  Define MetadataCatalog trait mirroring the used surface of Store
-         (files, chunks, code_symbols, edge_types, templates, indexing_state,
-         corpus_config). Signatures use domain types from ctxvault-common, never
-         rusqlite types. Document each method.
-         [DONE — MetadataCatalog trait (18 methods, no constructors) in
-         common::ports; signatures byte-identical to Store inherent methods so
-         Task 1.7 can forward. Chose option A: RELOCATED FileRecord, ChunkRecord,
-         EdgeTypeRecord, IndexingState, IndexingStatus (+Display/FromStr) from
-         core::persistence to common::types; deleted originals, updated imports in
-         persistence/mod.rs + engine.rs. templates/validation_issues tables have NO
-         Store accessors today -> none invented (documented omission). Verified:
-         fmt/clippy(-D) green, 208 tests exact, docs clean. Grep-confirmed each
-         relocated type defined ONCE in common; no rusqlite in trait signatures.]
-
-[x] 1.3  Define TextIndex trait mirroring BM25Index's used surface
-         (add_document, remove_document, commit, search / search_with_modality,
-         release_writer). No tantivy types in the signatures.
-         [DONE — TextIndex trait in common::ports: release_writer, add_document,
-         remove_document, commit, search, search_with_modality (signatures
-         identical to BM25Index inherent; search kept distinct, no default body).
-         No constructors, no heal_stale_lockfiles, no impls. Chunk/SearchResult/
-         Modality already in common::types (no relocation). Verified: clippy(-D)
-         clean, 208 tests exact, docs clean; grep-confirmed no tantivy in any trait
-         signature (only doc-comment mentions).]
-
-[x] 1.4  Define VectorStore trait mirroring VectorIndex's used surface
-         (add, add_batch, remove_document, search, save, load-equivalent,
-         dimensions, model_version, dirty/stale, len/is_empty). No hnsw_rs types
-         in the signatures.
-         [DONE — VectorStore trait in common::ports (16 methods): add, add_batch,
-         remove_document, search, save, dimensions, len, is_empty, model_version,
-         set_model_version, is_stale, mark_stale, clear_stale, is_dirty, mark_dirty,
-         clear_dirty. DECISION: save() on port (instance method); load()/new()/
-         new_default() EXCLUDED (return Self -> constructors, not object-safe,
-         composition-root concern) — recorded in trait doc. RELOCATED
-         VectorSearchResult + VectorMeta (+ default_modality serde helper) from
-         core::vector_index -> common::types (grep-confirmed each defined ONCE in
-         common; StoredVector/PersistenceData stay PRIVATE in core). Verified:
-         clippy(-D) clean, 208 tests exact (incl. vector save/load round-trip),
-         docs clean, no hnsw_rs in trait signatures (only doc comments).]
-
-[x] 1.5  Define GraphStore trait mirroring KnowledgeGraph's used surface
-         (add_node, add_edge/add_edge_full, add_code_edge, remove_node,
-         remove_edges_for_node, backlinks, forwardlinks, traverse_bfs,
-         build_edges_for_document, build_all_tag_edges, community detection,
-         node/edge counts, save, load). No petgraph types in the signatures.
-         RECORD the generic-vs-trait-object decision for each port here as a
-         short comment block (hot-path ports = generic; swap-point ports = dyn).
-         [DONE — GraphStore trait in common::ports (28 methods). add_node returns
-         () NOT NodeIndex (sole external caller corpus_manager.rs:272 discards it).
-         EXCLUDED (documented): get_node (leaks NodeIndex, test-only, superseded by
-         contains_node), new/load (constructors; load stays inherent). RELOCATED 8
-         plain-serde return types (GraphStats, LineageNode, BrokenLink,
-         CircularDependency, OrphanAdr, Community, CommunityDetectionResult,
-         CommunityDensity) from graph/mod.rs -> common::types (each defined ONCE in
-         common; only 3 files touched — no external site names them). GraphNode/
-         GraphEdge/GraphData (carry petgraph DiGraph) stayed PRIVATE in core.
-         GENERIC-vs-DYN DECISION recorded in ports.rs module doc: Engine owns
-         backends by value via &/&mut, no Arc<dyn>/runtime swap -> all 5 hot-path
-         ports = GENERICS (monomorphized) in Phase 3; dyn reserved for a real
-         swap seam (none in scope; SearchService evaluated in Phase 2). Verified:
-         clippy(-D) clean, 208 tests exact, docs clean, no petgraph in any trait
-         signature (doc comments only). Pre-existing unused inherent methods
-         (traverse_dfs/orphan_paths/node_degree_list/ensure_node) LEFT for Task 5.1.]
-
-[x] 1.6  Define EmbeddingProvider trait mirroring Embedder's consumed surface
-         (embed_query, embed_batch, dimensions, model_version/name,
-         tokenizer/governor access as needed by the async pipeline). No ort types
-         leaking beyond the adapter.
-         [DONE — EmbeddingProvider trait in common::ports (3 methods, object-safe):
-         embed_query(&self,&str)->Result<Vec<f32>>, embed_batch(&self,&[&str])->
-         Result<Vec<Vec<f32>>>, dimensions(&self)->usize. model_version NOT added
-         (no cross-port consumer; the two model_name() sites in engine.rs/pipeline.rs
-         hold concrete Arc<Embedder>). EXCLUDED & documented: model_name() (leaks
-         core-local ModelName — NOT relocated), average_embeddings (static assoc fn,
-         breaks object-safety, stays inherent), tokenizer()/governor()/session_count/
-         has_token_type_ids/is_gpu_disabled/reset_gpu_disabled (backend-adjacent, no
-         port consumer), embed() (internal sibling of embed_query). Verified:
-         clippy(-D) clean, 208 tests exact, docs clean; no ort/tokenizers/ModelName/
-         HardwareGovernor in any trait signature (doc comments only).
-         *** PHASE 1 PORT DEFINITIONS COMPLETE — all 5 backend ports defined. ***]
-
-[x] 1.7  Implement all five ports on the existing structs as thin adapters
-         (impl MetadataCatalog for Store, etc.). Behaviour identical — the impls
-         just forward to the inherent methods. Keep inherent methods for now
-         (they get pruned in Phase 3). Verify green. This proves the trait
-         signatures are actually satisfiable before any consumer depends on them.
-         [DONE — 5 forwarding impl blocks added, each in its struct's file:
-         MetadataCatalog for Store (persistence/mod.rs:655), TextIndex for
-         BM25Index (index/mod.rs:372), VectorStore for VectorIndex
-         (vector_index.rs:420), GraphStore for KnowledgeGraph (graph/mod.rs:1638),
-         EmbeddingProvider for Embedder (embedding.rs:1174). Every method forwards
-         via EXPLICIT type-path (Store::foo(self,..)) to eliminate recursion risk;
-         add_node discards NodeIndex (`let _ = KnowledgeGraph::add_node(...)`).
-         Inherent methods unchanged, no new inherent methods, no #[allow] added.
-         Verified: clippy(-D) clean after cargo clean rebuild, 208 tests exact (no
-         stack overflow), docs clean. Grep-confirmed exactly 5 impls on correct
-         structs. *** PHASE 1 FULLY COMPLETE — ports defined + implemented. ***]
-
-
-================================================================================
-PHASE 2 — EXTRACT SearchService (break the biggest mcp<->core coupling)
-================================================================================
-Goal: move search-mode dispatch out of the MCP handler into a core service that
-depends on ports, not concrete internals.
-
-[x] 2.1  Define a SearchService port + a core implementation that owns the
-         mode dispatch (bm25 | semantic | hybrid | graph | explain) currently in
-         mcp tools/mod.rs handle_search's match. It takes the ports it needs
-         (TextIndex, VectorStore, GraphStore, EmbeddingProvider) plus query opts,
-         and returns the existing SearchResult/SearchExplanation types unchanged.
-         [DONE — SearchService port trait in common::ports (2 methods: search()->
-         Vec<SearchResult> for bm25/semantic/hybrid/graph; explain()->Vec<
-         SearchExplanation>). SearchQuery opts struct in common::ports (mirrors
-         SearchParams: query/mode/limit/modality/depth/graph_depth/edge_types/
-         edge_class/decompose; detail excluded — stays mcp/serde concern). Core impl
-         CoreSearchService<'a> in NEW core/src/search_service.rs owns the 5-arm
-         dispatch EXACTLY (same defaults/fallbacks/errors); dummy_vi
-         VectorIndex::new_default(384) fallback MOVED into core (killed the mcp
-         leak). handle_search repointed to a thin adapter (resolve engine inputs ->
-         ensure_embedder for semantic -> build service+query -> apply_detail+serde).
-         Dispatch now lives in ONE place. Grep-confirmed: no VectorIndex::new_default
-         and no search::* dispatch calls remain in mcp. Generic-vs-dyn: SearchService
-         wired as generic bound (no runtime swap). Verified: clippy(-D) clean full
-         rebuild, 208 tests exact, docs clean. NOTE: CoreSearchService still holds
-         CONCRETE backend refs (&BM25Index etc.) — Task 2.2 re-points the underlying
-         search:: free fns to ports; Task 3.x flips wiring.]
-
-[x] 2.2  Re-point the existing search:: free functions to operate through the
-         port traits (accept &dyn TextIndex / &dyn GraphStore etc. or generics)
-         instead of &BM25Index / &KnowledgeGraph. Signatures change; behaviour
-         and RRF math do not. Keep rrf_fuse / rrf_fuse_cross_corpus intact.
-         [DONE — all 11 search:: free fns re-pointed to GENERIC port bounds
-         (&impl TextIndex/VectorStore/GraphStore/EmbeddingProvider; search_multihop
-         uses named <E: EmbeddingProvider> for the Option<&E> param), per the
-         hot-path=generics decision (no &dyn). Bodies + RRF math byte-identical;
-         every internal call resolved to an ON-PORT trait method (no port widened,
-         no non-port method needed). rrf_fuse/rrf_fuse_cross_corpus/decompose_query/
-         strip_question_prefix/path_matches_modality untouched. Module import
-         switched from concrete crate types to common::ports; concrete BM25Index/
-         KnowledgeGraph imports moved into #[cfg(test)] mod. Callers: CoreSearchService
-         unchanged (concrete refs satisfy bounds), run_benchmark.rs one nudge
-         &embedder->&*embedder (generics don't Arc-deref-coerce), test_decompose &
-         mcp search_related unchanged. Verified: clippy(-D) clean full rebuild, 208
-         tests exact (RRF oracle passes), docs clean. Grep-confirmed no concrete
-         backend type in any free-fn signature.]
-
-[x] 2.3  Rewrite mcp handle_search (and search_related / explain handlers) to
-         call SearchService, removing the direct engine.bm25()/vector_index()/
-         graph()/code_paths_set() reach-through for search. Delete the dispatch
-         match from the handler. Verify search behaviour is byte-identical via
-         the existing tests.
-         [DONE — completes Phase 2. handle_search (dispatch match) + explain were
-         routed through SearchService in 2.1. This task added SearchService::
-         search_related(&self, seeds, limit, modality) to the port + CoreSearchService
-         (forwards to search::search_related with the SAME literals 0.85/20 + held
-         graph/code_paths; free-fn signature unchanged). handle_search_related
-         rewritten to build CoreSearchService + call service.search_related ->
-         apply_detail -> serde; direct search::search_related call GONE. Grep-confirmed
-         NO search::search_* dispatch calls remain anywhere in mcp. NOTE: mcp still
-         uses engine.bm25()/vector_index()/graph()/code_paths_set() ONLY to CONSTRUCT
-         the service — those leaky accessors are deleted in Task 3.4. Verified:
-         clippy(-D) clean full rebuild, 208 tests exact (search_related oracle passes),
-         docs clean. *** PHASE 2 COMPLETE — SearchService owns all search dispatch. ***]
-
-
-================================================================================
-PHASE 3 — MAKE Engine DEPEND ON PORTS + COMPOSITION ROOT
-================================================================================
-Goal: Engine holds ports, not concrete backends; a builder injects the concrete
-adapters; the leaky accessors are deleted.
-
-*** PHASE 3 WIRING DECISION (BINDING — user-approved, supersedes "generic over 5
-    params" where they conflict) : APPROACH B — CONCRETE Engine + PORT-TYPED
-    ACCESSORS + BUILDER INJECTION. ***
-  Rationale: the mcp tool layer stores handlers as fn-pointers
-  (`fn(&Engine, Value)`), and CorpusManager holds `HashMap<String, Engine>`.
-  A fully generic `Engine<C,T,V,G,E>` would EITHER force concrete backend type
-  NAMES back into the mcp crate (violating Task 4.2's "zero concrete backend types
-  in mcp" grep) OR thread 5 type params through ToolRegistry/MultiCorpusToolRegistry/
-  CorpusManager/transport-state/cli (viral churn). Neither is warranted: there is
-  NO runtime/compile-time backend-swap seam in scope today (the ports.rs decision
-  block itself says none needs dyn).
-  THEREFORE for this refactor:
-   - Engine STAYS ONE CONCRETE TYPE holding the 5 concrete adapters as fields
-     (Store, BM25Index, VectorIndex, KnowledgeGraph, Embedder). Do NOT parameterize
-     Engine, CorpusManager, the tool registry, transport, or cli over the ports.
-   - Engine is the CONCRETE COMPOSITION EPICENTER. It exposes its backends to
-     consumers ONLY through PORT-TYPED accessors/methods (`&impl GraphStore`,
-     `&impl MetadataCatalog`, etc. — or narrow domain methods), never returning the
-     concrete backend type. Consumers (mcp, CorpusManager) depend on the ports.
-   - The COMPOSITION ROOT (cli/main.rs) is the ONLY place the 5 concrete adapters
-     are NAMED + CONSTRUCTED; it injects them into Engine via the builder.
-   - FUTURE VARIANTS (e.g. a Lambda/S3/Postgres target) arrive as a NEW crate with
-     its own concrete adapters implementing the same ports + its own composition
-     root that assembles a differently-wired Engine. The Phase-1 ports are exactly
-     what makes that additive. Whether to genericize Engine THEN, or give each
-     variant crate its own assembler, is a FUTURE decision the ports unblock — do
-     NOT prejudge or build it now (OUT OF SCOPE).
-   - The ports.rs "hot-path = generics" note describes the FUTURE swap mechanism;
-     it does not require parameterizing Engine in THIS refactor. The Task 1.7
-     forwarding adapter impls already let Engine call ports on its concrete fields.
-
-[x] 3.1  Introduce an EngineBuilder (or Engine::with_ports(...) constructor) that
-         accepts the constructed port implementations. Decide generics vs
-         trait objects per the Task 1.5 record and apply consistently.
-         [APPROACH B: builder takes the READY-MADE CONCRETE adapters (Store,
-         BM25Index, KnowledgeGraph, Option<VectorIndex>) + config + index_dir and
-         assembles a concrete Engine. Engine is NOT generic. This task adds the
-         builder/constructor seam only; field-type/accessor changes are 3.2, and
-         relocating construction out of Engine::open is 3.3.]
-         [DONE — added Engine::from_parts(config, index_dir: PathBuf, store, bm25,
-         graph, vector_index: Option<VectorIndex>) -> Self (plain 6-arg injecting
-         constructor; pure assembly, embedder lazily None, no I/O/staleness/edge-type
-         logic). Engine::open body UNCHANGED except its final Self{} literal now
-         delegates to Self::from_parts (single construction path, grep-confirmed one
-         `Self {` literal, inside from_parts). NOT generic. Only engine.rs changed.
-         Verified: clippy(-D) clean rebuild, 208 tests exact, docs clean.]
-
-[x] 3.2  Change Engine's fields from concrete types to the port types. Update
-         Engine's internal methods (index_file_staged, flush_chunk_buffer,
-         commit, delta_scan*, full_reindex*, reembed, get_indexing_status,
-         code_paths_set) to go through the ports. Behaviour identical.
-         [DONE — APPROACH B: fields stay concrete (no generics). AUDIT-ONLY, zero
-         edits to engine.rs (adding port trait imports would be dead code — inherent
-         methods win resolution and forwarding impls already forward to them; clippy
-         -D would fail on unused_imports). Full operation->port mapping audit produced
-         and VERIFIED: every domain operation Engine performs on store/bm25/graph/
-         vector_index/embedder maps 1:1 to a port method (MetadataCatalog/TextIndex/
-         VectorStore/GraphStore/EmbeddingProvider). Allowed-concrete (constructors/
-         assoc-fns on Engine's OWN fields, Engine is core not a port consumer):
-         VectorIndex::new_default (reembed/reindex reset), KnowledgeGraph::new,
-         Embedder::average_embeddings + from_config, Store::open/BM25Index::open
-         (open, relocated in 3.3). ONE flagged non-port call: reembed()
-         embedder.model_name().version_string() (engine.rs:1158) — intentional
-         documented EmbeddingProvider exclusion (ModelName is backend-coupled),
-         called on concrete Arc<Embedder> inside core; NOT a boundary violation, no
-         port widened. Port traits will come into scope naturally in 3.4 when accessor
-         return types change. Verified: clippy(-D) clean, 208 tests exact, docs clean;
-         grep-confirmed no ports:: import in engine.rs.]
-
-[x] 3.3  Move the path-derivation + backend-construction logic out of
-         Engine::open into the composition root / builder path. Engine::open
-         becomes injection of ready-made adapters; the vector-staleness
-         reconciliation moves with the vector adapter construction (same logic,
-         relocated — not reworked). Keep the .index layout identical.
-         [DONE — NEW core module crates/ctxvault-core/src/engine_builder.rs with
-         `pub struct EngineBuilder` + `EngineBuilder::open(config, index_dir) ->
-         Result<Engine>`. Steps 1-6 (create_dir_all; Store::open(meta.db);
-         BM25Index::open(tantivy/); KnowledgeGraph::load(graph.bin) w/ warn
-         fallback; Fast=>None / Full=> VectorIndex::load(vectors.json) + VERBATIM
-         staleness reconciliation block; edge-type persistence) relocated
-         byte-for-byte, ending in Engine::from_parts(...). `pub mod engine_builder;`
-         added to core/lib.rs. Engine::open now a THIN DELEGATE:
-         `{ EngineBuilder::open(config, index_dir) }` — no inline construction.
-         Dropped now-unused EdgeTypeRecord import from engine.rs. from_parts
-         unchanged; Engine stays concrete; nothing generic; CorpusManager/cli/mcp
-         UNTOUCHED (still call Engine::open which delegates — kept isolated/green).
-         Grep-confirmed Store::open/BM25Index::open construction in exactly ONE
-         production place (engine_builder.rs). Verified: clippy(-D) clean rebuild,
-         208 tests exact (reindex/staleness/resumption oracle), docs clean,
-         .index layout + log messages identical.]
-
-[x] 3.4  Delete the leaky pass-through accessors (bm25(), vector_index(),
-         vector_index_mut(), graph_mut(), and any others enumerated in Task 0.2)
-         once no caller needs them. Where the mcp layer still needs graph/catalog
-         reads (backlinks, graph_stats, traverse_lineage, get_symbol_definition,
-         etc.), expose them via narrow port-typed methods or a read-facing
-         service — NOT by handing out the concrete backend. Grep to confirm zero
-         remaining references. No dead code.
-         [DONE — mcp now depends on PORTS only. Engine stays concrete/non-generic.
-         DISPOSITION: DELETED bm25(), vector_index(), vector_index_mut(),
-         embedder_ref(). KEPT + PORT-TYPED: graph()->&impl GraphStore,
-         graph_mut()->&mut impl GraphStore, store()->&impl MetadataCatalog.
-         SEARCH: new Engine::search_service()->CoreSearchService<'_> builds from
-         private fields; mcp handle_search/related use it (no per-backend reach).
-         CoreSearchService embedder field changed &'a Embedder -> Option<Arc<Embedder>>
-         (Arc clone solves the lifetime). Kept semantic fast-mode guard via new
-         has_vector_index() + ensure_embedder().
-         ANALYTICS: OPTION 3 — analytics free fns unchanged/concrete in core; new
-         narrow Engine wrappers analyze_density/find_semantic_gaps/suggest_splits/
-         coverage_report run them against private fields; mcp passes NO backends.
-         GraphStore NOT widened (orphan_paths/node_degree_list stayed off-port).
-         HELPERS: embedder_active(), vector_count(), has_vector_index(), private
-         embedder_arc(). Test get_node->contains_node (engine.rs:1272). Bins
-         updated: test_decompose + run_benchmark now use search_service()/commit()
-         (no leaky accessor). Core engine tests use private self.bm25 field.
-         VERIFIED (full cargo clean rebuild): clippy(-D) clean, 208 tests exact,
-         docs clean. GREP: zero engine.bm25()/vector_index()/vector_index_mut()/
-         embedder_ref() in mcp; graph_mut() in mcp only in #[cfg(test)] fixtures via
-         port method add_edge; *** ZERO concrete backend type names (BM25Index/
-         VectorIndex/KnowledgeGraph/Embedder/Store) in mcp/src — Task 4.2 gate met
-         early ***; 4 deleted accessors gone from engine.rs.]
-
-[x] 3.5  Update CorpusManager to hold/route port-backed Engines and to build them
-         via the builder in add_corpus. Cross-corpus linking
-         (resolve_symbol_across_corpora, link_cross_corpus_symbols) goes through
-         MetadataCatalog + GraphStore ports, not engine.store()/graph_mut()
-         reach-through. Behaviour identical.
-         [DONE — add_corpus now builds via crate::engine_builder::EngineBuilder::open
-         (was Engine::open, which delegates there anyway) — .index path unchanged.
-         Cross-corpus linking (resolve_symbol_across_corpora/link_cross_corpus_symbols/
-         is_intra_corpus_symbol) + list_corpora ALREADY reached the engine only via
-         port-typed accessors (store()->&impl MetadataCatalog, graph()->&impl
-         GraphStore, graph_mut()->&mut impl GraphStore) + non-leaky helpers
-         (config/embedder_active/vector_count) after 3.4 — verified, no churn needed.
-         Grep-confirmed corpus_manager.rs names NO concrete backend type. Engine::open
-         kept (tests/bins still use it; not dead — pub). Verified: clippy(-D) clean,
-         208 tests exact, docs clean. FLAKE WATCH: sub-agent saw ONE intermittent
-         core-lib failure (no name) in one run; I re-ran the full suite 4x -> all
-         green (208). Pure delegate swap cannot introduce a data flake -> pre-existing
-         parallelism/tempdir timing flake, NOT a regression. Flag for Task 5.3 gate.]
-         *** PHASE 3 COMPLETE — Engine is the concrete composition epicenter behind
-         ports; construction relocated to EngineBuilder; leaky accessors gone; mcp
-         depends only on ports; CorpusManager builds via the builder. ***
-
-
-================================================================================
-PHASE 4 — WIRE THE COMPOSITION ROOT (cli) THROUGH THE PORTS
-================================================================================
-[x] 4.1  Update ctxvault-cli/main.rs so the ONLY place concrete adapters
-         (SqliteCatalog, TantivyTextIndex, HnswVectorStore, PetgraphStore,
-         OnnxEmbedder) are named is the composition root. main builds them and
-         hands them to the EngineBuilder / CorpusManager. All modes (Local,
-         Server, Proxy, Client) and all flags (--corpus, --default-corpus,
-         --profile, --reindex, --sync, --fast, --batch-size, --no-resume) behave
-         identically.
-         [DONE (Approach B reading (ii)) — cli was ALREADY correct: it composes
-         engines via CorpusManager::new() + add_corpus() which delegates to
-         EngineBuilder::open (the single named-adapters seam, core-owned). cli
-         names ZERO concrete backend types (grep-confirmed). All 4 modes wired
-         (proxy=run_stdio_proxy, client=McpClient, local=run_stdio_multi,
-         server=run_http_server_multi) + all 8 flags verified to drive the same
-         Engine/CorpusManager methods with identical args (--reindex->
-         full_reindex_paginated(batch_size,!no_resume), --sync->delta_scan_paginated,
-         --fast->IndexMode::Fast, --default-corpus->set_default, --profile->
-         with_profile, etc.). STRICT reading (cli literally naming Store/BM25Index/..)
-         REJECTED: it would split construction + force CorpusManager to accept
-         pre-built engines + duplicate the staleness logic 3.3 consolidated (dup-path
-         invariant violation). Only change: a 2-line clarifying comment above
-         CorpusManager::new() documenting the composition-root disposition. No
-         behaviour change. Verified: clippy(-D) clean rebuild, 208 tests exact, docs
-         clean, grep zero concrete backends in cli/src.]
-
-[x] 4.2  Confirm mcp crate depends only on ports + SearchService + domain types.
-         Grep the mcp crate for concrete core backend types
-         (BM25Index, VectorIndex, KnowledgeGraph, Store, Embedder) — expect zero
-         hits outside of what a port legitimately re-exports. Engine/CorpusManager
-         references remain (they are the domain orchestrators), but the backend
-         internals must not.
-         [DONE (confirmation gate — no code change needed) — GREP CONFIRMED:
-         * ZERO concrete backend type names (BM25Index/VectorIndex/KnowledgeGraph/
-           Store/Embedder) in mcp/src AND mcp/tests.
-         * mcp/Cargo.toml declares NO infra backend crate (no tantivy/hnsw_rs/
-           petgraph/rusqlite/ort/tokenizers).
-         * mcp's ctxvault_core references are all domain orchestrators + domain
-           types + pure helpers: corpus_manager::CorpusManager, engine::Engine
-           (domain orchestrators — legitimate), template::{Template/Severity/
-           ValidationResult/ValidationIssue}, parser::parse_document (domain/parse),
-           and ctxvault_core::search used ONLY for rrf_fuse_cross_corpus (pure RRF
-           fusion over domain SearchResult — no backend touched).
-         * Search reached via engine.search_service() returning the SearchService
-           port (CoreSearchService); mcp calls .search()/.explain()/.search_related()
-           on the port, never constructing from backends.
-         mcp depends only on ports + SearchService + domain types + domain
-         orchestrators. Verified against green tree (208 tests, clippy/docs clean
-         from Task 4.1 rebuild). *** PHASE 4 COMPLETE. ***]
-
-
-================================================================================
-PHASE 5 — CLEAN-UP, DOCS, FINAL VERIFICATION
-================================================================================
-[x] 5.1  Remove now-dead inherent methods left on the adapters after Phases 2-4
-         (the old concrete-typed methods that ports superseded). Clippy dead_code
-         / unused must be clean without #[allow]. Collapse any duplicate path
-         that the refactor made redundant.
-
-[x] 5.2  Update docs/ARCHITECTURE.md to describe the ports-and-adapters layering,
-         the port list, and the composition root. Update the crate-level //!
-         docs in core/lib.rs, mcp/lib.rs, common/lib.rs to reference the ports.
-         Only documentation of what now EXISTS — no aspirational future backends.
-
-[x] 5.3  Final full gate on a clean tree: just ci (fmt-check + clippy + test +
-         deny + docs). Confirm the test count matches the Phase 0 baseline (no
-         tests silently dropped) and every tool/mode/flag still behaves as before.
-         Report the before/after diff at the architectural level.
-         [DONE — `just ci` GREEN end-to-end on a FULLY CLEAN tree (cargo clean first):
-         fmt-check PASS, clippy -D warnings PASS (zero), test PASS, deny PASS
-         (advisories/bans/licenses/sources ok; the "0BSD unmatched license allowance"
-         is a pre-existing benign deny.toml warning, NOT a failure), docs PASS (no
-         missing-docs). TEST COUNT = 208 EXACT, matches Phase 0 baseline
-         (common 4 + core 164 + mcp 37 + mcp-integration 3; bins/doctests 0). No tests
-         dropped/added, zero failures. FLAKE WATCH RESOLVED: ran the full suite 3
-         additional times after just ci -> all green; the one-off unnamed failure seen
-         once during Task 3.5 did NOT reproduce across ~7 full runs total -> confirmed
-         pre-existing parallelism/tempdir timing artifact, NOT a refactor regression.
-         *** REFACTOR COMPLETE — all 22 tasks done, tree green, 208 tests. ***
-
-         BEFORE/AFTER ARCHITECTURAL DIFF:
-         BEFORE: Engine self-constructed 5 concrete backends in Engine::open and
-           handed them out via 7 leaky accessors (bm25()->&BM25Index, vector_index(),
-           vector_index_mut(), embedder_ref()->Arc<Embedder>, graph()->&KnowledgeGraph,
-           graph_mut(), store()->&Store). mcp reached through those to drive the
-           search-mode dispatch match (incl. a VectorIndex::new_default(384) leak) and
-           passed concrete backends into search::/analytics:: free fns. No trait seam;
-           backends coupled across the mcp<->core boundary.
-         AFTER: 6 PORT TRAITS in ctxvault-common::ports (MetadataCatalog, TextIndex,
-           VectorStore, GraphStore, EmbeddingProvider, SearchService), domain-typed
-           only (no backend type crosses a port). 5 concrete adapters in core implement
-           them (Store/BM25Index/VectorIndex/KnowledgeGraph/Embedder) + CoreSearchService.
-           Engine stays ONE CONCRETE type (Approach B) exposing port-typed access
-           (graph()->&impl GraphStore, store()->&impl MetadataCatalog, search_service()
-           ->SearchService) + narrow domain methods; the 4 leaky concrete accessors
-           DELETED. Construction relocated to EngineBuilder::open (single seam);
-           CorpusManager builds via it; cli is the composition root naming no backend.
-           mcp names ZERO concrete backend types (grep-verified) and depends only on
-           ports + SearchService + domain types + Engine/CorpusManager orchestrators.
-           Search-mode dispatch lives in the SearchService port impl, not the mcp
-           handler. Layering acyclic + ports-low: common <- core <- mcp <- cli.
-           Behaviour byte-identical throughout (208-test oracle held at every task).]
-
-
-================================================================================
-OUT OF SCOPE — DO NOT DO IN THIS EFFORT (explicitly deferred)
-================================================================================
-  - SQLite-backed GraphStore adapter (petgraph -> sqlite) .......... FUTURE
-  - Postgres / S3 / managed vector-store adapters (AWS/Lambda) ...... FUTURE
-  - Separated ingest/retrieval service binaries .................... FUTURE
-  - Dynamic / runtime tree-sitter language packs (LanguagePack) .... FUTURE
-  - Composable pipeline-stage plugin registry (IndexStage) ......... FUTURE
-  - Wiring or extending the currently-dead CorpusWatcher ........... FUTURE
-  - Collapsing the two embed paths (sync vs async) ................. FUTURE
-The ports defined here are what make each of the above an additive adapter later.
-Introducing any of them now is a SCOPE VIOLATION.
-
-================================================================================
-APPENDIX A — COUPLING-SURFACE INVENTORY (Task 0.2, read-only; @ baseline HEAD)
-================================================================================
-This is the map the port extraction must cover. Line numbers are as-of baseline.
-
-A.1 LEAKY ENGINE ACCESSORS  (crates/ctxvault-core/src/engine.rs)
-  Engine fields declared at lines 72-81:
-    config, store: Store, bm25: BM25Index, graph: KnowledgeGraph,
-    vector_index: Option<VectorIndex>, embedder: RwLock<Option<Arc<Embedder>>>,
-    index_dir.
-  7 accessors leak a concrete backend type:
-    1. bm25(&self) -> &BM25Index                         (L854-857)
-    2. vector_index(&self) -> Option<&VectorIndex>       (L859-862)
-    3. vector_index_mut(&mut self) -> Option<&mut VectorIndex> (L1000-1003)
-    4. embedder_ref(&self) -> Option<Arc<Embedder>>      (L869-872)
-    5. graph(&self) -> &KnowledgeGraph                   (L940-943)
-    6. graph_mut(&mut self) -> &mut KnowledgeGraph       (L945-948)
-    7. store(&self) -> &Store                            (L970-973)
-  Non-leaking (return domain/std types, keep on façade): code_paths_set() L956-967
-    (derives HashSet<String> from store.get_all_code_symbols), is_fast_mode()
-    L864-867, vectors_stale() L985-988, is_indexed() L990-993,
-    stored_model_version() L995-998, config()/config_mut() L975-983.
-  DEAD CODE to delete (engineering-principles): engine.rs L1610-1620 stub
-    impl Engine::search_hybrid(&self,&str)->Vec<String> + free fn execute_rrf
-    (returns stubbed data; no real callers). Remove during Phase 5 (or earlier if
-    a task touches it).
-
-A.2 BACKEND STRUCTS -> PORTS  (used surface only; infra-leak flag)
-  Store -> MetadataCatalog  (persistence/mod.rs:215; conn: Mutex<Connection>)
-    NO rusqlite type in any public signature (all domain records). Used surface:
-    open L225, open_in_memory L231, insert_file L253, get_file L274,
-    delete_file L304, list_files L313, insert_chunks L342, get_chunks_for_file
-    L372, delete_chunks_for_file L396, insert_edge_types L409, list_edge_types
-    L440, set_config L467, get_config L481, get_indexing_state L503,
-    update_indexing_state L537, reset_indexing_state L560, save_code_symbols
-    L573, get_code_symbols_for_file L618, find_symbols_by_name L654,
-    find_symbols_by_qualified_name L695, get_all_code_symbols L731.
-  BM25Index -> TextIndex  (index/mod.rs:22; tantivy::* private)
-    NO tantivy type in any consumed signature. Used surface: open L90,
-    open_in_memory L134, release_writer L195, add_document L205, remove_document
-    L246, commit L255, search L266, search_with_modality L276.
-    Also free fn heal_stale_lockfiles(&Path) L40.
-  VectorIndex -> VectorStore  (vector_index.rs:46; Hnsw private)
-    NO hnsw_rs type in any consumed signature. Used surface: new L103,
-    new_default L132, add L200, add_batch L240, remove_document L269, search
-    L292, save L369, load L404, dimensions L162, len L152, is_empty L157,
-    model_version L167, set_model_version L172, is_stale L178, mark_stale L183,
-    clear_stale L189, is_dirty L137, mark_dirty L142, clear_dirty L147.
-    NOTE: VectorSearchResult + VectorMeta are core-local types the port may need
-    to reference (consider re-homing to common if the port lives in common).
-  KnowledgeGraph -> GraphStore  (graph/mod.rs impl L76; DiGraph + node_map)
-    INFRA LEAK: petgraph NodeIndex leaks via add_node L82 (-> NodeIndex) and
-    get_node L206 (-> Option<NodeIndex>). Port must hide NodeIndex. Used surface:
-    new L77, add_node L82, remove_node L98, add_edge L112, add_edge_full L130,
-    add_code_edge L173, remove_edges_for_node L185, get_node L206, contains_node
-    L211, outgoing_frontmatter_targets L221, node_paths L239, node_count L244,
-    edge_count L249, get_all_edges L254, build_edges_for_document L281,
-    build_all_tag_edges L338, traverse_bfs L524, traverse_dfs L581, save L637,
-    load L646, backlinks L664, forwardlinks L695, shortest_path L727, stats L798,
-    traverse_lineage L878, extract_lineage_for_node L976, detect_broken_links
-    L1075, detect_circular_dependencies L1111, detect_orphan_adrs L1196,
-    detect_communities L1342, detect_communities_leiden L1554, community_densities
-    L1679. (Code-edge extraction lives on graph::code::CodeGraphExtractor,
-    used in engine.rs ~L380.)
-  Embedder -> EmbeddingProvider  (embedding.rs:642; ort + tokenizers + governor)
-    Consumed embed surface is clean: embed_query L1140, embed_batch L813,
-    dimensions L771, average_embeddings L1145 (assoc fn, used in engine flush),
-    model_name L776 (ModelName core type). from_config L760, new L643.
-    tokenizer() L801 leaks tokenizers::Tokenizer and governor() L781 exposes
-    Arc<dyn HardwareGovernor> BUT neither has an external consumer -> port need
-    NOT include them.
-
-A.3 CALL SITES CONSUMING ACCESSORS
-  crates/ctxvault-mcp/src/tools/mod.rs:
-    handle_search (fn L1943), mode-dispatch match at L1956:
-      bm25 arm L1957-1962: search_bm25(engine.bm25()), enrich w/ engine.graph().
-      semantic arm L1964-1998: vector_index() guard, ensure_embedder(),
-        embedder_ref(), vector_index().unwrap(), search_semantic_dual, enrich
-        via graph().
-      hybrid arm L2002-2066: code_paths_set() L2003, embedder_ref() L2013,
-        vector_index() L2017, search_multihop/search_hybrid_full(bm25, vi, graph,
-        embedder), Fast-Mode fallback search_hybrid(bm25, graph) L2051-2052.
-      graph arm L2069-2090: code_paths_set() L2070, search_graph(bm25, graph).
-      explain arm L2096-2130: code_paths_set(), embedder_ref(), vector_index()
-        with DIRECT CONCRETE CONSTRUCTION fallback
-        ctxvault_core::vector_index::VectorIndex::new_default(384) at L2107
-        (dummy_vi) -- the one hard type-name leak into mcp. search_explain(...).
-    handle_search_related L2144: code_paths_set() L2154, search_related(graph,..).
-    handle_backlinks L2171: graph().backlinks L2176.
-    handle_forwardlinks L2182: graph().forwardlinks L2187.
-    handle_graph_path L2193: graph().shortest_path L2200.
-    handle_graph_stats L2216: graph().stats L2217.
-    handle_graph_subgraph L2223: graph().traverse_bfs L2231.
-    handle_graph_communities L2245: graph().detect_communities L2254 /
-      detect_communities_leiden L2255 / community_densities L2259.
-    handle_corpus_list L2277: store().list_files L2278, embedder_ref().is_some
-      L2285, vector_index().map(len) L2286, graph().node_count L2286.
-    corpus_stats L2362: store().list_files L2363.
-    handle_analyze_density L2404: analytics::analyze_density(graph()) L2409.
-    handle_find_semantic_gaps L2415: vector_index() guard, embedder_ref() L2428,
-      vector_index().unwrap() L2442, analytics::find_semantic_gaps(bm25, vi) L2445.
-    handle_suggest_splits L2456: analytics::suggest_splits(store()) L2461.
-    handle_coverage_report L2467: store().list_files L2474,
-      analytics::coverage_report(bm25) L2479.
-    get_symbol_definition helper (~L1560): store().find_symbols_by_qualified_name
-      L1563, find_symbols_by_name L1565; if include_neighbors:
-      store().get_all_code_symbols L1601 + graph().get_all_edges L1602.
-    snippet helper (~L1657): store().get_chunks_for_file L1658.
-    handle_check_index_coverage L1818: store().list_files L1822, per-file
-      get_chunks_for_file L1839 + get_code_symbols_for_file L1840.
-    handle_list_notes L1875: store().list_files L1882.
-    handle_traverse_lineage L2964: graph().traverse_lineage L2971.
-    handle_validate_corpus L2844: store().list_files L2849, graph().stats L2928.
-    handle_validate_taxonomy (~L3100): store().list_files L3121,
-      graph().detect_broken_links L3125, detect_circular_dependencies L3128,
-      detect_orphan_adrs L3149.
-    code-intel get_symbol_definition/find_callers (~L3177/~L3242):
-      store().find_symbols_by_name L3178, graph().get_all_edges L3208/L3243,
-      store().get_all_code_symbols L3252.
-    handle_get_architecture L3276: graph().detect_communities_leiden L3276,
-      community_densities L3277, get_all_edges L3282.
-    Write handlers use domain methods (index_file/commit/remove_file), NOT raw
-      accessors. graph_mut() used directly ONLY in tests (L4210, L4331, L4341,
-      L4349). handle_reembed_corpus L2293 uses vectors_stale()/stored_model_version()
-      (non-leaking).
-  crates/ctxvault-core/src/search/mod.rs: does NOT call accessors; RECEIVES
-    concrete &BM25Index/&VectorIndex/&KnowledgeGraph/&Embedder as params (threaded
-    in by mcp). See A.4.
-  crates/ctxvault-core/src/corpus_manager.rs:
-    list_corpora (~L135): store().list_files L138, embedder_ref().is_some L146,
-      vector_index().map(len) L147, graph().node_count L148.
-    resolve_symbol_across_corpora (~L180): store().find_symbols_by_qualified_name
-      L180.
-    link_cross_corpus_symbols L217: Phase1 iterates engine.graph() L232 ->
-      node_paths L234, outgoing_frontmatter_targets L235, contains_node; uses
-      is_intra_corpus_symbol -> store().find_symbols_by_qualified_name L294-296.
-      Phase2 get_engine_mut(..).graph_mut() L271 -> add_node + add_edge_full
-      L273-274 (writes DocumentsCode structural edge, ResolutionConfidence::High).
-
-A.4 search:: FREE FUNCTIONS  (crates/ctxvault-core/src/search/mod.rs)
-  path_matches_modality ~L22 (no backend)
-  search_bm25 L30                (&BM25Index)
-  search_semantic ~L51           (&VectorIndex, &Embedder)
-  search_semantic_with_embedding ~L80 (&VectorIndex)
-  search_semantic_dual ~L115     (&VectorIndex, &Embedder)
-  rrf_fuse ~L170  PRIVATE fn      (no backend)
-  rrf_fuse_cross_corpus ~L225 pub (no backend)
-  enrich_results_with_lineage ~L270 (&KnowledgeGraph)
-  search_hybrid ~L290            (&BM25Index, &KnowledgeGraph)
-  search_hybrid_full ~L370       (&BM25Index, &VectorIndex, &KnowledgeGraph)
-  search_explain ~L480           (&BM25Index, &VectorIndex, &KnowledgeGraph)
-  search_graph ~L610             (&BM25Index, &KnowledgeGraph)
-  search_related ~L700           (&KnowledgeGraph)
-  search_multihop ~L815          (&BM25Index, &VectorIndex, &KnowledgeGraph, Option<&Embedder>)
-  decompose_query ~L1010 (no backend), strip_question_prefix ~L1070 (private)
-  => every strategy takes concrete backend refs; these become port-typed
-     (&dyn Port or generics) under SearchService. rrf_fuse/rrf_fuse_cross_corpus/
-     decompose_query are backend-free and stay in the pure fusion layer.
-
-A.5 Engine::open  (engine.rs:102-214) — RELOCATE to composition root in Phase 3
-  L104-105 fs::create_dir_all(index_dir)  [index_dir = <corpus_path>/.index]
-  L107-109 meta.db -> Store::open
-  L111-113 tantivy/ -> BM25Index::open
-  L115-124 graph.bin -> KnowledgeGraph::load (fallback ::new)
-  L126-191 vectors.json: Fast mode => None; Full mode => VectorIndex::load/
-           new_default + staleness reconciliation (dim mismatch recreate; model
-           version compare w/ jina prefix-compat; mark_stale/clear_stale/
-           set_model_version). SAME LOGIC must move, not be reworked.
-  L193-207 edge types from config.graph.edge_types -> store.insert_edge_types.
-  L208-214 struct assembly; embedder lazily created by ensure_embedder() L220-248.
-
-A.6 LAYERING FACTS
-  common: serde/serde_json/thiserror/toml only; NO workspace-crate deps. OK.
-  core: ctxvault-common + all infra (tantivy, hnsw_rs, petgraph, rusqlite, ort,
-    tokenizers, tree-sitter*, postcard, blake3, notify, fs4). Backend crates live here.
-  mcp: ctxvault-common + ctxvault-core (+ axum/tower/reqwest/tokio/serde). Does
-    NOT list tantivy/hnsw_rs/petgraph/rusqlite/ort as direct deps -> its only
-    route to backends is via core's public API (the 7 accessors).
-  cli: common + core + mcp. Intended composition root.
-  Layering acyclic + correct (common <- core <- mcp <- cli).
-  mcp concrete-backend NAME leak: ONLY tools/mod.rs:2107
-    (VectorIndex::new_default(384) dummy_vi). All other coupling is indirect via
-    the 7 accessor return types flowing into search::*/analytics::* free fns.
-  NET port-extraction must: (a) replace 7 concrete accessors w/ port-typed access
-  or move search/analytics behind SearchService so mcp never receives a backend
-  handle; (b) kill the VectorIndex::new_default(384) at tools/mod.rs:2107;
-  (c) hide petgraph NodeIndex behind GraphStore; (d) relocate Engine::open
-  construction (engine.rs:102-214) to the cli composition root.
-================================================================================
-
---- Task 5.1 completion note (dead-code audit + cleanup) ---
-CORRECTION to APPENDIX A.1: the "engine.rs L1610-1620 stub search_hybrid + execute_rrf"
-was a MISREAD. That text is TEST-FIXTURE STRING DATA (r#"..."# Rust source written to a
-temp src/search.rs) inside test_polyglot_codebase_indexing_and_cross_modal_search
-(engine.rs ~L1644-1740); the test indexes it and asserts the polyglot parser extracts
-Engine/search_hybrid/execute_rrf symbols + a `calls` edge. It is LIVE TEST INPUT, not dead
-code — LEFT INTACT.
-AUDIT (every candidate has callers -> NONE genuinely dead):
-  orphan_paths (graph:822), node_degree_list (graph:838) -> USED IN PROD by
-    analytics::analyze_density (analytics.rs:85,88), reached via Engine::analyze_density. KEEP.
-  traverse_dfs (graph:569) -> test_dfs_traversal (graph:2009). KEEP (coverage).
-  ensure_node (graph:852) -> analytics test (analytics.rs:404). KEEP.
-  get_node (graph:194) -> 7 graph tests (graph:1892-2043). KEEP (coverage).
-clippy -D warnings already had ZERO dead_code/unused -> refactor introduced no dead code
-(Task 1.7 forwarding impls keep inherent methods live; Engine internals + tests call inherent
-methods on concrete fields).
-ACTUAL CLEANUP DONE: removed the PRE-EXISTING `#[allow(dead_code)] schema: Schema` field on
-BM25Index (index/mod.rs) by FIXING THE ROOT (engineering-principles: don't silence lints) —
-deleted the field + the #[allow] + the two `schema,` initializers; open()/open_in_memory()
-now pass the local schema by value into Index::open_or_create/create_in_ram (no clone, no
-field). Field handles retained. Schema import stays (build_schema still returns Schema).
-VERIFIED: clippy(-D) clean core rebuild, 208 tests exact, docs clean; grep-confirmed ZERO
-#[allow(dead_code)] in ctxvault-core/src; no BM25Index.schema field remains.
-
---- Task 5.2 completion note (docs) ---
-DONE (docs only, no code). ARCHITECTURE.md: new "## Ports & Adapters Architecture"
-section appended after §9 Crate Dependencies (no renumbering) — 6 ports (common::ports)
-+ contracts table, 5 infra adapters + CoreSearchService (core) table, Engine described
-as CONCRETE (Approach B, "not generic over the ports") with port-typed accessors,
-EngineBuilder construction seam, CorpusManager router, cli composition root, ASCII
-acyclic layering diagram (common<-core<-mcp<-cli) + invariant "backend never crosses a
-port; mcp/cli name no concrete backend", and a FUTURE-LABELED additive-backend note
-("No such alternative backend exists today"). One-line pointer added at end of §9.
-Crate //! docs updated: common (hosts the 6 port traits), core (provides the adapters +
-Engine concrete orchestrator + EngineBuilder seam), mcp (depends only on ports +
-SearchService + domain types + orchestrators, names no backend). VERIFIED: docs clean,
-208 tests, clippy clean; grep-confirmed no Postgres/S3/Lambda stated as existing; Engine
-documented concrete. Pre-existing §9 crate-name inaccuracies (rmcp/hnswlib-rs/fastembed-rs)
-left untouched (out of 5.2 scope).

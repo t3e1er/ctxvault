@@ -1917,11 +1917,12 @@ fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
 
 /// Full-text BM25 keyword search.
 /// Apply Tier-1 progressive-disclosure verbosity to a set of search results.
+/// Apply detail level shaping to search results.
 ///
-/// `detail == "ids"` strips the `snippet` from every result, leaving bare
-/// handles (path/qualified-name + line range + metadata carried by
+/// `detail == "ids"` strips the `snippet`, `lineage`, and `score_components`
+/// from every result, leaving bare handles (path/qualified-name + line range + metadata carried by
 /// `entity_kind`/`language`/`chunk_index`). Any other value (including the
-/// omitted default) keeps the existing short snippet. Full bodies are never
+/// omitted default) keeps the existing short snippet and metadata. Full bodies are never
 /// emitted here — callers fetch source via `get_snippet`.
 fn apply_detail(
     mut results: Vec<ctxvault_common::types::SearchResult>,
@@ -1930,6 +1931,8 @@ fn apply_detail(
     if detail == Some("ids") {
         for r in &mut results {
             r.snippet = None;
+            r.lineage = None;
+            r.score_components = None;
         }
     }
     results
@@ -4601,5 +4604,131 @@ pub fn normalize(input: &str) -> Vec<String> {
             serde_json::json!({ "path": "router.rs" }),
         );
         assert!(hint.is_err(), "bare path must hint toward Tier 3");
+    }
+
+    #[test]
+    fn test_search_detail_ids_stripping_and_explain() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let md_old = "# Legacy\n\nLegacy architecture and design.\n";
+        let md_new = "# Modern\n\nModern architecture and design.\n";
+        fs::write(corpus_dir.join("legacy.md"), md_old).unwrap();
+        fs::write(corpus_dir.join("modern.md"), md_new).unwrap();
+        engine.index_file("legacy.md", md_old).unwrap();
+        engine.index_file("modern.md", md_new).unwrap();
+
+        let rust = r#"
+pub struct Service;
+
+impl Service {
+    pub fn process(&self) -> bool {
+        true
+    }
+}
+"#;
+        fs::write(corpus_dir.join("service.rs"), rust).unwrap();
+        engine.index_file("service.rs", rust).unwrap();
+
+        // Add structural edge so legacy.md has lineage: modern.md supersedes legacy.md
+        engine.graph_mut().add_edge(
+            "modern.md",
+            "legacy.md",
+            "supersedes",
+            1.0,
+            EdgeProvenance::Frontmatter,
+            ctxvault_common::config::EdgeClass::Structural,
+        );
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. detail="ids" on code search: snippet, lineage, and score_components must all be None
+        let code_ids_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Service process",
+                    "modality": "code",
+                    "mode": "bm25",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let code_ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(code_ids_res).unwrap();
+        assert!(!code_ids_results.is_empty(), "expected hits for Service process");
+        for r in &code_ids_results {
+            assert!(r.snippet.is_none(), "code hit snippet must be None with detail=ids");
+            assert!(r.lineage.is_none(), "code hit lineage must be None with detail=ids");
+            assert!(r.score_components.is_none(), "code hit score_components must be None with detail=ids");
+        }
+
+        // 2. detail="ids" on doc search with lineage: snippet, lineage, and score_components must all be None
+        let doc_ids_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "modality": "docs",
+                    "mode": "bm25",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let doc_ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(doc_ids_res).unwrap();
+        assert!(!doc_ids_results.is_empty(), "expected hits for Legacy architecture");
+        for r in &doc_ids_results {
+            assert!(r.snippet.is_none(), "doc hit snippet must be None with detail=ids");
+            assert!(r.lineage.is_none(), "doc hit lineage must be None with detail=ids");
+            assert!(r.score_components.is_none(), "doc hit score_components must be None with detail=ids");
+        }
+
+        // 3. detail="default" preserves snippet, lineage, and score_components
+        let default_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "modality": "docs",
+                    "mode": "bm25",
+                    "detail": "default"
+                }),
+            )
+            .unwrap();
+        let default_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(default_res).unwrap();
+        assert!(!default_results.is_empty());
+        let legacy_hit = default_results.iter().find(|r| r.path.contains("legacy.md")).unwrap();
+        assert!(legacy_hit.snippet.is_some(), "snippet must be preserved with detail=default");
+        assert!(legacy_hit.lineage.is_some(), "lineage must be preserved with detail=default");
+        assert!(legacy_hit.score_components.is_some(), "score_components must be preserved with detail=default");
+
+        // 4. mode="explain" preserves score breakdown even with detail="ids"
+        let explain_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "mode": "explain",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let explanations: Vec<ctxvault_common::types::SearchExplanation> =
+            serde_json::from_value(explain_res).unwrap();
+        assert!(!explanations.is_empty(), "explain should return explanations");
+        for exp in &explanations {
+            assert!(exp.snippet.is_none(), "snippet must be None when detail=ids in explain");
+            assert!(exp.final_score > 0.0, "final_score must be preserved in explain");
+            assert!(exp.bm25.raw_score > 0.0, "bm25 score component must be preserved in explain");
+        }
     }
 }
