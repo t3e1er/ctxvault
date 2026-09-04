@@ -66,19 +66,20 @@ pub enum ToolProfile {
 }
 
 /// Tools exposed under the `scout` profile (minimal retrieve/navigate set).
-const SCOUT_TOOLS: [&str; 8] = [
+const SCOUT_TOOLS: [&str; 9] = [
     "search",
     "search_related",
     "get_snippet",
     "read_note",
     "read_code_file",
+    "read_multiple",
     "list_notes",
     "get_frontmatter",
     "status",
 ];
 
 /// Read-only tools added by the `analysis` profile on top of `scout`.
-const ANALYSIS_ONLY_TOOLS: [&str; 20] = [
+const ANALYSIS_ONLY_TOOLS: [&str; 21] = [
     "backlinks",
     "forwardlinks",
     "graph_path",
@@ -98,6 +99,7 @@ const ANALYSIS_ONLY_TOOLS: [&str; 20] = [
     "find_semantic_gaps",
     "suggest_splits",
     "coverage_report",
+    "check_index_coverage",
     "corpus_list",
 ];
 
@@ -272,6 +274,24 @@ impl ToolRegistry {
         );
 
         self.register_read(
+            "read_multiple",
+            "Batch Tier-3 read of multiple files in one call (token-efficient). For markdown returns parsed note; for source returns raw content. Prefer search + get_snippet first.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Relative paths to files within the corpus"
+                    },
+                    "max_lines_per_file": { "type": "integer", "description": "Optional hard cap on returned lines per file" }
+                },
+                "required": ["paths"]
+            }),
+            handle_read_multiple,
+        );
+
+        self.register_read(
             "list_notes",
             "List all indexed notes with metadata (path, title, template, content_hash).",
             serde_json::json!({
@@ -411,11 +431,12 @@ impl ToolRegistry {
 
         self.register_read(
             "graph_communities",
-            "Detect communities in the knowledge graph using the Louvain modularity algorithm. Returns community assignments with modularity scores.",
+            "Detect communities in the knowledge graph. Defaults to Leiden (Louvain partition refined so every community is internally connected); pass algorithm='louvain' for the raw modularity partition. Returns community assignments with modularity scores.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
+                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" },
+                    "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" }
                 },
                 "required": []
             }),
@@ -634,6 +655,23 @@ impl ToolRegistry {
                 "required": ["queries"]
             }),
             handle_coverage_report,
+        );
+
+        self.register_read(
+            "check_index_coverage",
+            "Report index coverage + parse status for the given paths or path prefixes: which are indexed, chunk/symbol counts, and parse gaps (indexed but empty).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Relative paths or path prefixes/scopes to check for index coverage"
+                    }
+                },
+                "required": ["paths"]
+            }),
+            handle_check_index_coverage,
         );
 
         // System tools
@@ -1176,6 +1214,17 @@ struct ReadNoteParams {
 }
 
 #[derive(Deserialize)]
+struct ReadMultipleParams {
+    paths: Vec<String>,
+    max_lines_per_file: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct CheckIndexCoverageParams {
+    paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct ListNotesParams {
     limit: Option<usize>,
     offset: Option<usize>,
@@ -1263,6 +1312,9 @@ struct GraphSubgraphParams {
 #[derive(Deserialize)]
 struct GraphCommunitiesParams {
     include_density: Option<bool>,
+    /// Community detection algorithm: `leiden` (default, connectivity-refined)
+    /// or `louvain` (raw modularity partition).
+    algorithm: Option<String>,
 }
 
 // Write tool params
@@ -1683,6 +1735,142 @@ fn handle_read_code_file(engine: &Engine, args: Value) -> Result<Value> {
     }))
 }
 
+/// Batch Tier-3 read of multiple files in one call.
+///
+/// For markdown files each result mirrors [`handle_read_note`]'s shape
+/// (`path`, `title`, `frontmatter`, `content`, `content_hash`); for source
+/// files it returns raw `content` (like `read_code_file`). Per-path failures
+/// become an entry with an `error` field rather than aborting the whole call.
+fn handle_read_multiple(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ReadMultipleParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let corpus_root = PathBuf::from(&engine.config().path);
+    let results: Vec<Value> = params
+        .paths
+        .iter()
+        .map(|path| read_one_file(&corpus_root, path, params.max_lines_per_file))
+        .collect();
+
+    Ok(serde_json::json!({
+        "count": results.len(),
+        "results": results,
+    }))
+}
+
+/// Read a single file for [`handle_read_multiple`], returning either the
+/// file payload or an `{ "path", "error" }` entry on failure.
+fn read_one_file(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Value {
+    match read_one_file_inner(corpus_root, path, max_lines) {
+        Ok(value) => value,
+        Err(e) => serde_json::json!({ "path": path, "error": e.to_string() }),
+    }
+}
+
+/// Fallible core of [`read_one_file`].
+fn read_one_file_inner(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Result<Value> {
+    let full_path = corpus_root.join(path);
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
+
+    let is_markdown = matches!(language_from_path(path), "markdown");
+
+    if is_markdown {
+        let doc = ctxvault_core::parser::parse_document(Path::new(path), &content)?;
+        let body = match max_lines {
+            Some(cap) => {
+                let lines: Vec<&str> = doc.content.lines().collect();
+                cap_lines(&lines, cap.max(1)).0
+            }
+            None => doc.content,
+        };
+        Ok(serde_json::json!({
+            "path": path,
+            "kind": "note",
+            "title": doc.title,
+            "frontmatter": doc.frontmatter,
+            "content": body,
+            "content_hash": doc.content_hash,
+        }))
+    } else {
+        let all_lines: Vec<&str> = content.lines().collect();
+        let total_line_count = all_lines.len();
+        let (body, truncated) = match max_lines {
+            Some(cap) => cap_lines(&all_lines, cap.max(1)),
+            None => (content, false),
+        };
+        Ok(serde_json::json!({
+            "path": path,
+            "kind": "code",
+            "language": language_from_path(path),
+            "total_line_count": total_line_count,
+            "content": body,
+            "truncated": truncated,
+        }))
+    }
+}
+
+/// Report index coverage + parse status for the given paths or path prefixes.
+///
+/// For each requested path or prefix, consults the catalog to report whether
+/// any file record matches (`indexed`), the chunk and symbol counts, and
+/// whether it parsed (indexed but zero chunks signals a parse gap).
+fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
+    let params: CheckIndexCoverageParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let all_files = engine.store().list_files()?;
+
+    let mut reports = Vec::with_capacity(params.paths.len());
+    let mut covered = 0usize;
+
+    for scope in &params.paths {
+        // A scope matches a file record either exactly or as a path prefix.
+        let matched: Vec<&str> = all_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .filter(|p| *p == scope || p.starts_with(scope.as_str()))
+            .collect();
+
+        let indexed = !matched.is_empty();
+        let mut chunk_count = 0usize;
+        let mut symbol_count = 0usize;
+        for file_path in &matched {
+            chunk_count += engine.store().get_chunks_for_file(file_path).map(|c| c.len())?;
+            symbol_count += engine.store().get_code_symbols_for_file(file_path).map(|s| s.len())?;
+        }
+
+        // Parsed means the scope produced content: indexed but zero chunks and
+        // zero symbols is a parse gap.
+        let parsed = indexed && (chunk_count > 0 || symbol_count > 0);
+        if indexed {
+            covered += 1;
+        }
+
+        let mut matched_files: Vec<String> = matched.iter().map(|p| p.to_string()).collect();
+        matched_files.sort();
+
+        reports.push(serde_json::json!({
+            "path": scope,
+            "indexed": indexed,
+            "parsed": parsed,
+            "chunk_count": chunk_count,
+            "symbol_count": symbol_count,
+            "matched_files": matched_files,
+        }));
+    }
+
+    let total = params.paths.len();
+    Ok(serde_json::json!({
+        "reports": reports,
+        "summary": {
+            "total": total,
+            "covered": covered,
+            "uncovered": total - covered,
+        },
+    }))
+}
+
 /// List all indexed notes with metadata.
 fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListNotesParams = serde_json::from_value(args)
@@ -2060,7 +2248,12 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
 
     let include_density = params.include_density.unwrap_or(false);
 
-    let result = engine.graph().detect_communities();
+    // Default to the connectivity-refined Leiden partition; `louvain` selects the
+    // raw modularity partition.
+    let result = match params.algorithm.as_deref() {
+        Some("louvain") => engine.graph().detect_communities(),
+        _ => engine.graph().detect_communities_leiden(),
+    };
 
     if include_density {
         let densities = engine.graph().community_densities();
@@ -3068,6 +3261,7 @@ fn handle_find_callers(engine: &Engine, params: Value) -> Result<Value> {
             "start_line": sym.map(|s| s.start_line),
             "signature": sym.map(|s| s.signature.clone()),
             "docstring": sym.and_then(|s| s.docstring.clone()),
+            "confidence": edge.confidence,
         }));
     }
 
@@ -3079,7 +3273,7 @@ fn handle_find_callers(engine: &Engine, params: Value) -> Result<Value> {
 }
 
 fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
-    let result = engine.graph().detect_communities();
+    let result = engine.graph().detect_communities_leiden();
     let densities = engine.graph().community_densities();
     let density_map: HashMap<usize, f64> =
         densities.into_iter().map(|d| (d.community_id, d.density)).collect();
@@ -3218,13 +3412,14 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 37, "Expected 37 tools registered");
+        assert_eq!(tools.len(), 39, "Expected 39 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
             "read_note",
             "get_snippet",
             "read_code_file",
+            "read_multiple",
             "list_notes",
             "get_frontmatter",
             "search",
@@ -3250,6 +3445,7 @@ mod tests {
             "find_semantic_gaps",
             "suggest_splits",
             "coverage_report",
+            "check_index_coverage",
             "corpus_list",
             "reembed_corpus",
             "sync_corpus",
@@ -3261,7 +3457,7 @@ mod tests {
             "detect_changes",
         ];
 
-        assert_eq!(expected.len(), 37, "expected-name list must match the 37-tool count");
+        assert_eq!(expected.len(), 39, "expected-name list must match the 39-tool count");
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
@@ -3290,6 +3486,8 @@ mod tests {
         assert!(registry.is_read_only("get_architecture"));
         assert!(registry.is_read_only("get_snippet"));
         assert!(registry.is_read_only("read_code_file"));
+        assert!(registry.is_read_only("read_multiple"));
+        assert!(registry.is_read_only("check_index_coverage"));
         assert!(!registry.is_read_only("detect_changes"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
@@ -3308,8 +3506,8 @@ mod tests {
         // scout ⊂ analysis ⊂ all.
         assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
         assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
-        assert_eq!(all_count, 37, "all profile advertises every registered tool");
-        assert_eq!(scout_count, 8, "scout profile advertises the minimal set");
+        assert_eq!(all_count, 39, "all profile advertises every registered tool");
+        assert_eq!(scout_count, 9, "scout profile advertises the minimal set");
 
         // scout includes core retrieval/fetch but not writes.
         let scout_names: HashSet<&str> = scout.list().iter().map(|t| t.name.as_str()).collect();
@@ -3704,8 +3902,8 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 37 tools.
-        assert_eq!(tools.len(), 37, "Expected 37 tools in multi-corpus registry");
+        // Should have 39 tools.
+        assert_eq!(tools.len(), 39, "Expected 39 tools in multi-corpus registry");
         assert!(
             registry.registry().get("status").is_some(),
             "consolidated status tool should be registered"
@@ -4230,6 +4428,94 @@ pub fn tokenize(input: &str) -> Vec<String> {
             registry.execute("detect_changes", &mut engine, serde_json::json!({})).unwrap();
 
         assert_eq!(change_res["new_files"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_read_multiple_tool() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let md = "# Design Note\n\nSome markdown content here.\n";
+        fs::write(corpus_dir.join("design.md"), md).unwrap();
+        engine.index_file("design.md", md).unwrap();
+
+        let rust = "pub fn helper() -> u32 { 42 }\n";
+        fs::write(corpus_dir.join("lib.rs"), rust).unwrap();
+        engine.index_file("lib.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Two existing files + one missing -> 3 entries, one carrying an error.
+        let res = registry
+            .execute_read(
+                "read_multiple",
+                &engine,
+                serde_json::json!({ "paths": ["design.md", "lib.rs", "nope.md"] }),
+            )
+            .unwrap();
+
+        assert_eq!(res["count"], 3);
+        let results = res["results"].as_array().unwrap();
+
+        let note = results.iter().find(|r| r["path"] == "design.md").unwrap();
+        assert_eq!(note["kind"], "note");
+        assert_eq!(note["title"], "Design Note");
+        assert!(note["content"].as_str().unwrap().contains("markdown content"));
+        assert!(note.get("error").is_none());
+
+        let code = results.iter().find(|r| r["path"] == "lib.rs").unwrap();
+        assert_eq!(code["kind"], "code");
+        assert_eq!(code["language"], "rust");
+        assert!(code["content"].as_str().unwrap().contains("helper"));
+
+        let missing = results.iter().find(|r| r["path"] == "nope.md").unwrap();
+        assert!(missing.get("error").is_some(), "missing path must carry an error entry");
+    }
+
+    #[test]
+    fn test_check_index_coverage_tool() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust = r#"
+pub fn indexed_fn() -> u32 {
+    7
+}
+"#;
+        fs::write(corpus_dir.join("covered.rs"), rust).unwrap();
+        engine.index_file("covered.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        let res = registry
+            .execute_read(
+                "check_index_coverage",
+                &engine,
+                serde_json::json!({ "paths": ["covered.rs", "does_not_exist.rs"] }),
+            )
+            .unwrap();
+
+        let reports = res["reports"].as_array().unwrap();
+        assert_eq!(reports.len(), 2);
+
+        let covered = reports.iter().find(|r| r["path"] == "covered.rs").unwrap();
+        assert_eq!(covered["indexed"], true);
+        assert!(covered["chunk_count"].as_u64().unwrap() > 0);
+        assert_eq!(covered["parsed"], true);
+
+        let bogus = reports.iter().find(|r| r["path"] == "does_not_exist.rs").unwrap();
+        assert_eq!(bogus["indexed"], false);
+        assert_eq!(bogus["parsed"], false);
+
+        assert_eq!(res["summary"]["total"], 2);
+        assert_eq!(res["summary"]["covered"], 1);
+        assert_eq!(res["summary"]["uncovered"], 1);
     }
 
     #[test]

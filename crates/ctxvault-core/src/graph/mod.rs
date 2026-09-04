@@ -1537,6 +1537,142 @@ impl KnowledgeGraph {
         CommunityDetectionResult { communities: communities_out, modularity: q, iterations }
     }
 
+    /// Detect communities with a Leiden-style connectivity refinement pass.
+    ///
+    /// Runs the Louvain partition from [`detect_communities`], then guarantees
+    /// each community is internally connected — Leiden's key correctness fix over
+    /// plain Louvain, which can produce internally disconnected communities. Each
+    /// Louvain community is split into its connected components (BFS over the
+    /// intra-community undirected edges), and the modularity of the refined
+    /// partition is recomputed.
+    ///
+    /// The result is deterministic: node ordering, component discovery, and the
+    /// final community ordering all follow a stable sort, so the same graph always
+    /// yields an identical partition.
+    ///
+    /// [`detect_communities`]: KnowledgeGraph::detect_communities
+    pub fn detect_communities_leiden(&self) -> CommunityDetectionResult {
+        let base = self.detect_communities();
+        if base.communities.is_empty() {
+            return base;
+        }
+
+        // Undirected adjacency keyed by node path, for connectivity BFS and for
+        // recomputing modularity. Each directed edge contributes weight to both
+        // endpoints (matching the Louvain undirected treatment). Self-loops are
+        // ignored.
+        let mut adjacency: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+        let mut degree: HashMap<String, f64> = HashMap::new();
+        let mut m: f64 = 0.0;
+        for edge in self.graph.edge_references() {
+            let src = &self.graph.node_weight(edge.source()).unwrap().path;
+            let tgt = &self.graph.node_weight(edge.target()).unwrap().path;
+            if src == tgt {
+                continue;
+            }
+            let w = edge.weight().weight as f64;
+            adjacency.entry(src.clone()).or_default().push((tgt.clone(), w));
+            adjacency.entry(tgt.clone()).or_default().push((src.clone(), w));
+            *degree.entry(src.clone()).or_insert(0.0) += w;
+            *degree.entry(tgt.clone()).or_insert(0.0) += w;
+            m += w;
+        }
+
+        // Split each Louvain community into connected components.
+        let mut refined: Vec<Vec<String>> = Vec::new();
+        for comm in &base.communities {
+            let member_set: HashSet<&str> = comm.members.iter().map(|s| s.as_str()).collect();
+            // Deterministic iteration order over members.
+            let mut members = comm.members.clone();
+            members.sort();
+
+            let mut visited: HashSet<String> = HashSet::new();
+            for start in &members {
+                if visited.contains(start) {
+                    continue;
+                }
+                // BFS restricted to intra-community edges.
+                let mut component: Vec<String> = Vec::new();
+                let mut queue: std::collections::VecDeque<String> =
+                    std::collections::VecDeque::new();
+                queue.push_back(start.clone());
+                let _ = visited.insert(start.clone());
+                while let Some(node) = queue.pop_front() {
+                    component.push(node.clone());
+                    if let Some(neigh) = adjacency.get(&node) {
+                        // Sort neighbors for stable traversal order.
+                        let mut ns: Vec<&(String, f64)> = neigh.iter().collect();
+                        ns.sort_by(|a, b| a.0.cmp(&b.0));
+                        for (next, _w) in ns {
+                            if member_set.contains(next.as_str()) && !visited.contains(next) {
+                                let _ = visited.insert(next.clone());
+                                queue.push_back(next.clone());
+                            }
+                        }
+                    }
+                }
+                component.sort();
+                refined.push(component);
+            }
+        }
+
+        // Recompute modularity for the refined partition:
+        // Q = sum_c [ (sigma_in_c / 2m) - (sigma_tot_c / 2m)^2 ]
+        // where sigma_in counts intra-community edge weight in both directions.
+        let two_m = 2.0 * m;
+        let mut q = 0.0;
+        if two_m > 0.0 {
+            for component in &refined {
+                let member_set: HashSet<&str> = component.iter().map(|s| s.as_str()).collect();
+                let mut s_in = 0.0;
+                let mut s_tot = 0.0;
+                for node in component {
+                    s_tot += degree.get(node).copied().unwrap_or(0.0);
+                    if let Some(neigh) = adjacency.get(node) {
+                        for (next, w) in neigh {
+                            if member_set.contains(next.as_str()) {
+                                s_in += w;
+                            }
+                        }
+                    }
+                }
+                q += (s_in / two_m) - (s_tot / two_m).powi(2);
+            }
+        }
+
+        // Deterministic community ordering: largest first, then by first member.
+        refined.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.first().cmp(&b.first())));
+
+        let communities_out: Vec<Community> = refined
+            .into_iter()
+            .enumerate()
+            .map(|(id, members)| {
+                let member_set: HashSet<&str> = members.iter().map(|s| s.as_str()).collect();
+                let mut s_in = 0.0;
+                let mut s_tot = 0.0;
+                for node in &members {
+                    s_tot += degree.get(node).copied().unwrap_or(0.0);
+                    if let Some(neigh) = adjacency.get(node) {
+                        for (next, w) in neigh {
+                            if member_set.contains(next.as_str()) {
+                                s_in += w;
+                            }
+                        }
+                    }
+                }
+                let modularity_contribution =
+                    if two_m > 0.0 { (s_in / two_m) - (s_tot / two_m).powi(2) } else { 0.0 };
+                Community { id, members, modularity_contribution }
+            })
+            .collect();
+
+        CommunityDetectionResult {
+            communities: communities_out,
+            modularity: q,
+            iterations: base.iterations,
+        }
+    }
+
     /// Compute per-community density statistics.
     ///
     /// Uses the current community assignments from `detect_communities()`.
@@ -2024,6 +2160,126 @@ mod tests {
         // No edges means each node is its own community.
         assert_eq!(result.communities.len(), 3);
         assert_eq!(result.modularity, 0.0);
+    }
+
+    /// Whether every community in a partition is internally connected over the
+    /// undirected intra-community edges (the Leiden invariant).
+    fn all_communities_connected(
+        graph: &KnowledgeGraph,
+        result: &CommunityDetectionResult,
+    ) -> bool {
+        // Build undirected adjacency by path.
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in graph.graph.edge_references() {
+            let s = graph.graph.node_weight(edge.source()).unwrap().path.clone();
+            let t = graph.graph.node_weight(edge.target()).unwrap().path.clone();
+            if s == t {
+                continue;
+            }
+            adjacency.entry(s.clone()).or_default().push(t.clone());
+            adjacency.entry(t).or_default().push(s);
+        }
+
+        for comm in &result.communities {
+            if comm.members.len() <= 1 {
+                continue;
+            }
+            let member_set: HashSet<&str> = comm.members.iter().map(|s| s.as_str()).collect();
+            // BFS from the first member; all members must be reachable.
+            let mut visited: HashSet<String> = HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(comm.members[0].clone());
+            let _ = visited.insert(comm.members[0].clone());
+            while let Some(node) = queue.pop_front() {
+                if let Some(neigh) = adjacency.get(&node) {
+                    for n in neigh {
+                        if member_set.contains(n.as_str()) && !visited.contains(n) {
+                            let _ = visited.insert(n.clone());
+                            queue.push_back(n.clone());
+                        }
+                    }
+                }
+            }
+            if visited.len() != comm.members.len() {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn test_leiden_communities_are_internally_connected() {
+        // Barbell: two triangles joined by a single bridge edge. Whatever Louvain
+        // decides, the Leiden refinement must yield only connected communities.
+        let mut graph = KnowledgeGraph::new();
+        // Triangle 1: A-B-C
+        graph.add_edge("A", "B", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("B", "C", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("C", "A", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        // Triangle 2: D-E-F
+        graph.add_edge("D", "E", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("E", "F", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("F", "D", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        // Weak bridge.
+        graph.add_edge("C", "D", "Link", 0.05, EdgeProvenance::Wikilink, EdgeClass::Structural);
+
+        let leiden = graph.detect_communities_leiden();
+        assert!(
+            all_communities_connected(&graph, &leiden),
+            "every Leiden community must be internally connected"
+        );
+    }
+
+    #[test]
+    fn test_leiden_splits_disconnected_community() {
+        // Force a Louvain community to contain a disconnected piece by making all
+        // nodes weakly attracted into one group while two halves have no edge
+        // between them. We construct two star components sharing no edge; if any
+        // partition lumps them, Leiden must split them into connected pieces.
+        let mut graph = KnowledgeGraph::new();
+        // Component 1: star around H1.
+        graph.add_edge("H1", "a", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("H1", "b", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("a", "b", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        // Component 2: star around H2 (no edge to component 1).
+        graph.add_edge("H2", "c", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("H2", "d", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+        graph.add_edge("c", "d", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+
+        let leiden = graph.detect_communities_leiden();
+        // Both stars must be recovered as connected communities, and no community
+        // mixes the two disconnected halves.
+        assert!(all_communities_connected(&graph, &leiden));
+        for comm in &leiden.communities {
+            let has_c1 = comm.members.iter().any(|m| m == "H1" || m == "a" || m == "b");
+            let has_c2 = comm.members.iter().any(|m| m == "H2" || m == "c" || m == "d");
+            assert!(!(has_c1 && has_c2), "a community must not span two disconnected components");
+        }
+    }
+
+    #[test]
+    fn test_leiden_is_deterministic() {
+        let build = || {
+            let mut graph = KnowledgeGraph::new();
+            graph.add_edge("A", "B", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("B", "C", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("C", "A", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("D", "E", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("E", "F", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("F", "D", "Link", 1.0, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph.add_edge("C", "D", "Link", 0.05, EdgeProvenance::Wikilink, EdgeClass::Structural);
+            graph
+        };
+
+        let r1 = build().detect_communities_leiden();
+        let r2 = build().detect_communities_leiden();
+
+        // Identical partition across runs: same community count and member lists.
+        assert_eq!(r1.communities.len(), r2.communities.len());
+        let members1: Vec<Vec<String>> = r1.communities.iter().map(|c| c.members.clone()).collect();
+        let members2: Vec<Vec<String>> = r2.communities.iter().map(|c| c.members.clone()).collect();
+        assert_eq!(members1, members2, "Leiden partition must be deterministic");
+        assert_eq!(r1.modularity, r2.modularity);
     }
 
     #[test]

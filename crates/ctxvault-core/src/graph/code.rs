@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use ctxvault_common::types::{CodeSymbol, Edge, EdgeProvenance};
+use ctxvault_common::types::{CodeSymbol, Edge, EdgeProvenance, ResolutionConfidence};
 use tree_sitter::{Node, Parser};
 
 use crate::parser::code::languages::{detect_language, SupportedLanguage};
@@ -50,7 +50,7 @@ impl CodeGraphExtractor {
                 weight: 1.0,
                 provenance: EdgeProvenance::CodeDefines,
                 target_corpus: None,
-                confidence: None,
+                confidence: Some(ResolutionConfidence::High),
             });
         }
 
@@ -197,7 +197,7 @@ impl<'a> CallAndImportVisitor<'a> {
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
                             target_corpus: None,
-                            confidence: None,
+                            confidence: Some(ResolutionConfidence::Speculative),
                         });
                     }
                 }
@@ -216,7 +216,7 @@ impl<'a> CallAndImportVisitor<'a> {
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
                             target_corpus: None,
-                            confidence: None,
+                            confidence: Some(ResolutionConfidence::Speculative),
                         });
                     }
                 }
@@ -231,7 +231,7 @@ impl<'a> CallAndImportVisitor<'a> {
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
                         target_corpus: None,
-                        confidence: None,
+                        confidence: Some(ResolutionConfidence::Speculative),
                     });
                 }
             }
@@ -245,7 +245,7 @@ impl<'a> CallAndImportVisitor<'a> {
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
                         target_corpus: None,
-                        confidence: None,
+                        confidence: Some(ResolutionConfidence::Speculative),
                     });
                 }
             }
@@ -274,7 +274,7 @@ impl<'a> CallAndImportVisitor<'a> {
             return;
         };
 
-        if let Some(target_sym) = self.resolve_callee(&callee) {
+        if let Some((target_sym, confidence)) = self.resolve_callee(&callee) {
             let key = (caller.clone(), target_sym.scope_path.clone());
             if !self.visited_calls.contains(&key) && caller != &target_sym.scope_path {
                 self.visited_calls.insert(key);
@@ -285,7 +285,7 @@ impl<'a> CallAndImportVisitor<'a> {
                     weight: 0.8,
                     provenance: EdgeProvenance::CodeCalls,
                     target_corpus: None,
-                    confidence: None,
+                    confidence: Some(confidence),
                 });
             }
         }
@@ -315,28 +315,38 @@ impl<'a> CallAndImportVisitor<'a> {
         }
     }
 
-    fn resolve_callee(&self, callee_name: &str) -> Option<&'a CodeSymbol> {
+    /// Resolve a callee name to a symbol, returning the resolution confidence band.
+    ///
+    /// Confidence reflects how the callee was disambiguated:
+    /// - [`ResolutionConfidence::High`] — a unique match in the current file (case 1)
+    ///   or a unique match across the workspace symbol index (case 2).
+    /// - [`ResolutionConfidence::Medium`] — disambiguated by the same-directory
+    ///   heuristic among multiple candidates (case 3).
+    /// - [`ResolutionConfidence::Speculative`] — fell back to the first of many
+    ///   candidates with no better signal (case 4).
+    fn resolve_callee(&self, callee_name: &str) -> Option<(&'a CodeSymbol, ResolutionConfidence)> {
         let clean_name = callee_name.rsplit("::").next().unwrap_or(callee_name);
         let clean_name = clean_name.rsplit('.').next().unwrap_or(clean_name);
 
         // 1. Search within the current file first (fastest and highest confidence)
         if let Some(local_match) = self.file_symbols.iter().find(|s| s.name == clean_name) {
-            return Some(local_match);
+            return Some((local_match, ResolutionConfidence::High));
         }
 
         // 2. Search in workspace symbols catalog
         if let Some(candidates) = self.symbol_index.get(clean_name) {
             if candidates.len() == 1 {
-                return Some(candidates[0]);
+                return Some((candidates[0], ResolutionConfidence::High));
             }
-            // If multiple candidates, prioritize same directory / crate
+            // 3. If multiple candidates, prioritize same directory / crate
             let file_dir = Path::new(&self.file_path).parent().unwrap_or_else(|| Path::new(""));
             if let Some(dir_match) = candidates.iter().find(|c| {
                 Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new("")) == file_dir
             }) {
-                return Some(dir_match);
+                return Some((dir_match, ResolutionConfidence::Medium));
             }
-            return candidates.first().copied();
+            // 4. Fall back to the first candidate with no disambiguating signal.
+            return candidates.first().map(|c| (*c, ResolutionConfidence::Speculative));
         }
 
         None
@@ -355,7 +365,7 @@ impl<'a> CallAndImportVisitor<'a> {
                         weight: 0.9,
                         provenance: EdgeProvenance::CodeImplementsTrait,
                         target_corpus: None,
-                        confidence: None,
+                        confidence: Some(ResolutionConfidence::High),
                     });
                 }
             }
@@ -406,5 +416,85 @@ pub fn rrf_fuse(q: &str) -> Vec<String> {
         assert!(edges.iter().any(|e| e.edge_type == "calls"
             && e.source == "SearchEngine > search"
             && e.target == "rrf_fuse"));
+    }
+
+    #[test]
+    fn test_call_edge_confidence_unique_is_high() {
+        // rrf_fuse resolves uniquely within the current file -> High confidence.
+        let code = r#"
+pub fn search(q: &str) -> Vec<String> {
+    rrf_fuse(q)
+}
+
+pub fn rrf_fuse(q: &str) -> Vec<String> {
+    vec![q.to_string()]
+}
+"#;
+        let config = ChunkingConfig::default();
+        let parse_res =
+            CodeChunker::parse_and_chunk(Path::new("src/search.rs"), code, &config).unwrap();
+        let edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/search.rs"),
+            code,
+            &parse_res.symbols,
+            &parse_res.symbols,
+        );
+
+        let call_edge = edges
+            .iter()
+            .find(|e| e.edge_type == "calls" && e.target == "rrf_fuse")
+            .expect("expected a call edge to rrf_fuse");
+        assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+
+        // defines edges are exact -> High.
+        let define_edge =
+            edges.iter().find(|e| e.edge_type == "defines").expect("expected a defines edge");
+        assert_eq!(define_edge.confidence, Some(ResolutionConfidence::High));
+    }
+
+    #[test]
+    fn test_call_edge_confidence_ambiguous_is_medium_or_speculative() {
+        // The caller file has no local `helper`; two workspace candidates named
+        // `helper` exist in different files. One shares the caller's directory,
+        // so the same-directory heuristic (case 3) applies -> Medium.
+        let caller_code = r#"
+pub fn run() {
+    helper();
+}
+"#;
+        let config = ChunkingConfig::default();
+        let caller_res =
+            CodeChunker::parse_and_chunk(Path::new("src/a/caller.rs"), caller_code, &config)
+                .unwrap();
+
+        // Two distinct `helper` symbols in different files.
+        let same_dir = r#"pub fn helper() {}"#;
+        let other_dir = r#"pub fn helper() {}"#;
+        let same_dir_res =
+            CodeChunker::parse_and_chunk(Path::new("src/a/other.rs"), same_dir, &config).unwrap();
+        let other_dir_res =
+            CodeChunker::parse_and_chunk(Path::new("src/b/other.rs"), other_dir, &config).unwrap();
+
+        let mut all_symbols = caller_res.symbols.clone();
+        all_symbols.extend(same_dir_res.symbols.clone());
+        all_symbols.extend(other_dir_res.symbols.clone());
+
+        let edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/a/caller.rs"),
+            caller_code,
+            &caller_res.symbols,
+            &all_symbols,
+        );
+
+        let call_edge = edges
+            .iter()
+            .find(|e| e.edge_type == "calls" && e.target == "helper")
+            .expect("expected a call edge to helper");
+        assert_eq!(
+            call_edge.confidence,
+            Some(ResolutionConfidence::Medium),
+            "same-directory disambiguation should yield Medium confidence"
+        );
+        assert_ne!(call_edge.confidence, Some(ResolutionConfidence::High));
     }
 }

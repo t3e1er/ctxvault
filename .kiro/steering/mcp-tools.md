@@ -7,19 +7,25 @@ fileMatchPattern: 'crates/ctxvault-mcp/**'
 
 Authoritative registry: `crates/ctxvault-mcp/src/tools/mod.rs` (`ToolRegistry`). Handlers are `ReadOnly(fn(&Engine, Value))` or `ReadWrite(fn(&mut Engine, Value))` — read-only tools run concurrently under a reader lock; mutating tools require the exclusive writer lock. When adding a tool, register it with the correct handler kind, a JSON Schema for inputs, and update the expected-tools test.
 
-## Registered Tools (37)
+## Registered Tools (39)
 
-**Read** — `read_note`, `read_code_file`, `get_snippet`, `list_notes`, `get_frontmatter`
+**Read** — `read_note`, `read_code_file`, `read_multiple`, `get_snippet`, `list_notes`, `get_frontmatter`
+
+`read_multiple` is a batch Tier-3 read: one call fetches many files (markdown → parsed note; source → raw content); per-path errors surface as an `error` entry rather than failing the whole call.
 
 **Search** — `search` (one tool; `mode` = `bm25` | `semantic` | `hybrid` (default) | `graph` | `explain`), `search_related`
 
-**Graph** — `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`, `graph_subgraph`, `graph_communities` (Louvain), `list_edge_types`, `traverse_lineage`
+**Graph** — `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`, `graph_subgraph`, `graph_communities` (`algorithm` = `leiden` (default, connectivity-refined) | `louvain`), `list_edge_types`, `traverse_lineage`
 
 **Write** (mutating) — `create_note`, `update_note`, `delete_note`, `move_note`, `promote_concept`
 
 **Template/Validation** — `validate_note`, `validate_corpus`, `list_templates`, `validate_taxonomy`
 
-**Analysis** — `analyze_density`, `find_semantic_gaps`, `suggest_splits`, `coverage_report`
+**Analysis** — `analyze_density`, `find_semantic_gaps`, `suggest_splits`, `coverage_report`, `check_index_coverage`
+
+`check_index_coverage` reports, for given paths or path prefixes, whether each is indexed, its chunk/symbol counts, and parse gaps (indexed but empty). Distinct from `coverage_report` (query-driven retrieval dead zones).
+
+Community detection defaults to **Leiden**: it runs Louvain, then splits each community into connected components so no community is internally disconnected (Leiden's key fix over Louvain), and recomputes modularity deterministically. `get_architecture` uses the Leiden result; `graph_communities` accepts `algorithm=louvain` for the raw partition. Code call/import edges now carry a `confidence` band (`high`/`medium`/`speculative`) reflecting resolution certainty; `find_callers` surfaces it per caller.
 
 **Code (structural, polyglot)** — `get_symbol_definition`, `find_callers`, `get_architecture`, `detect_changes` (mutating)
 
@@ -31,8 +37,8 @@ Keep this list in sync with the registry — the registry is the source of truth
 
 `tools/list` exposure is gated by a `--profile` flag (default `all`). Nested sets: `scout` ⊂ `analysis` ⊂ `all`. Profiles only gate what is advertised — a hidden tool called directly still executes.
 
-- **scout** (8 tools, minimal retrieve/navigate): `search`, `search_related`, `get_snippet`, `read_note`, `read_code_file`, `list_notes`, `get_frontmatter`, `status`.
-- **analysis** (scout + read-only graph/validation/analysis/code intel): adds `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`, `graph_subgraph`, `graph_communities`, `list_edge_types`, `traverse_lineage`, `get_symbol_definition`, `find_callers`, `get_architecture`, `validate_note`, `validate_corpus`, `list_templates`, `validate_taxonomy`, `analyze_density`, `find_semantic_gaps`, `suggest_splits`, `coverage_report`, `corpus_list`.
+- **scout** (9 tools, minimal retrieve/navigate): `search`, `search_related`, `get_snippet`, `read_note`, `read_code_file`, `read_multiple`, `list_notes`, `get_frontmatter`, `status`.
+- **analysis** (scout + read-only graph/validation/analysis/code intel): adds `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`, `graph_subgraph`, `graph_communities`, `list_edge_types`, `traverse_lineage`, `get_symbol_definition`, `find_callers`, `get_architecture`, `validate_note`, `validate_corpus`, `list_templates`, `validate_taxonomy`, `analyze_density`, `find_semantic_gaps`, `suggest_splits`, `coverage_report`, `check_index_coverage`, `corpus_list`.
 - **all** (every registered tool): analysis + the mutating/admin tools (`create_note`, `update_note`, `delete_note`, `move_note`, `promote_concept`, `reembed_corpus`, `sync_corpus`, `reindex_corpus`, `detect_changes`).
 
 ## Agent Usage Rules (how ctxvault should be used by AI clients)

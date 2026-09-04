@@ -156,7 +156,7 @@ Verify: just clippy && just check ; expected-tools test updated and passing.
 Commit: feat(phase6): consolidate search/status tools + add tool profiles
 
 ================================================================================
-[ ] PHASE 7 — Parity fill-ins vs reference MCPs (Goal 5b)
+[x] PHASE 7 — Parity fill-ins vs reference MCPs (Goal 5b)
 --------------------------------------------------------------------------------
 Goal: Close remaining capability gaps in the condensed surface.
 Scope (implement those that fit cleanly; skip with a note if disproportionate):
