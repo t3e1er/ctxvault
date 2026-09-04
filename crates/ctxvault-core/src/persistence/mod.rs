@@ -577,8 +577,10 @@ impl Store {
     /// Find code symbols whose fully qualified `scope_path` matches exactly.
     ///
     /// Unlike [`Store::find_symbols_by_name`] (which does a fuzzy `LIKE`), this
-    /// performs an exact `scope_path = ?1` lookup so that cross-corpus resolution
-    /// can detect ambiguity by counting exact matches.
+    /// Look up code symbols with an exact matching scope_path.
+    ///
+    /// If no exact matches are found, falls back to normalized scope path resolution
+    /// (ignoring generic type/lifetime parameters).
     pub fn find_symbols_by_qualified_name(
         &self,
         scope_path: &str,
@@ -611,7 +613,68 @@ impl Store {
             })
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+        let exact_matches: Vec<ctxvault_common::types::CodeSymbol> =
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))?;
+
+        drop(stmt);
+        drop(conn);
+
+        if !exact_matches.is_empty() {
+            return Ok(exact_matches);
+        }
+
+        self.find_symbols_by_normalized_scope(scope_path)
+    }
+
+    /// Look up code symbols matching the given scope path ignoring generic type/lifetime parameters.
+    pub fn find_symbols_by_normalized_scope(
+        &self,
+        scope_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let norm_query = crate::parser::code::normalize_scope_path(scope_path);
+        let leaf = norm_query.split(" > ").last().unwrap_or(&norm_query).trim();
+
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE name = ?1 ORDER BY file_path, start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![leaf], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let candidates: Vec<ctxvault_common::types::CodeSymbol> =
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))?;
+
+        let matched: Vec<ctxvault_common::types::CodeSymbol> = candidates
+            .into_iter()
+            .filter(|sym| {
+                let norm_candidate = crate::parser::code::normalize_scope_path(&sym.scope_path);
+                norm_candidate == norm_query
+                    || norm_candidate.ends_with(&format!(" > {norm_query}"))
+            })
+            .collect();
+
+        Ok(matched)
     }
 
     /// Retrieve all code symbols in the entire store.
@@ -743,6 +806,13 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         scope_path: &str,
     ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
         Store::find_symbols_by_qualified_name(self, scope_path)
+    }
+
+    fn find_symbols_by_normalized_scope(
+        &self,
+        scope_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        Store::find_symbols_by_normalized_scope(self, scope_path)
     }
 
     fn get_all_code_symbols(&self) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
@@ -993,5 +1063,89 @@ mod tests {
         // Reset
         store.reset_indexing_state("corpus_a").unwrap();
         assert!(store.get_indexing_state("corpus_a").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_find_symbols_by_normalized_scope() {
+        let store = Store::open_in_memory().unwrap();
+
+        let sym1 = ctxvault_common::types::CodeSymbol {
+            file_path: "binder.rs".to_string(),
+            name: "instantiate".to_string(),
+            scope_path: "EarlyBinder<'tcx, T> > instantiate".to_string(),
+            symbol_type: ctxvault_common::types::CodeSymbolType::Function,
+            language: "rust".to_string(),
+            signature: "pub fn instantiate(&self) -> T".to_string(),
+            docstring: None,
+            start_line: 10,
+            end_line: 20,
+        };
+        let sym2 = ctxvault_common::types::CodeSymbol {
+            file_path: "binder.rs".to_string(),
+            name: "peek".to_string(),
+            scope_path: "EarlyBinder<'tcx, T> > peek".to_string(),
+            symbol_type: ctxvault_common::types::CodeSymbolType::Function,
+            language: "rust".to_string(),
+            signature: "pub fn peek(&self)".to_string(),
+            docstring: None,
+            start_line: 22,
+            end_line: 30,
+        };
+        let sym3 = ctxvault_common::types::CodeSymbol {
+            file_path: "other.rs".to_string(),
+            name: "instantiate".to_string(),
+            scope_path: "OtherBinder<'a> > instantiate".to_string(),
+            symbol_type: ctxvault_common::types::CodeSymbolType::Function,
+            language: "rust".to_string(),
+            signature: "pub fn instantiate(&self)".to_string(),
+            docstring: None,
+            start_line: 5,
+            end_line: 15,
+        };
+
+        store.insert_file("binder.rs", "hash1", 1000, None, None).unwrap();
+        store.insert_file("other.rs", "hash2", 1000, None, None).unwrap();
+        store.insert_file("binder2.rs", "hash3", 1000, None, None).unwrap();
+
+        store.save_code_symbols("binder.rs", &[sym1, sym2]).unwrap();
+        store.save_code_symbols("other.rs", &[sym3]).unwrap();
+
+        // 1. Exact match works
+        let exact = store.find_symbols_by_qualified_name("EarlyBinder<'tcx, T> > instantiate").unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
+
+        // 2. Normalized scope query resolves generic scope path
+        let normalized = store.find_symbols_by_qualified_name("EarlyBinder > instantiate").unwrap();
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
+
+        // Direct call to find_symbols_by_normalized_scope
+        let direct_norm = store.find_symbols_by_normalized_scope("EarlyBinder > instantiate").unwrap();
+        assert_eq!(direct_norm.len(), 1);
+        assert_eq!(direct_norm[0].scope_path, "EarlyBinder<'tcx, T> > instantiate");
+
+        // 3. Nonexistent returns empty vec
+        let missing = store.find_symbols_by_qualified_name("Nonexistent > instantiate").unwrap();
+        assert!(missing.is_empty());
+
+        // 4. Ambiguous methods across different types with same normalized name
+        let sym4 = ctxvault_common::types::CodeSymbol {
+            file_path: "binder2.rs".to_string(),
+            name: "instantiate".to_string(),
+            scope_path: "EarlyBinder<'a, A> > instantiate".to_string(),
+            symbol_type: ctxvault_common::types::CodeSymbolType::Function,
+            language: "rust".to_string(),
+            signature: "pub fn instantiate(&self) -> A".to_string(),
+            docstring: None,
+            start_line: 1,
+            end_line: 10,
+        };
+        store.save_code_symbols("binder2.rs", &[sym4]).unwrap();
+
+        let ambiguous = store.find_symbols_by_qualified_name("EarlyBinder > instantiate").unwrap();
+        assert_eq!(ambiguous.len(), 2, "should return both candidates for disambiguation");
+        assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'tcx, T> > instantiate"));
+        assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'a, A> > instantiate"));
     }
 }

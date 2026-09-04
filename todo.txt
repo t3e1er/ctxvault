@@ -61,14 +61,14 @@ Goal: Enable Tier-2 `get_snippet(qualified_name = "...")` to resolve qualified n
 with omitted generic type/lifetime parameters (e.g. `Type > method` matching
 `Type<'tcx, T> > method`) instead of returning 404 Not Found.
 
-[ ] Task 2.1: Add generic-normalization helper in `ctxvault-core`
+[x] Task 2.1: Add generic-normalization helper in `ctxvault-core`
     - Implement a pure function `normalize_scope_path(scope: &str) -> String` that
       strips balanced angle brackets `<...>` and lifetime annotations while preserving
       scope hierarchy separators (` > `).
     - Example: `EarlyBinder<'tcx, T> > instantiate` -> `EarlyBinder > instantiate`.
     - Add unit tests covering nested generics (e.g. `Foo<Bar<T>> > baz`, `Closure<'a>`).
 
-[ ] Task 2.2: Add normalized query fallback to `MetadataCatalog` / SQLite catalog
+[x] Task 2.2: Add normalized query fallback to `MetadataCatalog` / SQLite catalog
     - In `crates/ctxvault-core/src/persistence/mod.rs`:
       - When `find_symbols_by_qualified_name(qualified_name)` yields 0 exact matches:
         - Query SQLite with a component-matching pattern: split `qualified_name` by ` > `,
@@ -77,16 +77,16 @@ with omitted generic type/lifetime parameters (e.g. `Type > method` matching
         - Alternatively query via SQL `LIKE` wildcard: `replace(query, ' > ', '% > %')`.
         - If multiple matches result, return all candidates for disambiguation.
 
-[ ] Task 2.3: Wire fallback into `fetch_code_symbol` in `crates/ctxvault-mcp/src/tools/mod.rs`
+[x] Task 2.3: Wire fallback into `fetch_code_symbol` in `crates/ctxvault-mcp/src/tools/mod.rs`
     - Ensure `fetch_code_symbol` invokes the normalized fallback when exact lookup fails.
     - If disambiguation is needed, return the candidate list with exact `scope_path`s.
 
-[ ] Task 2.4: Unit tests for generic scope path resolution
+[x] Task 2.4: Unit tests for generic scope path resolution
     - Test that `EarlyBinder > instantiate` resolves to `EarlyBinder<'tcx, T> > instantiate`.
     - Test that nonexistent symbols still return clean `404 Not Found`.
     - Test that ambiguous methods return disambiguation candidates.
 
-[ ] Task 2.5: Verification & Phase 2 Commit
+[x] Task 2.5: Verification & Phase 2 Commit
     - Verify `cargo clippy` and `cargo test`.
     - Git commit: `feat(core): normalize generic parameters in code symbol qualified name resolution`
 

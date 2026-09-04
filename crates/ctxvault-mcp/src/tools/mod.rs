@@ -1563,6 +1563,9 @@ fn fetch_code_symbol(
 ) -> Result<Value> {
     let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
     if matches.is_empty() {
+        matches = engine.store().find_symbols_by_normalized_scope(qualified_name)?;
+    }
+    if matches.is_empty() {
         matches = engine.store().find_symbols_by_name(qualified_name)?;
     }
 
@@ -4730,5 +4733,94 @@ impl Service {
             assert!(exp.final_score > 0.0, "final_score must be preserved in explain");
             assert!(exp.bm25.raw_score > 0.0, "bm25 score component must be preserved in explain");
         }
+    }
+
+    #[test]
+    fn test_generic_normalized_scope_resolution() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust_code = r#"
+pub struct EarlyBinder<'tcx, T> {
+    value: T,
+    _marker: std::marker::PhantomData<&'tcx ()>,
+}
+
+impl<'tcx, T> EarlyBinder<'tcx, T> {
+    pub fn instantiate(&self) -> &T {
+        &self.value
+    }
+}
+
+pub struct OtherBinder<'a, A> {
+    item: A,
+    _life: &'a str,
+}
+
+impl<'a, A> OtherBinder<'a, A> {
+    pub fn instantiate(&self) -> &A {
+        &self.item
+    }
+}
+"#;
+        fs::write(corpus_dir.join("binder.rs"), rust_code).unwrap();
+        engine.index_file("binder.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Resolve EarlyBinder > instantiate when defined as EarlyBinder<'tcx, T> > instantiate
+        let res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
+            )
+            .unwrap();
+        assert_eq!(res["kind"], "code_symbol");
+        assert_eq!(res["name"], "instantiate");
+        assert!(res["scope_path"].as_str().unwrap().contains("EarlyBinder"));
+        assert!(res["source"].as_str().unwrap().contains("&self.value"));
+
+        // 2. Nonexistent symbol returns clean 404 Not Found error
+        let err = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Nonexistent > missing" }),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("not found") || err.to_string().contains("no code symbol"));
+
+        // 3. Ambiguous method: two EarlyBinder > instantiate in different files
+        let rust_code_2 = r#"
+pub struct EarlyBinder<'a, T> {
+    alt: T,
+}
+
+impl<'a, T> EarlyBinder<'a, T> {
+    pub fn instantiate(&self) -> &T {
+        &self.alt
+    }
+}
+"#;
+        fs::write(corpus_dir.join("binder2.rs"), rust_code_2).unwrap();
+        engine.index_file("binder2.rs", rust_code_2).unwrap();
+        engine.commit().unwrap();
+
+        let amb_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
+            )
+            .unwrap();
+        assert_eq!(amb_res["kind"], "ambiguous");
+        let candidates = amb_res["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|c| c["file_path"] == "binder.rs"));
+        assert!(candidates.iter().any(|c| c["file_path"] == "binder2.rs"));
     }
 }

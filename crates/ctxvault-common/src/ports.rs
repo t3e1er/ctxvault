@@ -212,6 +212,9 @@ pub trait MetadataCatalog {
     /// Find code symbols whose fully qualified scope path matches exactly.
     fn find_symbols_by_qualified_name(&self, scope_path: &str) -> Result<Vec<CodeSymbol>>;
 
+    /// Find code symbols whose scope path matches after normalizing generic parameters.
+    fn find_symbols_by_normalized_scope(&self, scope_path: &str) -> Result<Vec<CodeSymbol>>;
+
     /// Retrieve all code symbols in the entire catalog.
     fn get_all_code_symbols(&self) -> Result<Vec<CodeSymbol>>;
 }
