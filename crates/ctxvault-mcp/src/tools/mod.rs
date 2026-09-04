@@ -3025,8 +3025,7 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
@@ -3068,8 +3067,7 @@ mod tests {
         fs::create_dir_all(&wiki_dir).unwrap();
         fs::create_dir_all(&docs_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
 
         let wiki_config = CorpusConfig {
             name: "wiki".to_string(),
@@ -3158,8 +3156,7 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
@@ -3189,8 +3186,7 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),

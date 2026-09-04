@@ -5,7 +5,7 @@
 //! interface for routing operations to the correct engine.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ctxvault_common::config::CorpusConfig;
 use ctxvault_common::{Error, Result};
@@ -40,20 +40,12 @@ pub struct CorpusManager {
     engines: HashMap<String, Engine>,
     /// Name of the default corpus (first one registered, or explicitly set).
     default_corpus: Option<String>,
-    /// Base directory for index storage.
-    index_base_dir: PathBuf,
 }
 
 impl CorpusManager {
     /// Create an empty corpus manager.
-    ///
-    /// - `index_base_dir`: Base directory where per-corpus index directories are created.
-    pub fn new(index_base_dir: &Path) -> Self {
-        Self {
-            engines: HashMap::new(),
-            default_corpus: None,
-            index_base_dir: index_base_dir.to_path_buf(),
-        }
+    pub fn new() -> Self {
+        Self { engines: HashMap::new(), default_corpus: None }
     }
 
     /// Add a corpus to the manager.
@@ -63,8 +55,8 @@ impl CorpusManager {
     pub fn add_corpus(&mut self, config: CorpusConfig) -> Result<()> {
         let name = config.name.clone();
 
-        // Create per-corpus index directory.
-        let index_dir = self.index_base_dir.join(&name);
+        // Each corpus stores its index at `<corpus_path>/.index`.
+        let index_dir = PathBuf::from(&config.path).join(".index");
 
         let engine = Engine::open(config, &index_dir)?;
 
@@ -174,6 +166,12 @@ impl CorpusManager {
     }
 }
 
+impl Default for CorpusManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +179,7 @@ mod tests {
         ChunkingConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode,
     };
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn test_config(name: &str, corpus_path: &Path) -> CorpusConfig {
@@ -198,8 +197,7 @@ mod tests {
 
     #[test]
     fn test_create_empty_manager() {
-        let tmp = TempDir::new().unwrap();
-        let manager = CorpusManager::new(tmp.path());
+        let manager = CorpusManager::new();
         assert_eq!(manager.corpus_count(), 0);
         assert!(manager.default_corpus_name().is_none());
     }
@@ -210,7 +208,7 @@ mod tests {
         let corpus_dir = tmp.path().join("wiki");
         fs::create_dir_all(&corpus_dir).unwrap();
 
-        let mut manager = CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = CorpusManager::new();
         let config = test_config("wiki", &corpus_dir);
         manager.add_corpus(config).unwrap();
 
@@ -227,7 +225,7 @@ mod tests {
         fs::create_dir_all(&wiki_dir).unwrap();
         fs::create_dir_all(&docs_dir).unwrap();
 
-        let mut manager = CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = CorpusManager::new();
         manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
         manager.add_corpus(test_config("docs", &docs_dir)).unwrap();
 
@@ -266,7 +264,7 @@ mod tests {
         fs::create_dir_all(&wiki_dir).unwrap();
         fs::create_dir_all(&docs_dir).unwrap();
 
-        let mut manager = CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = CorpusManager::new();
         manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
         manager.add_corpus(test_config("docs", &docs_dir)).unwrap();
 
@@ -292,7 +290,7 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager = CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = CorpusManager::new();
         manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
 
         let list = manager.list_corpora();

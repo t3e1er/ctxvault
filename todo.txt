@@ -30,7 +30,7 @@ Verify: just clippy && just check
 Commit: chore(phase0): green baseline + tool-surface reconciliation
 
 ================================================================================
-[ ] PHASE 1 — Wire multi-corpus / multi-root from one central MCP (Goal 1)
+[x] PHASE 1 — Wire multi-corpus / multi-root from one central MCP (Goal 1)
 --------------------------------------------------------------------------------
 Goal: One central MCP process serves N index roots via the existing CorpusManager.
 Scope:
