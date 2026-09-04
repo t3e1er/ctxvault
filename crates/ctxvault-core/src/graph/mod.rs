@@ -41,7 +41,7 @@ pub struct GraphEdge {
     ///
     /// `None` for intra-corpus edges; `Some(corpus)` when the target symbol was
     /// resolved in a different corpus. Always serialized (graph.bin uses the
-    /// non-self-describing bincode format, so fields must be present on load).
+    /// non-self-describing postcard format, so fields must be present on load).
     pub target_corpus: Option<String>,
     /// Confidence band for a resolved cross-corpus link (`None` for intra-corpus).
     pub confidence: Option<ResolutionConfidence>,
@@ -621,11 +621,11 @@ impl KnowledgeGraph {
 
     // ─── Persistence ─────────────────────────────────────────────────────────
 
-    /// Serialize the graph to a file using bincode.
+    /// Serialize the graph to a file using postcard.
     pub fn save(&self, path: &Path) -> Result<()> {
         let data = GraphData { graph: self.graph.clone() };
         let encoded =
-            bincode::serialize(&data).map_err(|e| Error::Graph(format!("serialize: {}", e)))?;
+            postcard::to_allocvec(&data).map_err(|e| Error::Graph(format!("serialize: {}", e)))?;
         std::fs::write(path, encoded).map_err(|e| Error::Graph(format!("write: {}", e)))?;
         Ok(())
     }
@@ -633,7 +633,7 @@ impl KnowledgeGraph {
     /// Deserialize a graph from a file.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| Error::Graph(format!("read: {}", e)))?;
-        let data: GraphData = bincode::deserialize(&bytes)
+        let data: GraphData = postcard::from_bytes(&bytes)
             .map_err(|e| Error::Graph(format!("deserialize: {}", e)))?;
 
         let mut node_map = HashMap::new();

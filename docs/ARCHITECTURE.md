@@ -235,7 +235,7 @@ The MCP tool exposes this as a `depth` parameter:
 ├── vectors/                     # HNSW index
 │   ├── index.bin                # hnswlib-rs dump (or hannoy LMDB)
 │   └── meta.json                # vector ID → (file_path, chunk_index)
-└── graph.bin                    # petgraph serialized via bincode
+└── graph.bin                    # petgraph serialized via postcard
 ```
 
 ### 5.1 SQLite Schema (metadata catalog)
@@ -302,7 +302,7 @@ CREATE TABLE validation_issues (
 | SQLite | Metadata, configs, chunk text, file tracking, templates, validation | SQL queries for admin/analytics, single file, WAL for concurrency, inspectable |
 | Tantivy | BM25 full-text search | Self-managing segments, incremental add/delete, persistent by design, proven at scale |
 | hnswlib-rs | Vector ANN search | Fast cosine KNN, dump/reload persistence, soft-delete support |
-| petgraph + bincode | Knowledge graph | In-memory for fast traversal, serialize on commit, reload on startup |
+| petgraph + postcard | Knowledge graph | In-memory for fast traversal, serialize on commit, reload on startup |
 
 ### 5.3 Startup Sequence
 
@@ -494,7 +494,7 @@ Local process speaks stdio to the agent, forwards JSON-RPC to remote server over
 | Vector index | `hnswlib-rs` | HNSW ANN with dump/reload |
 | Embeddings | `fastembed-rs` | ONNX-based local inference (MiniLM, nomic, BGE) |
 | Knowledge graph | `petgraph` | Directed graph with typed edges |
-| Graph serialization | `bincode` + `serde` | Fast binary graph persistence |
+| Graph serialization | `postcard` + `serde` | Compact binary graph persistence |
 | Markdown parsing | `pulldown-cmark` | CommonMark parser |
 | Frontmatter | `serde_yaml` | YAML deserialization |
 | Wikilink extraction | Custom parser | `[[link]]` and `[[link|alias]]` patterns |

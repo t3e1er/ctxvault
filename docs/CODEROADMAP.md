@@ -93,7 +93,7 @@ The open-source **`DeusData/codebase-memory-mcp`** represents an industry baseli
 | **Cross-Modal Lineage** | Explicit parameter links | **Native Graph Lineage** (`implements`, `documents`, `supersedes`) bridging docs and code |
 | **Vector Search** | Secondary / None | **First-Class HNSW Vectors** (fastembed BGE-small with AST breadcrumbs and max-pooling) |
 | **Full-Text Lexical Search** | SQLite `LIKE` / basic FTS | **Tantivy Okapi BM25** with custom code/doc tokenizers |
-| **Graph Storage** | Relational tables in SQLite | **In-memory Petgraph** (`graph.bin` via bincode) + SQLite metadata catalog |
+| **Graph Storage** | Relational tables in SQLite | **In-memory Petgraph** (`graph.bin` via postcard) + SQLite metadata catalog |
 | **Agent Experience** | Multi-hop tool exploration | **Single-shot hybrid retrieval** + deterministic navigation tools |
 
 ### Key Ideas Adopted from `codebase-memory-mcp`:

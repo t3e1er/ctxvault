@@ -12,9 +12,9 @@ All dependencies in this codebase are strictly verified via automated CI policy 
 
 Every transitive crate in the dependency graph adheres to one or more of the following standard open-source licenses:
 
-- **MIT License**: (e.g., `serde`, `tokio`, `clap`, `fastembed`, `petgraph`, `tracing`, `blake3`, `hnsw_rs`, `pulldown-cmark`)
+- **MIT License / MIT OR Apache-2.0**: (e.g., `serde`, `tokio`, `clap`, `fastembed`, `petgraph`, `postcard`, `tracing`, `blake3`, `hnsw_rs`, `pulldown-cmark`)
 - **Apache License 2.0 / Apache-2.0 WITH LLVM-exception**: (e.g., `tantivy`, `axum`, `tower`, `rustls`, `tokio-rustls`, `hyper`)
-- **BSD 2-Clause / BSD 3-Clause**: (e.g., `bincode`, `notify`)
+- **BSD 2-Clause / BSD 3-Clause**: (e.g., `notify`)
 - **ISC License**: (e.g., `rustls-webpki`)
 - **Unicode-3.0 / Unicode-DFS-2016**: (e.g., `unicode-ident`, `unicode-normalization`)
 - **Zlib License**: (e.g., `miniz_oxide`, `flate2`)
@@ -39,6 +39,11 @@ Every transitive crate in the dependency graph adheres to one or more of the fol
 - **Role**: Graph data structure and BFS graph traversal
 - **License**: MIT / Apache-2.0
 - **Copyright**: (c) 2014-2024 Petgraph Contributors
+
+### 2.3.1 Postcard
+- **Role**: Compact `serde` binary serialization for on-disk graph persistence (`graph.bin`)
+- **License**: MIT / Apache-2.0
+- **Copyright**: (c) 2019-2024 James Munns and Postcard Contributors
 
 ### 2.4 HNSW-rs
 - **Role**: Hierarchical Navigable Small World vector indexing

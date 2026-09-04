@@ -747,7 +747,7 @@ A.5 Engine::open  (engine.rs:102-214) — RELOCATE to composition root in Phase 
 A.6 LAYERING FACTS
   common: serde/serde_json/thiserror/toml only; NO workspace-crate deps. OK.
   core: ctxvault-common + all infra (tantivy, hnsw_rs, petgraph, rusqlite, ort,
-    tokenizers, tree-sitter*, bincode, blake3, notify, fs4). Backend crates live here.
+    tokenizers, tree-sitter*, postcard, blake3, notify, fs4). Backend crates live here.
   mcp: ctxvault-common + ctxvault-core (+ axum/tower/reqwest/tokio/serde). Does
     NOT list tantivy/hnsw_rs/petgraph/rusqlite/ort as direct deps -> its only
     route to backends is via core's public API (the 7 accessors).
