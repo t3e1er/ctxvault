@@ -8,124 +8,11 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 
+use ctxvault_common::types::{
+    ChunkRecord, EdgeTypeRecord, FileRecord, IndexingState, IndexingStatus,
+};
 use ctxvault_common::{Error, Result};
-
-// ---------------------------------------------------------------------------
-// Record types
-// ---------------------------------------------------------------------------
-
-/// Status of an indexing operation for a corpus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum IndexingStatus {
-    /// No indexing job in progress.
-    Idle,
-    /// Actively indexing files in batches.
-    Indexing,
-    /// Indexing is paused.
-    Paused,
-    /// Indexing encountered an error.
-    Error,
-    /// All discovered files successfully indexed.
-    Completed,
-}
-
-impl std::fmt::Display for IndexingStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Idle => write!(f, "idle"),
-            Self::Indexing => write!(f, "indexing"),
-            Self::Paused => write!(f, "paused"),
-            Self::Error => write!(f, "error"),
-            Self::Completed => write!(f, "completed"),
-        }
-    }
-}
-
-impl std::str::FromStr for IndexingStatus {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "idle" => Ok(Self::Idle),
-            "indexing" => Ok(Self::Indexing),
-            "paused" => Ok(Self::Paused),
-            "error" => Ok(Self::Error),
-            "completed" => Ok(Self::Completed),
-            _ => Ok(Self::Idle),
-        }
-    }
-}
-
-/// State tracking record for resumable paginated indexing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexingState {
-    /// Corpus identifier/name.
-    pub corpus_id: String,
-    /// Current indexing status.
-    pub status: IndexingStatus,
-    /// Total markdown files discovered in corpus.
-    pub total_files: usize,
-    /// Count of markdown files successfully committed.
-    pub indexed_files: usize,
-    /// Relative path of the last committed file.
-    pub last_processed_path: Option<String>,
-    /// When indexing started (Unix timestamp seconds).
-    pub started_at: i64,
-    /// When state was last updated (Unix timestamp seconds).
-    pub updated_at: i64,
-    /// Error message if status is Error.
-    pub error_message: Option<String>,
-}
-
-/// A tracked file in the index.
-#[derive(Debug, Clone)]
-pub struct FileRecord {
-    /// Relative path within the corpus.
-    pub path: String,
-    /// BLAKE3 content hash.
-    pub content_hash: String,
-    /// File modification time as Unix timestamp (seconds).
-    pub modified_at: i64,
-    /// Template declared in frontmatter.
-    pub template: Option<String>,
-    /// Document title.
-    pub title: Option<String>,
-    /// When this file was last indexed (Unix timestamp seconds).
-    pub indexed_at: i64,
-}
-
-/// A text chunk stored for a file.
-#[derive(Debug, Clone)]
-pub struct ChunkRecord {
-    /// Zero-based index within the parent document.
-    pub chunk_index: usize,
-    /// Byte offset of chunk start in original content.
-    pub start_byte: usize,
-    /// Byte offset of chunk end in original content.
-    pub end_byte: usize,
-    /// The text content of this chunk.
-    pub text: String,
-}
-
-/// A registered edge type configuration persisted to the database.
-#[derive(Debug, Clone)]
-pub struct EdgeTypeRecord {
-    /// Name of the edge type.
-    pub name: String,
-    /// Source kind (e.g. "wikilink", "tag", "frontmatter", "reference").
-    pub source: String,
-    /// Weight for scoring.
-    pub weight: f32,
-    /// Whether edges of this type are created in both directions.
-    pub bidirectional: bool,
-    /// Frontmatter field name (if source is frontmatter).
-    pub field: Option<String>,
-    /// Additional config serialized as JSON.
-    pub config: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // SQL schema
@@ -758,6 +645,108 @@ impl Store {
             .map_err(|e| Error::Database(e.to_string()))?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port adapter: MetadataCatalog
+// ---------------------------------------------------------------------------
+
+impl ctxvault_common::ports::MetadataCatalog for Store {
+    fn insert_file(
+        &self,
+        path: &str,
+        content_hash: &str,
+        modified_at: i64,
+        template: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<()> {
+        Store::insert_file(self, path, content_hash, modified_at, template, title)
+    }
+
+    fn get_file(&self, path: &str) -> Result<Option<FileRecord>> {
+        Store::get_file(self, path)
+    }
+
+    fn delete_file(&self, path: &str) -> Result<()> {
+        Store::delete_file(self, path)
+    }
+
+    fn list_files(&self) -> Result<Vec<FileRecord>> {
+        Store::list_files(self)
+    }
+
+    fn insert_chunks(&self, file_path: &str, chunks: &[ChunkRecord]) -> Result<()> {
+        Store::insert_chunks(self, file_path, chunks)
+    }
+
+    fn get_chunks_for_file(&self, file_path: &str) -> Result<Vec<ChunkRecord>> {
+        Store::get_chunks_for_file(self, file_path)
+    }
+
+    fn delete_chunks_for_file(&self, file_path: &str) -> Result<()> {
+        Store::delete_chunks_for_file(self, file_path)
+    }
+
+    fn insert_edge_types(&self, edge_types: &[EdgeTypeRecord]) -> Result<()> {
+        Store::insert_edge_types(self, edge_types)
+    }
+
+    fn list_edge_types(&self) -> Result<Vec<EdgeTypeRecord>> {
+        Store::list_edge_types(self)
+    }
+
+    fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        Store::set_config(self, key, value)
+    }
+
+    fn get_config(&self, key: &str) -> Result<Option<String>> {
+        Store::get_config(self, key)
+    }
+
+    fn get_indexing_state(&self, corpus_id: &str) -> Result<Option<IndexingState>> {
+        Store::get_indexing_state(self, corpus_id)
+    }
+
+    fn update_indexing_state(&self, state: &IndexingState) -> Result<()> {
+        Store::update_indexing_state(self, state)
+    }
+
+    fn reset_indexing_state(&self, corpus_id: &str) -> Result<()> {
+        Store::reset_indexing_state(self, corpus_id)
+    }
+
+    fn save_code_symbols(
+        &self,
+        file_path: &str,
+        symbols: &[ctxvault_common::types::CodeSymbol],
+    ) -> Result<()> {
+        Store::save_code_symbols(self, file_path, symbols)
+    }
+
+    fn get_code_symbols_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        Store::get_code_symbols_for_file(self, file_path)
+    }
+
+    fn find_symbols_by_name(
+        &self,
+        name_pattern: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        Store::find_symbols_by_name(self, name_pattern)
+    }
+
+    fn find_symbols_by_qualified_name(
+        &self,
+        scope_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        Store::find_symbols_by_qualified_name(self, scope_path)
+    }
+
+    fn get_all_code_symbols(&self) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        Store::get_all_code_symbols(self)
     }
 }
 

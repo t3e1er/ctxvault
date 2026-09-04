@@ -8,31 +8,15 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ctxvault_common::{types::Modality, Error, Result};
+use ctxvault_common::{
+    types::{Modality, VectorMeta, VectorSearchResult},
+    Error, Result,
+};
 use hnsw_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Default number of dimensions for Jina embeddings (768).
 pub const DEFAULT_DIMENSIONS: usize = 768;
-
-/// Metadata about a stored vector, mapping HNSW internal IDs to documents/chunks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VectorMeta {
-    /// Document path this vector belongs to.
-    pub doc_path: String,
-    /// Chunk index within the document (None for document-level embeddings).
-    pub chunk_index: Option<usize>,
-    /// Whether this is a document-level embedding (vs chunk-level).
-    pub is_doc_level: bool,
-    /// Coarse modality tag ("code" / "docs") for modality-filtered search.
-    #[serde(default = "default_modality")]
-    pub modality: String,
-}
-
-/// Default coarse modality tag ("docs") for round-tripping persisted vectors.
-fn default_modality() -> String {
-    "docs".to_string()
-}
 
 /// A stored vector entry for persistence (metadata + raw vector data).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,21 +47,6 @@ pub struct VectorIndex {
     stale: bool,
     /// Whether the index has unsaved changes.
     dirty: AtomicBool,
-}
-
-/// A single vector search result.
-#[derive(Debug, Clone)]
-pub struct VectorSearchResult {
-    /// Document path.
-    pub doc_path: String,
-    /// Chunk index (None for document-level).
-    pub chunk_index: Option<usize>,
-    /// Cosine similarity score (0.0 to 1.0, higher = more similar).
-    pub score: f64,
-    /// Whether this came from a document-level embedding.
-    pub is_doc_level: bool,
-    /// Coarse modality tag ("code" / "docs") of the matched vector.
-    pub modality: String,
 }
 
 /// Persistence format for the entire vector index.
@@ -441,6 +410,96 @@ impl VectorIndex {
             stale: false,
             dirty: AtomicBool::new(false),
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port adapter: VectorStore
+// ---------------------------------------------------------------------------
+
+impl ctxvault_common::ports::VectorStore for VectorIndex {
+    fn add(
+        &mut self,
+        vector: &[f32],
+        doc_path: &str,
+        chunk_index: Option<usize>,
+        is_doc_level: bool,
+        modality: &str,
+    ) -> Result<usize> {
+        VectorIndex::add(self, vector, doc_path, chunk_index, is_doc_level, modality)
+    }
+
+    fn add_batch(
+        &mut self,
+        vectors: &[Vec<f32>],
+        doc_path: &str,
+        chunk_indices: &[Option<usize>],
+        is_doc_level: bool,
+        modality: &str,
+    ) -> Result<Vec<usize>> {
+        VectorIndex::add_batch(self, vectors, doc_path, chunk_indices, is_doc_level, modality)
+    }
+
+    fn remove_document(&mut self, doc_path: &str) {
+        VectorIndex::remove_document(self, doc_path)
+    }
+
+    fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        doc_level_only: bool,
+        modality: Modality,
+    ) -> Result<Vec<VectorSearchResult>> {
+        VectorIndex::search(self, query, k, doc_level_only, modality)
+    }
+
+    fn save(&self, path: &Path) -> Result<()> {
+        VectorIndex::save(self, path)
+    }
+
+    fn dimensions(&self) -> usize {
+        VectorIndex::dimensions(self)
+    }
+
+    fn len(&self) -> usize {
+        VectorIndex::len(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        VectorIndex::is_empty(self)
+    }
+
+    fn model_version(&self) -> Option<&str> {
+        VectorIndex::model_version(self)
+    }
+
+    fn set_model_version(&mut self, version: &str) {
+        VectorIndex::set_model_version(self, version)
+    }
+
+    fn is_stale(&self) -> bool {
+        VectorIndex::is_stale(self)
+    }
+
+    fn mark_stale(&mut self) {
+        VectorIndex::mark_stale(self)
+    }
+
+    fn clear_stale(&mut self) {
+        VectorIndex::clear_stale(self)
+    }
+
+    fn is_dirty(&self) -> bool {
+        VectorIndex::is_dirty(self)
+    }
+
+    fn mark_dirty(&self) {
+        VectorIndex::mark_dirty(self)
+    }
+
+    fn clear_dirty(&self) {
+        VectorIndex::clear_dirty(self)
     }
 }
 

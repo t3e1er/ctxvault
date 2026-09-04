@@ -16,7 +16,7 @@ inclusion: always
 
 - Async: `tokio` (full), `async-trait`, `futures-util`, `crossbeam-channel`
 - Search: `tantivy` (BM25) · `hnsw_rs` (vector ANN) · `ort` + `tokenizers` (ONNX embeddings)
-- Graph: `petgraph` (serde-1) serialized via `bincode` (=1.3.3)
+- Graph: `petgraph` (serde-1) serialized via `postcard` (1.1)
 - Storage: `rusqlite` (bundled, backup) — metadata catalog, WAL mode
 - Markdown: `pulldown-cmark`; frontmatter via `serde_yaml`
 - File watching: `notify` v8 + `notify-debouncer-full`; locking via `fs4`

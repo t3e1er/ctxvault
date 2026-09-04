@@ -2,13 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use ctxvault_common::ports::{EmbeddingProvider, GraphStore, TextIndex, VectorStore};
 use ctxvault_common::types::{Modality, ScoreBreakdown, SearchResult};
 use ctxvault_common::Result;
-
-use crate::embedding::Embedder;
-use crate::graph::KnowledgeGraph;
-use crate::index::BM25Index;
-use crate::vector_index::VectorIndex;
 
 /// Classify a result path as passing a [`Modality`] filter using the set of
 /// known code node keys.
@@ -27,7 +23,7 @@ pub fn path_matches_modality(path: &str, modality: Modality, code_paths: &HashSe
 
 /// Simple BM25 keyword search, restricted to the requested [`Modality`].
 pub fn search_bm25(
-    bm25: &BM25Index,
+    bm25: &impl TextIndex,
     query: &str,
     limit: usize,
     modality: Modality,
@@ -46,8 +42,8 @@ pub fn search_bm25(
 /// - `limit`: Maximum results to return.
 /// - `doc_level_only`: If true, only search document-level embeddings (broad mode).
 pub fn search_semantic(
-    vector_index: &VectorIndex,
-    embedder: &Embedder,
+    vector_index: &impl VectorStore,
+    embedder: &impl EmbeddingProvider,
     query: &str,
     limit: usize,
     doc_level_only: bool,
@@ -81,7 +77,7 @@ pub fn search_semantic(
 ///
 /// Use this when you already have the query embedding (avoids redundant embedding).
 pub fn search_semantic_with_embedding(
-    vector_index: &VectorIndex,
+    vector_index: &impl VectorStore,
     query_embedding: &[f32],
     limit: usize,
     doc_level_only: bool,
@@ -115,8 +111,8 @@ pub fn search_semantic_with_embedding(
 ///
 /// The `depth` parameter controls which level(s) to search.
 pub fn search_semantic_dual(
-    vector_index: &VectorIndex,
-    embedder: &Embedder,
+    vector_index: &impl VectorStore,
+    embedder: &impl EmbeddingProvider,
     query: &str,
     limit: usize,
     depth: ctxvault_common::types::SearchDepth,
@@ -263,7 +259,7 @@ pub fn rrf_fuse_cross_corpus(
 }
 
 /// Enrich search results with structural lineage metadata from the knowledge graph.
-pub fn enrich_results_with_lineage(results: &mut [SearchResult], graph: &KnowledgeGraph) {
+pub fn enrich_results_with_lineage(results: &mut [SearchResult], graph: &impl GraphStore) {
     for result in results.iter_mut() {
         if result.lineage.is_none() {
             result.lineage = graph.extract_lineage_for_node(&result.path);
@@ -282,8 +278,8 @@ pub fn enrich_results_with_lineage(results: &mut [SearchResult], graph: &Knowled
 /// Note: This is the BM25+graph variant. For true 3-signal hybrid (BM25+vector+graph),
 /// use `search_hybrid_full`.
 pub fn search_hybrid(
-    bm25: &BM25Index,
-    graph: &KnowledgeGraph,
+    bm25: &impl TextIndex,
+    graph: &impl GraphStore,
     query: &str,
     limit: usize,
     graph_depth: usize,
@@ -406,9 +402,9 @@ pub fn search_hybrid(
 ///
 /// If `query_embedding` is None, falls back to BM25+graph only.
 pub fn search_hybrid_full(
-    bm25: &BM25Index,
-    vector_index: &VectorIndex,
-    graph: &KnowledgeGraph,
+    bm25: &impl TextIndex,
+    vector_index: &impl VectorStore,
+    graph: &impl GraphStore,
     query: &str,
     query_embedding: Option<&[f32]>,
     limit: usize,
@@ -541,9 +537,9 @@ pub fn search_hybrid_full(
 /// Runs the 3-signal hybrid search (BM25 + vector + graph) and provides
 /// per-result breakdown of each signal's raw score, rank, and RRF contribution.
 pub fn search_explain(
-    bm25: &BM25Index,
-    vector_index: &VectorIndex,
-    graph: &KnowledgeGraph,
+    bm25: &impl TextIndex,
+    vector_index: &impl VectorStore,
+    graph: &impl GraphStore,
     query: &str,
     query_embedding: Option<&[f32]>,
     limit: usize,
@@ -684,8 +680,8 @@ pub fn search_explain(
 /// Graph search: find nodes matching query text in BM25, then traverse graph from matches.
 /// Returns nodes reachable from query matches via typed edges.
 pub fn search_graph(
-    bm25: &BM25Index,
-    graph: &KnowledgeGraph,
+    bm25: &impl TextIndex,
+    graph: &impl GraphStore,
     query: &str,
     limit: usize,
     max_depth: usize,
@@ -756,7 +752,7 @@ pub fn search_graph(
 /// 3. Remove seeds from results
 /// 4. Sort by accumulated score, take top `limit`
 pub fn search_related(
-    graph: &KnowledgeGraph,
+    graph: &impl GraphStore,
     seeds: &[String],
     limit: usize,
     _damping: f64,
@@ -822,11 +818,11 @@ pub fn search_related(
 /// 5. BRIDGE: Find structural paths between seed docs from different sub-concepts
 ///
 /// Falls back to normal hybrid search if query cannot be decomposed.
-pub fn search_multihop(
-    bm25: &BM25Index,
-    vector_index: &VectorIndex,
-    graph: &KnowledgeGraph,
-    embedder: Option<&Embedder>,
+pub fn search_multihop<E: EmbeddingProvider>(
+    bm25: &impl TextIndex,
+    vector_index: &impl VectorStore,
+    graph: &impl GraphStore,
+    embedder: Option<&E>,
     query: &str,
     query_embedding: Option<&[f32]>,
     limit: usize,
@@ -1112,6 +1108,9 @@ fn strip_question_prefix(s: &str) -> &str {
 mod tests {
     use super::*;
     use ctxvault_common::types::{Chunk, EdgeProvenance};
+
+    use crate::graph::KnowledgeGraph;
+    use crate::index::BM25Index;
 
     /// Helper to create a simple chunk.
     fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {

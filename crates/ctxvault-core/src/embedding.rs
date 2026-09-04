@@ -1171,6 +1171,20 @@ impl Embedder {
     }
 }
 
+impl ctxvault_common::ports::EmbeddingProvider for Embedder {
+    fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        Embedder::embed_query(self, query)
+    }
+
+    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Embedder::embed_batch(self, texts)
+    }
+
+    fn dimensions(&self) -> usize {
+        Embedder::dimensions(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

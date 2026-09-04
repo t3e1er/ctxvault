@@ -30,7 +30,7 @@ Keep layering clean: `common` has no deps on the others; `core` depends on `comm
 - `corpus.toml` — per-corpus config: `[chunking]`, `[embedding]`, `[[graph.edge_types]]` (name, source, weight, direction/bidirectional, `class` = structural|semantic|hybrid), `[templates]`.
 - Edge types are **data, not code** — declared per corpus, never hardcoded.
 - Templates: TOML files in the corpus's `.templates/` dir; enforce required frontmatter/sections and declarative `edge_rules`.
-- `.index/` (gitignored, per corpus, at `<corpus_path>/.index`): `meta.db` (SQLite), `tantivy/`, `vectors.json` (HNSW), `graph.bin` (bincode). All derived and rebuildable. This is the ONE index-dir convention — `CorpusManager` derives it from each corpus's path.
+- `.index/` (gitignored, per corpus, at `<corpus_path>/.index`): `meta.db` (SQLite), `tantivy/`, `vectors.json` (HNSW), `graph.bin` (postcard). All derived and rebuildable. This is the ONE index-dir convention — `CorpusManager` derives it from each corpus's path.
 
 ## Multi-corpus CLI
 

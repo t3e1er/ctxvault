@@ -9,10 +9,31 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use ctxvault_common::config::{CorpusConfig, EdgeClass};
-use ctxvault_common::types::SearchResult;
+use ctxvault_common::config::CorpusConfig;
+use ctxvault_common::ports::{GraphStore, SearchQuery, SearchService};
+use ctxvault_common::types::{Modality, SearchDepth, SearchResult};
 use ctxvault_core::engine::Engine;
-use ctxvault_core::search;
+
+/// Build a per-mode [`SearchQuery`] for the benchmark harness.
+fn bench_query(
+    query: &str,
+    mode: &str,
+    modality: Modality,
+    decompose: Option<bool>,
+    depth: Option<SearchDepth>,
+) -> SearchQuery {
+    SearchQuery {
+        query: query.to_string(),
+        mode: Some(mode.to_string()),
+        limit: Some(10),
+        modality,
+        depth: depth.unwrap_or_default(),
+        graph_depth: Some(2),
+        edge_types: None,
+        edge_class: None,
+        decompose,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct QueryItem {
@@ -155,13 +176,8 @@ fn main() {
     let reembed_count = engine.reembed().expect("Reembed");
     println!("Reembedded {} chunks", reembed_count);
 
-    // Save graph and vector index
-    let graph_bin = index_dir.join("graph.bin");
-    engine.graph().save(&graph_bin).expect("Save graph");
-    let vector_json = index_dir.join("vectors.json");
-    if let Some(vi) = engine.vector_index() {
-        vi.save(&vector_json).expect("Save vectors");
-    }
+    // Persist BM25 + graph + vector index to the corpus's .index directory.
+    engine.commit().expect("Commit index");
 
     // Graph Stats
     let stats = engine.graph().stats();
@@ -182,65 +198,42 @@ fn main() {
 
     let mut query_records: Vec<QueryResultRecord> = Vec::new();
 
-    let embedder = engine.embedder_ref().expect("Embedder reference");
-
-    let code_paths = engine.code_paths_set();
     let modality = ctxvault_common::types::Modality::Both;
+    // One search service over the engine's backends; each query builds a
+    // per-mode `SearchQuery` and dispatches through the `SearchService` port.
+    let service = engine.search_service();
     for q in &queries {
         // 1. BM25 Search
-        let bm25_res =
-            search::search_bm25(engine.bm25(), &q.query, 10, modality).unwrap_or_default();
+        let bm25_res = service
+            .search(&bench_query(&q.query, "bm25", modality, None, None))
+            .unwrap_or_default();
         let (bm25_top5, bm25_recall, bm25_mrr, bm25_ndcg) =
             compute_metrics(&bm25_res, &q.expected_relevant);
 
         // 2. Semantic Search (Precise direct chunk)
-        let sem_res = search::search_semantic_dual(
-            engine.vector_index().expect("Vector index"),
-            &embedder,
-            &q.query,
-            10,
-            ctxvault_common::types::SearchDepth::Precise,
-            modality,
-        )
-        .unwrap_or_default();
+        let sem_res = service
+            .search(&bench_query(
+                &q.query,
+                "semantic",
+                modality,
+                None,
+                Some(ctxvault_common::types::SearchDepth::Precise),
+            ))
+            .unwrap_or_default();
         let (semantic_top5, sem_recall, sem_mrr, sem_ndcg) =
             compute_metrics(&sem_res, &q.expected_relevant);
 
-        // 3. Hybrid Search
-        let query_embedding = embedder.embed_query(&q.query).ok();
+        // 3. Hybrid Search (multi-hop decomposition for the multi-hop category).
         let is_multihop = q.category == "multi-hop";
-
-        let hyb_res = if is_multihop {
-            search::search_multihop(
-                engine.bm25(),
-                engine.vector_index().expect("Vector index"),
-                engine.graph(),
-                Some(&*embedder),
+        let hyb_res = service
+            .search(&bench_query(
                 &q.query,
-                query_embedding.as_deref(),
-                10,
-                2,
-                None,
+                "hybrid",
                 modality,
-                &code_paths,
-            )
-            .unwrap_or_default()
-        } else {
-            search::search_hybrid_full(
-                engine.bm25(),
-                engine.vector_index().expect("Vector index"),
-                engine.graph(),
-                &q.query,
-                query_embedding.as_deref(),
-                10,
-                2,
+                if is_multihop { Some(true) } else { None },
                 None,
-                Some(EdgeClass::Semantic),
-                modality,
-                &code_paths,
-            )
-            .unwrap_or_default()
-        };
+            ))
+            .unwrap_or_default();
 
         let (hybrid_top5, hyb_recall, hyb_mrr, hyb_ndcg) =
             compute_metrics(&hyb_res, &q.expected_relevant);

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ctxvault_common::config::{CorpusConfig, EdgeClass};
+use ctxvault_common::ports::{GraphStore, MetadataCatalog};
 use ctxvault_common::types::{CodeSymbol, EdgeProvenance, ResolutionConfidence};
 use ctxvault_common::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -59,7 +60,7 @@ impl CorpusManager {
         // Each corpus stores its index at `<corpus_path>/.index`.
         let index_dir = PathBuf::from(&config.path).join(".index");
 
-        let engine = Engine::open(config, &index_dir)?;
+        let engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
 
         if self.default_corpus.is_none() {
             self.default_corpus = Some(name.clone());
@@ -143,8 +144,8 @@ impl CorpusManager {
                     path: engine.config().path.clone(),
                     mode,
                     file_count,
-                    embedder_active: engine.embedder_ref().is_some(),
-                    vector_count: engine.vector_index().map(|vi| vi.len()).unwrap_or(0),
+                    embedder_active: engine.embedder_active(),
+                    vector_count: engine.vector_count(),
                     graph_node_count: engine.graph().node_count(),
                 }
             })
@@ -269,7 +270,7 @@ impl CorpusManager {
         for link in decisions {
             let engine = self.get_engine_mut(&link.doc_corpus)?;
             let graph = engine.graph_mut();
-            let _ = graph.add_node(&link.node_key, link.title.as_deref());
+            graph.add_node(&link.node_key, link.title.as_deref());
             graph.add_edge_full(
                 &link.doc_path,
                 &link.node_key,

@@ -11,7 +11,10 @@ use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 
 use ctxvault_common::config::{EdgeClass, EdgeDirection, EdgeSource, EdgeTypeConfig};
-use ctxvault_common::types::{Document, EdgeProvenance, ResolutionConfidence};
+use ctxvault_common::types::{
+    BrokenLink, CircularDependency, Community, CommunityDensity, CommunityDetectionResult,
+    Document, EdgeProvenance, GraphStats, LineageNode, OrphanAdr, ResolutionConfidence,
+};
 use ctxvault_common::{Error, Result};
 
 /// Node data stored in the graph.
@@ -38,25 +41,10 @@ pub struct GraphEdge {
     ///
     /// `None` for intra-corpus edges; `Some(corpus)` when the target symbol was
     /// resolved in a different corpus. Always serialized (graph.bin uses the
-    /// non-self-describing bincode format, so fields must be present on load).
+    /// non-self-describing postcard format, so fields must be present on load).
     pub target_corpus: Option<String>,
     /// Confidence band for a resolved cross-corpus link (`None` for intra-corpus).
     pub confidence: Option<ResolutionConfidence>,
-}
-
-/// Graph statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphStats {
-    /// Total number of nodes.
-    pub node_count: usize,
-    /// Total number of edges.
-    pub edge_count: usize,
-    /// Nodes with zero edges (neither incoming nor outgoing).
-    pub orphan_count: usize,
-    /// Top 10 nodes by total degree (incoming + outgoing).
-    pub most_connected: Vec<(String, usize)>,
-    /// Count of edges per edge type.
-    pub edge_type_distribution: HashMap<String, usize>,
 }
 
 /// Serializable wrapper for persistence.
@@ -633,11 +621,11 @@ impl KnowledgeGraph {
 
     // ─── Persistence ─────────────────────────────────────────────────────────
 
-    /// Serialize the graph to a file using bincode.
+    /// Serialize the graph to a file using postcard.
     pub fn save(&self, path: &Path) -> Result<()> {
         let data = GraphData { graph: self.graph.clone() };
         let encoded =
-            bincode::serialize(&data).map_err(|e| Error::Graph(format!("serialize: {}", e)))?;
+            postcard::to_allocvec(&data).map_err(|e| Error::Graph(format!("serialize: {}", e)))?;
         std::fs::write(path, encoded).map_err(|e| Error::Graph(format!("write: {}", e)))?;
         Ok(())
     }
@@ -645,7 +633,7 @@ impl KnowledgeGraph {
     /// Deserialize a graph from a file.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| Error::Graph(format!("read: {}", e)))?;
-        let data: GraphData = bincode::deserialize(&bytes)
+        let data: GraphData = postcard::from_bytes(&bytes)
             .map_err(|e| Error::Graph(format!("deserialize: {}", e)))?;
 
         let mut node_map = HashMap::new();
@@ -1242,54 +1230,6 @@ impl KnowledgeGraph {
     }
 }
 
-/// A step or node in a lineage traversal.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LineageNode {
-    /// Document path.
-    pub path: String,
-    /// Document title if known.
-    pub title: Option<String>,
-    /// Hop distance from the start node (0 for start note).
-    pub depth: usize,
-    /// Edge type traversed to reach this note.
-    pub edge_type: String,
-    /// Direction traversed ("start", "outgoing", "incoming").
-    pub direction: String,
-}
-
-/// Broken link detected in taxonomy validation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrokenLink {
-    /// Source document path containing the link.
-    pub source: String,
-    /// Target path or wikilink that could not be resolved.
-    pub target: String,
-    /// Edge type (e.g. "Wikilink", "supersedes", etc.).
-    pub edge_type: String,
-    /// Edge provenance.
-    pub provenance: EdgeProvenance,
-}
-
-/// Circular dependency detected in a directed acyclic relation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CircularDependency {
-    /// The edge type where the cycle exists (e.g. "supersedes").
-    pub edge_type: String,
-    /// The cycle path (e.g. ["A.md", "B.md", "A.md"]).
-    pub cycle: Vec<String>,
-}
-
-/// Orphan ADR detected in taxonomy validation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OrphanAdr {
-    /// Path to the orphan ADR note.
-    pub path: String,
-    /// Note title if known.
-    pub title: Option<String>,
-    /// Human-readable explanation.
-    pub reason: String,
-}
-
 impl Default for KnowledgeGraph {
     fn default() -> Self {
         Self::new()
@@ -1297,41 +1237,6 @@ impl Default for KnowledgeGraph {
 }
 
 // ─── Community Detection (Louvain) ──────────────────────────────────────────
-
-/// A detected community of nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Community {
-    /// Community identifier.
-    pub id: usize,
-    /// Paths of nodes in this community.
-    pub members: Vec<String>,
-    /// Modularity contribution of this community to the overall partition.
-    pub modularity_contribution: f64,
-}
-
-/// Result of community detection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunityDetectionResult {
-    /// Detected communities.
-    pub communities: Vec<Community>,
-    /// Overall modularity of the partition (Q ∈ [-0.5, 1.0]).
-    pub modularity: f64,
-    /// Number of iterations the algorithm ran.
-    pub iterations: usize,
-}
-
-/// Per-community density statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunityDensity {
-    /// Community id.
-    pub community_id: usize,
-    /// Number of nodes in the community.
-    pub node_count: usize,
-    /// Number of internal edges (edges within the community, treating as undirected).
-    pub internal_edges: usize,
-    /// Density: internal_edges / max_possible_internal_edges.
-    pub density: f64,
-}
 
 impl KnowledgeGraph {
     /// Detect communities using the Louvain modularity-based algorithm.
@@ -1723,6 +1628,186 @@ impl KnowledgeGraph {
         }
 
         densities
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port adapter: GraphStore
+// ---------------------------------------------------------------------------
+
+impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
+    fn add_node(&mut self, path: &str, title: Option<&str>) {
+        let _ = KnowledgeGraph::add_node(self, path, title);
+    }
+
+    fn add_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+    ) {
+        KnowledgeGraph::add_edge(self, source, target, edge_type, weight, provenance, class)
+    }
+
+    fn add_edge_full(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
+    ) {
+        KnowledgeGraph::add_edge_full(
+            self,
+            source,
+            target,
+            edge_type,
+            weight,
+            provenance,
+            class,
+            target_corpus,
+            confidence,
+        )
+    }
+
+    fn add_code_edge(&mut self, edge: &ctxvault_common::types::Edge) {
+        KnowledgeGraph::add_code_edge(self, edge)
+    }
+
+    fn remove_node(&mut self, path: &str) -> Result<()> {
+        KnowledgeGraph::remove_node(self, path)
+    }
+
+    fn remove_edges_for_node(&mut self, path: &str) {
+        KnowledgeGraph::remove_edges_for_node(self, path)
+    }
+
+    fn contains_node(&self, path: &str) -> bool {
+        KnowledgeGraph::contains_node(self, path)
+    }
+
+    fn outgoing_frontmatter_targets(&self, path: &str) -> Vec<(String, String)> {
+        KnowledgeGraph::outgoing_frontmatter_targets(self, path)
+    }
+
+    fn node_paths(&self) -> Vec<String> {
+        KnowledgeGraph::node_paths(self)
+    }
+
+    fn node_count(&self) -> usize {
+        KnowledgeGraph::node_count(self)
+    }
+
+    fn edge_count(&self) -> usize {
+        KnowledgeGraph::edge_count(self)
+    }
+
+    fn get_all_edges(&self) -> Vec<ctxvault_common::types::Edge> {
+        KnowledgeGraph::get_all_edges(self)
+    }
+
+    fn build_edges_for_document(
+        &mut self,
+        doc: &Document,
+        edge_configs: &[EdgeTypeConfig],
+        all_docs: &[Document],
+    ) {
+        KnowledgeGraph::build_edges_for_document(self, doc, edge_configs, all_docs)
+    }
+
+    fn build_all_tag_edges(&mut self, configs: &[EdgeTypeConfig], all_docs: &[Document]) {
+        KnowledgeGraph::build_all_tag_edges(self, configs, all_docs)
+    }
+
+    fn traverse_bfs(
+        &self,
+        start: &str,
+        max_depth: usize,
+        edge_type_filter: Option<&[String]>,
+        edge_class_filter: Option<EdgeClass>,
+    ) -> Vec<(String, usize)> {
+        KnowledgeGraph::traverse_bfs(self, start, max_depth, edge_type_filter, edge_class_filter)
+    }
+
+    fn backlinks(
+        &self,
+        path: &str,
+        edge_class_filter: Option<EdgeClass>,
+    ) -> HashMap<String, Vec<String>> {
+        KnowledgeGraph::backlinks(self, path, edge_class_filter)
+    }
+
+    fn forwardlinks(
+        &self,
+        path: &str,
+        edge_class_filter: Option<EdgeClass>,
+    ) -> HashMap<String, Vec<String>> {
+        KnowledgeGraph::forwardlinks(self, path, edge_class_filter)
+    }
+
+    fn shortest_path(
+        &self,
+        from: &str,
+        to: &str,
+        edge_type_filter: Option<&[String]>,
+        edge_class_filter: Option<EdgeClass>,
+    ) -> Option<Vec<String>> {
+        KnowledgeGraph::shortest_path(self, from, to, edge_type_filter, edge_class_filter)
+    }
+
+    fn stats(&self) -> GraphStats {
+        KnowledgeGraph::stats(self)
+    }
+
+    fn traverse_lineage(
+        &self,
+        start: &str,
+        edge_type: &str,
+        direction: &str,
+        max_depth: usize,
+    ) -> Vec<LineageNode> {
+        KnowledgeGraph::traverse_lineage(self, start, edge_type, direction, max_depth)
+    }
+
+    fn extract_lineage_for_node(
+        &self,
+        path: &str,
+    ) -> Option<ctxvault_common::types::LineageAnnotation> {
+        KnowledgeGraph::extract_lineage_for_node(self, path)
+    }
+
+    fn detect_broken_links(&self, existing_paths: &HashSet<String>) -> Vec<BrokenLink> {
+        KnowledgeGraph::detect_broken_links(self, existing_paths)
+    }
+
+    fn detect_circular_dependencies(&self, edge_types: &[&str]) -> Vec<CircularDependency> {
+        KnowledgeGraph::detect_circular_dependencies(self, edge_types)
+    }
+
+    fn detect_orphan_adrs(&self, adr_paths: &[String]) -> Vec<OrphanAdr> {
+        KnowledgeGraph::detect_orphan_adrs(self, adr_paths)
+    }
+
+    fn detect_communities(&self) -> CommunityDetectionResult {
+        KnowledgeGraph::detect_communities(self)
+    }
+
+    fn detect_communities_leiden(&self) -> CommunityDetectionResult {
+        KnowledgeGraph::detect_communities_leiden(self)
+    }
+
+    fn community_densities(&self) -> Vec<CommunityDensity> {
+        KnowledgeGraph::community_densities(self)
+    }
+
+    fn save(&self, path: &Path) -> Result<()> {
+        KnowledgeGraph::save(self, path)
     }
 }
 

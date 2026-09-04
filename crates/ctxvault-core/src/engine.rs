@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use ctxvault_common::config::CorpusConfig;
-use ctxvault_common::types::{ChunkEmbedPolicy, Document, EntityKind};
+use ctxvault_common::ports::{GraphStore, MetadataCatalog};
+use ctxvault_common::types::{
+    ChunkEmbedPolicy, ChunkRecord, Document, EntityKind, IndexingState, IndexingStatus,
+};
 use ctxvault_common::{Error, Result};
 
 use crate::embedding::Embedder;
@@ -22,7 +25,7 @@ use crate::graph::KnowledgeGraph;
 use crate::index::{pipeline::AsyncEmbeddingPipeline, BM25Index};
 use crate::parser;
 use crate::parser::chunker;
-use crate::persistence::{ChunkRecord, EdgeTypeRecord, IndexingState, IndexingStatus, Store};
+use crate::persistence::Store;
 use crate::vector_index::VectorIndex;
 
 /// Detailed indexing status response for client queries and monitoring.
@@ -92,6 +95,47 @@ pub struct DeltaScanResult {
 }
 
 impl Engine {
+    /// Assemble an `Engine` from already-constructed adapters.
+    ///
+    /// This is the injecting seam of the ports-and-adapters refactor (Approach B):
+    /// the caller (composition root) constructs the concrete adapters and hands
+    /// them in here. Per Approach B, this builder injects **concrete** adapters
+    /// (`Store`, `BM25Index`, `KnowledgeGraph`, `Option<VectorIndex>`) — not
+    /// generic port parameters — and `Engine` remains a single concrete type. No
+    /// generics are introduced. Construction is not yet relocated to the
+    /// composition root (that is a later task); for now `Engine::open` builds the
+    /// pieces and delegates its final assembly to this constructor.
+    ///
+    /// This is pure assembly: it performs no I/O, no staleness reconciliation, and
+    /// no edge-type persistence. The embedder is left lazily uninitialized
+    /// (`None`) and created on first use via `ensure_embedder()`, so it is not a
+    /// parameter here.
+    ///
+    /// - `config`: Corpus configuration.
+    /// - `index_dir`: Path to the `.index/` directory (already created by the caller).
+    /// - `store`: Opened SQLite metadata store.
+    /// - `bm25`: Opened Tantivy BM25 index.
+    /// - `graph`: Loaded or fresh knowledge graph.
+    /// - `vector_index`: Loaded or fresh vector index, or `None` in Fast Mode.
+    pub fn from_parts(
+        config: CorpusConfig,
+        index_dir: PathBuf,
+        store: Store,
+        bm25: BM25Index,
+        graph: KnowledgeGraph,
+        vector_index: Option<VectorIndex>,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            bm25,
+            graph,
+            vector_index,
+            embedder: RwLock::new(None), // Lazily initialized
+            index_dir,
+        }
+    }
+
     /// Create or open an engine for a corpus.
     ///
     /// - `config`: Corpus configuration (includes path, chunking settings, graph edge types).
@@ -99,117 +143,13 @@ impl Engine {
     ///
     /// Initializes SQLite store, Tantivy BM25 index, knowledge graph, and vector index (if in Full mode).
     /// The embedder is initialized lazily on first use via `ensure_embedder()`.
+    ///
+    /// This is a thin compatibility entry point that delegates to
+    /// [`crate::engine_builder::EngineBuilder::open`], which owns the adapter
+    /// construction. The construction sequence lives in exactly one place there;
+    /// this method retains no inline construction.
     pub fn open(config: CorpusConfig, index_dir: &Path) -> Result<Self> {
-        // 1. Create index directory if needed.
-        fs::create_dir_all(index_dir)?;
-
-        // 2. Open SQLite store.
-        let db_path = index_dir.join("meta.db");
-        let store = Store::open(&db_path)?;
-
-        // 3. Open BM25 index.
-        let tantivy_path = index_dir.join("tantivy");
-        let bm25 = BM25Index::open(&tantivy_path)?;
-
-        // 4. Load or create knowledge graph.
-        let graph_path = index_dir.join("graph.bin");
-        let graph = if graph_path.exists() {
-            KnowledgeGraph::load(&graph_path).unwrap_or_else(|e| {
-                warn!("Failed to load graph from disk, starting fresh: {}", e);
-                KnowledgeGraph::new()
-            })
-        } else {
-            KnowledgeGraph::new()
-        };
-
-        // 5. Load or create vector index (skipped entirely in Fast Mode).
-        let vector_index = match config.index_mode {
-            ctxvault_common::config::IndexMode::Fast => {
-                info!(corpus = %config.name, "Fast Mode enabled: skipping vector index allocation and ONNX embedder initialization");
-                None
-            }
-            ctxvault_common::config::IndexMode::Full => {
-                let configured_model_name =
-                    crate::embedding::ModelName::from_str_name(&config.embedding.model)
-                        .unwrap_or_default();
-                let configured_dimensions = configured_model_name.dimensions();
-                let configured_model_version = configured_model_name.version_string();
-
-                let vector_path = index_dir.join("vectors.json");
-                let mut vi = if vector_path.exists() {
-                    VectorIndex::load(&vector_path).unwrap_or_else(|e| {
-                        warn!("Failed to load vector index from disk, starting fresh: {}", e);
-                        VectorIndex::new_default(configured_dimensions)
-                    })
-                } else {
-                    VectorIndex::new_default(configured_dimensions)
-                };
-
-                // Check model version staleness and dimension match.
-                if vi.dimensions() != configured_dimensions {
-                    warn!(
-                        "Vector index dimension mismatch: stored={}, configured={}. Recreating index with {} dimensions and marking stale.",
-                        vi.dimensions(),
-                        configured_dimensions,
-                        configured_dimensions
-                    );
-                    vi = VectorIndex::new_default(configured_dimensions);
-                    vi.set_model_version(&configured_model_version);
-                    vi.mark_stale();
-                } else if let Some(stored_version) = vi.model_version() {
-                    let is_compatible = stored_version == configured_model_version
-                        || (stored_version.starts_with("jina-embeddings-v2-base-code")
-                            && configured_model_version
-                                .starts_with("jina-embeddings-v2-base-code"));
-                    if !is_compatible {
-                        warn!(
-                            "Embedding model version mismatch: stored='{}', configured='{}'. Vectors marked as stale.",
-                            stored_version, configured_model_version
-                        );
-                        vi.mark_stale();
-                    } else {
-                        vi.clear_stale();
-                    }
-                } else if !vi.is_empty() {
-                    warn!(
-                        "Vector index has no model_version metadata. Marking as stale for safety."
-                    );
-                    vi.mark_stale();
-                } else {
-                    vi.set_model_version(&configured_model_version);
-                }
-
-                Some(vi)
-            }
-        };
-
-        // 6. Register edge type configs in the persistence store.
-        let edge_type_records: Vec<EdgeTypeRecord> = config
-            .graph
-            .edge_types
-            .iter()
-            .map(|et| EdgeTypeRecord {
-                name: et.name.clone(),
-                source: format!("{:?}", et.source).to_lowercase(),
-                weight: et.weight,
-                bidirectional: et.bidirectional,
-                field: et.field.clone(),
-                config: None,
-            })
-            .collect();
-        if !edge_type_records.is_empty() {
-            store.insert_edge_types(&edge_type_records)?;
-        }
-
-        Ok(Self {
-            config,
-            store,
-            bm25,
-            graph,
-            vector_index,
-            embedder: RwLock::new(None), // Lazily initialized
-            index_dir: index_dir.to_path_buf(),
-        })
+        crate::engine_builder::EngineBuilder::open(config, index_dir)
     }
 
     /// Ensure the embedder is initialized. Returns Ok(true) if available, Ok(false) if skipped.
@@ -437,7 +377,7 @@ impl Engine {
             return Ok(());
         }
 
-        let embedder = match self.embedder_ref() {
+        let embedder = match self.embedder_arc() {
             Some(emb) => emb,
             None => return Ok(()),
         };
@@ -554,7 +494,7 @@ impl Engine {
         let mut modified_files = Vec::new();
         let mut seen_on_disk = HashMap::new();
         let mut uncommitted_count = 0usize;
-        let embedding_pipeline = self.embedder_ref().map(AsyncEmbeddingPipeline::new);
+        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
 
         for (rel_path, full_path) in &disk_files {
             let content = fs::read_to_string(full_path).map_err(|e| {
@@ -726,7 +666,7 @@ impl Engine {
         self.store.update_indexing_state(&state)?;
 
         let mut all_docs: Vec<Document> = Vec::new();
-        let embedding_pipeline = self.embedder_ref().map(AsyncEmbeddingPipeline::new);
+        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
         let mut processed_in_current_batch = 0usize;
 
         let mut newly_indexed_count = 0usize;
@@ -850,14 +790,26 @@ impl Engine {
         Ok(())
     }
 
-    /// Get a reference to the BM25 index for searching.
-    pub fn bm25(&self) -> &BM25Index {
-        &self.bm25
-    }
-
-    /// Get a reference to the vector index for semantic search (None if in Fast Mode).
-    pub fn vector_index(&self) -> Option<&VectorIndex> {
-        self.vector_index.as_ref()
+    /// Build a [`CoreSearchService`](crate::search_service::CoreSearchService)
+    /// over this engine's resolved retrieval backends.
+    ///
+    /// The service borrows the engine's BM25 index, optional vector index, and
+    /// knowledge graph, and holds an owned `Arc` clone of the current embedder
+    /// (if initialized). Consumers dispatch search modes through the
+    /// [`SearchService`](ctxvault_common::ports::SearchService) port without
+    /// naming any concrete backend type.
+    ///
+    /// Callers that need semantic search must still call
+    /// [`Engine::ensure_embedder`] first (guarded by
+    /// [`Engine::has_vector_index`]); this builder does not initialize it.
+    pub fn search_service(&self) -> crate::search_service::CoreSearchService<'_> {
+        crate::search_service::CoreSearchService::new(
+            &self.bm25,
+            self.vector_index.as_ref(),
+            &self.graph,
+            self.embedder_arc(),
+            self.code_paths_set(),
+        )
     }
 
     /// Check whether the engine is running in Fast Mode.
@@ -865,9 +817,24 @@ impl Engine {
         self.config.index_mode == ctxvault_common::config::IndexMode::Fast
     }
 
-    /// Get an Arc reference to the embedder (if initialized).
-    pub fn embedder_ref(&self) -> Option<Arc<Embedder>> {
+    /// Whether a vector index is present (absent in Fast Mode).
+    pub fn has_vector_index(&self) -> bool {
+        self.vector_index.is_some()
+    }
+
+    /// Whether the embedder has been initialized for this engine.
+    pub fn embedder_active(&self) -> bool {
+        self.embedder.read().unwrap().is_some()
+    }
+
+    /// Internal: current embedder handle (an `Arc` clone) if initialized.
+    fn embedder_arc(&self) -> Option<Arc<Embedder>> {
         self.embedder.read().unwrap().clone()
+    }
+
+    /// Number of vectors currently in the vector index (0 in Fast Mode).
+    pub fn vector_count(&self) -> usize {
+        self.vector_index.as_ref().map(|vi| vi.len()).unwrap_or(0)
     }
 
     /// Get current indexing progress and throughput statistics.
@@ -936,13 +903,13 @@ impl Engine {
         }
     }
 
-    /// Get a reference to the graph for traversal/queries.
-    pub fn graph(&self) -> &KnowledgeGraph {
+    /// Get a port-typed reference to the graph for traversal/queries.
+    pub fn graph(&self) -> &impl GraphStore {
         &self.graph
     }
 
-    /// Get a mutable reference to the graph for manipulation.
-    pub fn graph_mut(&mut self) -> &mut KnowledgeGraph {
+    /// Get a port-typed mutable reference to the graph for manipulation.
+    pub fn graph_mut(&mut self) -> &mut impl GraphStore {
         &mut self.graph
     }
 
@@ -966,8 +933,8 @@ impl Engine {
         set
     }
 
-    /// Get a reference to the store for metadata queries.
-    pub fn store(&self) -> &Store {
+    /// Get a port-typed reference to the metadata catalog for queries.
+    pub fn store(&self) -> &impl MetadataCatalog {
         &self.store
     }
 
@@ -996,9 +963,80 @@ impl Engine {
         self.vector_index.as_ref().and_then(|vi| vi.model_version())
     }
 
-    /// Get a mutable reference to the vector index.
-    pub fn vector_index_mut(&mut self) -> Option<&mut VectorIndex> {
-        self.vector_index.as_mut()
+    /// Analyze graph density, identifying hubs and orphans.
+    ///
+    /// Runs [`crate::analytics::analyze_density`] over this engine's graph,
+    /// returning the top `top_hubs` most-connected nodes in the report.
+    pub fn analyze_density(&self, top_hubs: usize) -> crate::analytics::DensityReport {
+        crate::analytics::analyze_density(&self.graph, top_hubs)
+    }
+
+    /// Find queries where BM25 and vector search disagree.
+    ///
+    /// Embeds each query with this engine's embedder, then compares the BM25 and
+    /// vector top-`top_k` results per query via
+    /// [`crate::analytics::find_semantic_gaps`]. Returns an error in Fast Mode
+    /// (no vector index). If the embedder is unavailable or any query fails to
+    /// embed, returns `Ok(None)` so the caller can emit the "embedder not
+    /// available" response; otherwise returns `Ok(Some(gaps))`.
+    pub fn find_semantic_gaps(
+        &self,
+        queries: &[&str],
+        top_k: usize,
+    ) -> Result<Option<Vec<crate::analytics::SemanticGap>>> {
+        let vector_index = match self.vector_index.as_ref() {
+            Some(vi) => vi,
+            None => {
+                return Err(Error::Index(
+                    "Semantic gap analysis is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+                ));
+            }
+        };
+
+        // Embed each query (requires embedder).
+        let query_embeddings: Vec<Vec<f32>> = if let Some(embedder) = self.embedder_arc() {
+            queries.iter().filter_map(|q| embedder.embed_query(q).ok()).collect()
+        } else {
+            Vec::new()
+        };
+
+        // If not every query embedded, signal the "embedder unavailable" path.
+        if query_embeddings.len() != queries.len() {
+            return Ok(None);
+        }
+
+        let gaps = crate::analytics::find_semantic_gaps(
+            &self.bm25,
+            vector_index,
+            queries,
+            &query_embeddings,
+            top_k,
+        )?;
+        Ok(Some(gaps))
+    }
+
+    /// Suggest chunks that may benefit from splitting.
+    ///
+    /// Runs [`crate::analytics::suggest_splits`] over this engine's catalog.
+    pub fn suggest_splits(
+        &self,
+        max_chunk_chars: usize,
+    ) -> Result<Vec<crate::analytics::SplitSuggestion>> {
+        crate::analytics::suggest_splits(&self.store, max_chunk_chars)
+    }
+
+    /// Generate a coverage report over the given test queries.
+    ///
+    /// Resolves all known note paths from this engine's catalog, then runs
+    /// [`crate::analytics::coverage_report`] against its BM25 index.
+    pub fn coverage_report(
+        &self,
+        queries: &[&str],
+        top_k: usize,
+    ) -> Result<crate::analytics::CoverageReport> {
+        let files = self.store.list_files()?;
+        let all_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        crate::analytics::coverage_report(&self.bm25, queries, &all_paths, top_k)
     }
 
     /// Re-embed all chunks with the current model, replacing old vectors.
@@ -1025,7 +1063,7 @@ impl Engine {
         if !available {
             return Err(Error::Index("embedder not available — cannot re-embed".to_string()));
         }
-        let embedder = self.embedder_ref().unwrap();
+        let embedder = self.embedder_arc().unwrap();
 
         // 2. Get all files and their chunks from the store.
         let files = self.store.list_files()?;
@@ -1254,12 +1292,12 @@ mod tests {
         let index_dir = tmp.path().join("index");
         let mut engine = Engine::open(config, &index_dir).unwrap();
         assert!(engine.is_fast_mode());
-        assert!(engine.vector_index().is_none());
+        assert!(!engine.has_vector_index());
         assert_eq!(engine.ensure_embedder().unwrap(), false);
 
         let files = engine.full_reindex_paginated(10, false).unwrap();
         assert_eq!(files, 1);
-        assert!(engine.vector_index().is_none());
+        assert!(!engine.has_vector_index());
         assert_eq!(engine.store().list_files().unwrap().len(), 1);
     }
 
@@ -1295,7 +1333,7 @@ mod tests {
         engine.commit().unwrap();
 
         // Verify searchable via BM25.
-        let results = engine.bm25().search("systems programming", 10).unwrap();
+        let results = engine.bm25.search("systems programming", 10).unwrap();
         assert!(!results.is_empty(), "Should find indexed file via search");
         assert_eq!(results[0].path, "rust.md");
 
@@ -1328,9 +1366,9 @@ mod tests {
 
         // Verify gone from all stores.
         assert!(engine.store().get_file("remove_me.md").unwrap().is_none());
-        let results = engine.bm25().search("removed", 10).unwrap();
+        let results = engine.bm25.search("removed", 10).unwrap();
         assert!(results.iter().all(|r| r.path != "remove_me.md"), "File should be gone from BM25");
-        assert!(engine.graph().get_node("remove_me.md").is_none());
+        assert!(!engine.graph().contains_node("remove_me.md"));
     }
 
     #[test]
@@ -1369,7 +1407,7 @@ mod tests {
         assert_eq!(result.deleted_files, vec!["will_delete.md"]);
 
         // Verify the new file is searchable.
-        let search = engine.bm25().search("brand new", 10).unwrap();
+        let search = engine.bm25.search("brand new", 10).unwrap();
         assert!(search.iter().any(|r| r.path == "new_file.md"));
 
         // Verify deleted file is gone.
@@ -1407,7 +1445,7 @@ mod tests {
         );
 
         // Verify search works.
-        let results = engine.bm25().search("Second note", 10).unwrap();
+        let results = engine.bm25.search("Second note", 10).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].path, "beta.md");
     }
@@ -1653,15 +1691,15 @@ class DataIngest:
         assert_eq!(count, 4, "Should index 1 markdown file + 3 polyglot code files");
 
         // Verify BM25 search across modalities
-        let adr_hits = engine.bm25().search("Reciprocal Rank Fusion", 5).unwrap();
+        let adr_hits = engine.bm25.search("Reciprocal Rank Fusion", 5).unwrap();
         assert!(!adr_hits.is_empty());
         assert_eq!(adr_hits[0].path, "docs/adr/0001-hybrid-search.md");
 
-        let rust_hits = engine.bm25().search("search_hybrid modalities", 5).unwrap();
+        let rust_hits = engine.bm25.search("search_hybrid modalities", 5).unwrap();
         assert!(!rust_hits.is_empty());
         assert_eq!(rust_hits[0].path, "src/search.rs");
 
-        let ts_hits = engine.bm25().search("UserProfile getUser", 5).unwrap();
+        let ts_hits = engine.bm25.search("UserProfile getUser", 5).unwrap();
         assert!(!ts_hits.is_empty());
         assert_eq!(ts_hits[0].path, "src/user.ts");
 

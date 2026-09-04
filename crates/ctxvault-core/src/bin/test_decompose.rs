@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use ctxvault_common::config::CorpusConfig;
+use ctxvault_common::ports::{SearchQuery, SearchService};
 use ctxvault_core::engine::Engine;
 use ctxvault_core::search;
 
@@ -42,30 +43,25 @@ fn main() {
     let query = "How do embeddings connect RAG to knowledge graphs?";
     eprintln!("Query: {query}");
 
-    // Get query embedding.
-    let query_embedding = engine.embedder_ref().and_then(|e| e.embed_query(query).ok());
-    eprintln!("Got embedding: {}", query_embedding.is_some());
-
     // Test decompose_query directly.
     let concepts = search::decompose_query(query);
     eprintln!("Decomposed into {} concepts: {:?}", concepts.len(), concepts);
 
-    // Now call search_multihop.
-    eprintln!("Calling search_multihop...");
-    let code_paths = engine.code_paths_set();
-    match search::search_multihop(
-        engine.bm25(),
-        engine.vector_index().expect("vector index"),
-        engine.graph(),
-        engine.embedder_ref().as_deref(),
-        query,
-        query_embedding.as_deref(),
-        10,
-        2,
-        None,
-        ctxvault_common::types::Modality::Both,
-        &code_paths,
-    ) {
+    // Now dispatch a multi-hop hybrid search through the engine's search service.
+    eprintln!("Calling multi-hop hybrid search...");
+    let service = engine.search_service();
+    let sq = SearchQuery {
+        query: query.to_string(),
+        mode: Some("hybrid".to_string()),
+        limit: Some(10),
+        modality: ctxvault_common::types::Modality::Both,
+        depth: ctxvault_common::types::SearchDepth::default(),
+        graph_depth: Some(2),
+        edge_types: None,
+        edge_class: None,
+        decompose: Some(true),
+    };
+    match service.search(&sq) {
         Ok(results) => {
             eprintln!("SUCCESS: {} results", results.len());
             for (i, r) in results.iter().enumerate() {
