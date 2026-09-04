@@ -88,7 +88,42 @@ foreach ($f in $Files) {
     Write-Host "[+] $($f.Rel) ok (sha256 verified)."
 }
 
+# Attribution NOTICE for the redistributed weights (Apache-2.0).
+$Notice = @'
+# Bundled Embedding Model — Attribution & License
+
+This directory contains a third-party pre-trained model redistributed unmodified.
+
+- Model: jina-embeddings-v2-base-code
+- Upstream: https://huggingface.co/jinaai/jina-embeddings-v2-base-code
+- Pinned revision: 516f4baf13dec4ddddda8631e019b5737c8bc250
+- License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+- Copyright (c) Jina AI GmbH.
+
+Bundled files (INT8 dynamic quantization, mirrored verbatim from upstream):
+  jina-embeddings-v2-base-code/onnx/model_quantized.onnx
+  jina-embeddings-v2-base-code/tokenizer.json
+
+Integrity: see SHA256SUMS.txt in this directory. The ONNX hash matches Hugging
+Face's own LFS content hash at the pinned revision.
+'@
+Set-Content -Path (Join-Path $ModelsDir "NOTICE.md") -Value $Notice -NoNewline
+
+# Re-verifiable checksums for the sidecar, in `sha256sum -c` compatible format
+# (lowercase hash, two spaces, forward-slash relative path).
+$sumsPath = Join-Path $ModelsDir "SHA256SUMS.txt"
+$modelsFull = (Resolve-Path $ModelsDir).Path.TrimEnd('\', '/')
+$lines = Get-ChildItem -Path $DestDir -Recurse -File |
+    Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+    ForEach-Object {
+        $rel = $_.FullName.Substring($modelsFull.Length).TrimStart('\', '/') -replace '\\', '/'
+        $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLower()
+        "$hash  $rel"
+    } | Sort-Object
+Set-Content -Path $sumsPath -Value ($lines -join "`n")
+
 $resolved = (Resolve-Path $ModelsDir).Path
 Write-Host ""
 Write-Host "[+] Model ready at: $DestDir (mirrors the Hugging Face repo layout)"
+Write-Host "[+] Wrote NOTICE.md and SHA256SUMS.txt in $ModelsDir"
 Write-Host "    Point ctxvault at it with:  `$env:CTX_MODELS_DIR = `"$resolved`""

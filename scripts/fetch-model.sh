@@ -112,6 +112,39 @@ for entry in "${FILES[@]}"; do
   download $entry
 done
 
+# Attribution NOTICE for the redistributed weights (Apache-2.0). Shipped in the
+# release archive next to the model so downstream users get the license grant.
+cat > "${MODELS_DIR}/NOTICE.md" <<'NOTICE'
+# Bundled Embedding Model — Attribution & License
+
+This directory contains a third-party pre-trained model redistributed unmodified.
+
+- Model: jina-embeddings-v2-base-code
+- Upstream: https://huggingface.co/jinaai/jina-embeddings-v2-base-code
+- Pinned revision: 516f4baf13dec4ddddda8631e019b5737c8bc250
+- License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+- Copyright (c) Jina AI GmbH.
+
+Bundled files (INT8 dynamic quantization, mirrored verbatim from upstream):
+  jina-embeddings-v2-base-code/onnx/model_quantized.onnx
+  jina-embeddings-v2-base-code/tokenizer.json
+
+Integrity: see SHA256SUMS.txt in this directory. The ONNX hash matches Hugging
+Face's own LFS content hash at the pinned revision.
+NOTICE
+
+# Re-verifiable checksums for the sidecar. `sha256sum -c SHA256SUMS.txt` (run from
+# this directory) lets any user independently confirm the shipped model.
+(
+  cd "$MODELS_DIR"
+  if command -v sha256sum >/dev/null 2>&1; then
+    find "$MODEL_DIR_NAME" -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+  else
+    find "$MODEL_DIR_NAME" -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS.txt
+  fi
+)
+
 echo ""
 echo "[+] Model ready at: ${DEST_DIR} (mirrors the Hugging Face repo layout)"
+echo "[+] Wrote ${MODELS_DIR}/NOTICE.md and ${MODELS_DIR}/SHA256SUMS.txt"
 echo "    Point ctxvault at it with:  export CTX_MODELS_DIR=\"$(cd "$MODELS_DIR" && pwd)\""

@@ -30,10 +30,10 @@ Every transitive crate in the dependency graph adheres to one or more of the fol
 - **License**: MIT / Apache-2.0
 - **Copyright**: (c) 2016-2024 Paul Masurel and Tantivy Contributors
 
-### 2.2 FastEmbed-rs & ONNX Runtime (`ort`)
-- **Role**: Local transformer embedding inference (`BAAI/bge-small-en-v1.5`)
-- **License**: Apache-2.0
-- **Copyright**: (c) 2023-2024 Anush Shettigar, FastEmbed Contributors
+### 2.2 ONNX Runtime (`ort`) & Tokenizers
+- **Role**: Local transformer embedding inference runtime + HuggingFace BPE tokenizer
+- **License**: Apache-2.0 / MIT
+- **Copyright**: (c) ONNX Runtime Contributors; (c) HuggingFace `tokenizers` Contributors
 
 ### 2.3 Petgraph
 - **Role**: Graph data structure and BFS graph traversal
@@ -57,7 +57,34 @@ Every transitive crate in the dependency graph adheres to one or more of the fol
 
 ---
 
-## 3. Automated Continuous Verification
+## 3. Redistributed Model Weights (Bundled in Release Artifacts)
+
+Release archives bundle a pre-trained embedding model as a sidecar next to the
+binary (`<binary-dir>/models/jina-embeddings-v2-base-code/`). These weights are a
+third-party work redistributed unmodified under their upstream license.
+
+### 3.1 jina-embeddings-v2-base-code
+- **Role**: Local ONNX embedding model for semantic/vector retrieval (768-dim).
+- **Upstream**: [`jinaai/jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code)
+  (Hugging Face), pinned revision `516f4baf13dec4ddddda8631e019b5737c8bc250`.
+- **License**: **Apache License 2.0** (declared in the model card metadata).
+- **Copyright**: (c) Jina AI GmbH.
+- **Bundled files** (mirrored verbatim from the upstream repo, INT8 dynamic quantization):
+  - `onnx/model_quantized.onnx` — SHA256 `ed45870251c9f0cf656e78aab0d37a23489066df8a222bb1c8caf8a45f2cb16d`
+  - `tokenizer.json` — SHA256 `b01c78a902aa4facb2f47f95449f48e2f7bbfea5d2472ee2f6ce92323c6f86e5`
+- **Integrity**: pinned SHA256 verified at fetch time (`scripts/fetch-model.sh` /
+  `.ps1`); the ONNX hash matches Hugging Face's own LFS content hash at the pinned
+  revision. Each release archive also ships a `models/SHA256SUMS.txt` so the sidecar
+  can be re-verified independently.
+- **Attribution NOTICE**: a `models/NOTICE.md` carrying this attribution + the
+  Apache-2.0 grant is generated alongside the weights and shipped in the archive.
+
+The Apache-2.0 license text applicable to these weights is the same as that already
+included for Apache-2.0 dependencies above; see <https://www.apache.org/licenses/LICENSE-2.0>.
+
+---
+
+## 4. Automated Continuous Verification
 
 This repository automatically audits every commit and pull request using:
 1. **`cargo-deny check`**: Prevents unauthorized licenses, wildcards, unmaintained crates, and non-crates.io sources.
