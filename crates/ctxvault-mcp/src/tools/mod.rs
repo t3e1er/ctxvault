@@ -50,6 +50,84 @@ impl ToolInfo {
     }
 }
 
+/// Tool exposure profile: gates which tools `tools/list` advertises to keep the
+/// listing footprint small for narrow agent roles.
+///
+/// The sets are nested: `Scout` ⊂ `Analysis` ⊂ `All`. Profiles only gate what the
+/// listing advertises — a tool called directly still executes regardless of profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProfile {
+    /// Minimal retrieve/navigate set for lightweight scout agents.
+    Scout,
+    /// Scout plus read-only graph/validation/analysis/code-intel tools.
+    Analysis,
+    /// Every registered tool, including mutating/admin tools.
+    All,
+}
+
+/// Tools exposed under the `scout` profile (minimal retrieve/navigate set).
+const SCOUT_TOOLS: [&str; 8] = [
+    "search",
+    "search_related",
+    "get_snippet",
+    "read_note",
+    "read_code_file",
+    "list_notes",
+    "get_frontmatter",
+    "status",
+];
+
+/// Read-only tools added by the `analysis` profile on top of `scout`.
+const ANALYSIS_ONLY_TOOLS: [&str; 20] = [
+    "backlinks",
+    "forwardlinks",
+    "graph_path",
+    "graph_stats",
+    "graph_subgraph",
+    "graph_communities",
+    "list_edge_types",
+    "traverse_lineage",
+    "get_symbol_definition",
+    "find_callers",
+    "get_architecture",
+    "validate_note",
+    "validate_corpus",
+    "list_templates",
+    "validate_taxonomy",
+    "analyze_density",
+    "find_semantic_gaps",
+    "suggest_splits",
+    "coverage_report",
+    "corpus_list",
+];
+
+impl ToolProfile {
+    /// Parse a profile from its lowercase name, defaulting to [`ToolProfile::All`]
+    /// for unknown values.
+    pub fn from_str_name(name: &str) -> Self {
+        match name {
+            "scout" => ToolProfile::Scout,
+            "analysis" => ToolProfile::Analysis,
+            _ => ToolProfile::All,
+        }
+    }
+
+    /// Whether `tools/list` under this profile should advertise `tool_name`.
+    ///
+    /// `All` admits every registered tool (so newly added tools appear without a
+    /// list edit). `Analysis` admits the scout set plus the read-only analysis
+    /// additions. `Scout` admits only the scout set.
+    pub fn includes(&self, tool_name: &str) -> bool {
+        match self {
+            ToolProfile::All => true,
+            ToolProfile::Analysis => {
+                SCOUT_TOOLS.contains(&tool_name) || ANALYSIS_ONLY_TOOLS.contains(&tool_name)
+            }
+            ToolProfile::Scout => SCOUT_TOOLS.contains(&tool_name),
+        }
+    }
+}
+
 /// Registry of all available MCP tools.
 pub struct ToolRegistry {
     tools: HashMap<String, ToolInfo>,
@@ -100,8 +178,7 @@ impl ToolRegistry {
 
     /// Read tools that are corpus-scoped or manager-level and therefore must NOT
     /// accept the fan-out `corpus`/`corpora` discrimination args.
-    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 3] =
-        ["get_status", "get_corpus_stats", "corpus_list"];
+    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 2] = ["status", "corpus_list"];
 
     /// Inject the optional `corpus` and `corpora` discrimination properties into
     /// the JSON input schema of every read tool that supports fan-out.
@@ -223,75 +300,25 @@ impl ToolRegistry {
 
         // Search tools
         self.register_read(
-            "search_bm25",
-            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Full-text BM25 keyword search across all indexed notes and code.",
+            "search",
+            "Tier 1 retrieval: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. One search tool with a `mode` param: bm25 (exact identifiers/tokens), semantic (dense vector, natural-language intent), hybrid (default; BM25 + vector + graph RRF fusion), graph (typed graph traversal from query matches), explain (hybrid with a per-result BM25/vector/graph score breakdown).",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
+                    "mode": { "type": "string", "enum": ["bm25", "semantic", "hybrid", "graph", "explain"], "description": "Retrieval mode (default: hybrid). bm25 = keyword; semantic = dense vector; hybrid = 3-way RRF fusion; graph = typed traversal; explain = hybrid + score breakdown." },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
+                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Semantic mode only: retrieval depth — precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
+                    "graph_depth": { "type": "number", "description": "hybrid/graph/explain modes: max graph traversal depth (default 2 for hybrid/explain, 3 for graph)" },
+                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "hybrid/graph/explain modes: filter graph traversal by edge types" },
+                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "hybrid/graph/explain modes: filter graph traversal by edge class (default: semantic for hybrid/explain, structural for graph)" },
+                    "decompose": { "type": "boolean", "description": "hybrid mode only: enable query decomposition for multi-hop queries (default: false)" },
                     "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
                     "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
-            handle_search_bm25,
-        );
-
-        self.register_read(
-            "search_semantic",
-            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Natural language search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Retrieval depth: precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
-                },
-                "required": ["query"]
-            }),
-            handle_search_semantic,
-        );
-
-        self.register_read(
-            "search_hybrid",
-            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. BM25 + vector + graph-boosted hybrid search combining keyword relevance with graph proximity.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "graph_depth": { "type": "number", "description": "Max graph traversal depth for boosting (default 2)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph boost traversal by edge class (default: semantic)" },
-                    "decompose": { "type": "boolean", "description": "Enable query decomposition for multi-hop queries (default: false)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
-                },
-                "required": ["query"]
-            }),
-            handle_search_hybrid,
-        );
-
-        self.register_read(
-            "search_graph",
-            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Typed graph traversal search: finds nodes reachable from query matches via graph edges.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query to find seed nodes" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "max_depth": { "type": "number", "description": "Maximum traversal depth (default 3)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class (default: structural)" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
-                },
-                "required": ["query"]
-            }),
-            handle_search_graph,
+            handle_search,
         );
 
         self.register_read(
@@ -308,25 +335,6 @@ impl ToolRegistry {
                 "required": ["seeds"]
             }),
             handle_search_related,
-        );
-
-        self.register_read(
-            "search_explain",
-            "Tier 1: returns handles (paths/qualified names + line ranges) plus scoring breakdown, not bodies; fetch source with get_snippet, read whole files only as a last resort. Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "graph_depth": { "type": "number", "description": "Max graph traversal depth (default 2)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph traversal by edge class" },
-                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
-                },
-                "required": ["query"]
-            }),
-            handle_search_explain,
         );
 
         // Graph tools
@@ -681,36 +689,17 @@ impl ToolRegistry {
         );
 
         self.register_read(
-            "get_status",
-            "Get corpus statistics, indexing status, document counts, and configuration.",
+            "status",
+            "Corpus + indexing status in one tool via `scope`: corpus = per-corpus statistics, document counts, and configuration; indexing = current indexing progress, throughput, and estimated time remaining; all (default) = both combined. When no specific corpus is targeted the multi-corpus overview (all configured corpora) is included.",
             serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; all (default) = both combined." },
+                    "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." }
+                },
                 "required": []
             }),
-            handle_get_status_single,
-        );
-
-        self.register_read(
-            "get_corpus_stats",
-            "Get corpus statistics, indexing status, document counts, and configuration (alias for get_status).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            handle_get_status_single,
-        );
-
-        self.register_read(
-            "get_indexing_status",
-            "Get current indexing progress, throughput statistics, and estimated time remaining.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            handle_get_indexing_status,
+            handle_status,
         );
 
         // Code Intelligence & Architecture Tools
@@ -843,6 +832,7 @@ use ctxvault_core::corpus_manager::CorpusManager;
 ///   not a legacy code path.
 pub struct MultiCorpusToolRegistry {
     registry: ToolRegistry,
+    profile: ToolProfile,
 }
 
 /// The resolved fan-out target for a read tool call.
@@ -854,12 +844,26 @@ enum CorpusTarget {
 }
 
 impl MultiCorpusToolRegistry {
-    /// Create a new multi-corpus registry with all tools registered.
+    /// Create a new multi-corpus registry with all tools registered and the
+    /// [`ToolProfile::All`] exposure profile.
     pub fn new() -> Self {
+        Self::with_profile(ToolProfile::All)
+    }
+
+    /// Create a new multi-corpus registry exposing tools under `profile`.
+    ///
+    /// The profile only gates what [`Self::list`] advertises; every registered
+    /// tool remains executable regardless of profile.
+    pub fn with_profile(profile: ToolProfile) -> Self {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        Self { registry }
+        Self { registry, profile }
+    }
+
+    /// The active tool exposure profile.
+    pub fn profile(&self) -> ToolProfile {
+        self.profile
     }
 
     /// Check if a tool is read-only.
@@ -867,16 +871,22 @@ impl MultiCorpusToolRegistry {
         self.registry.is_read_only(name)
     }
 
-    /// List all registered tools (for MCP `tools/list`).
+    /// List the tools advertised under the active profile (for MCP `tools/list`).
     pub fn list(&self) -> Vec<&ToolInfo> {
+        self.registry.list().into_iter().filter(|t| self.profile.includes(&t.name)).collect()
+    }
+
+    /// List every registered tool regardless of profile (for internal use).
+    pub fn list_all(&self) -> Vec<&ToolInfo> {
         self.registry.list()
     }
 
     /// Execute a read-only tool call, routing to one corpus or fanning out across
     /// several with RRF-merged, corpus-tagged results.
     pub fn execute_read(&self, name: &str, manager: &CorpusManager, args: Value) -> Result<Value> {
-        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
-        if name == "get_status" || name == "get_corpus_stats" {
+        // `status` without an explicit `corpus` returns the manager-level overview
+        // (all corpora). With a `corpus` it routes to that engine's status below.
+        if name == "status" && !has_corpus_arg(&args) {
             return handle_get_status(manager);
         }
 
@@ -968,8 +978,8 @@ impl MultiCorpusToolRegistry {
         manager: &mut CorpusManager,
         args: Value,
     ) -> Result<Value> {
-        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
-        if name == "get_status" || name == "get_corpus_stats" {
+        // `status` without an explicit `corpus` returns the manager-level overview.
+        if name == "status" && !has_corpus_arg(&args) {
             return handle_get_status(manager);
         }
 
@@ -998,6 +1008,11 @@ impl Default for MultiCorpusToolRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Whether the tool arguments explicitly target a single `corpus` by name.
+fn has_corpus_arg(args: &Value) -> bool {
+    args.get("corpus").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
 }
 
 /// Extract the optional single `corpus` field from tool arguments, returning
@@ -1190,41 +1205,16 @@ struct ReadCodeFileParams {
 }
 
 #[derive(Deserialize)]
-struct SearchBm25Params {
+struct SearchParams {
     query: String,
-    limit: Option<usize>,
-    modality: Option<String>,
-    detail: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct SearchSemanticParams {
-    query: String,
+    #[serde(default)]
+    mode: Option<String>,
     limit: Option<usize>,
     depth: Option<String>,
-    modality: Option<String>,
-    detail: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct SearchHybridParams {
-    query: String,
-    limit: Option<usize>,
     graph_depth: Option<usize>,
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
     decompose: Option<bool>,
-    modality: Option<String>,
-    detail: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct SearchGraphParams {
-    query: String,
-    limit: Option<usize>,
-    max_depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
     modality: Option<String>,
     detail: Option<String>,
 }
@@ -1238,14 +1228,8 @@ struct SearchRelatedParams {
 }
 
 #[derive(Deserialize)]
-struct SearchExplainParams {
-    query: String,
-    limit: Option<usize>,
-    graph_depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
-    modality: Option<String>,
-    detail: Option<String>,
+struct StatusParams {
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1762,119 +1746,182 @@ fn apply_detail(
     results
 }
 
-fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchBm25Params = serde_json::from_value(args)
+/// Consolidated search tool: dispatches to a retrieval mode selected by `mode`
+/// (default `hybrid`). Modes: `bm25`, `semantic`, `hybrid`, `graph`, `explain`.
+///
+/// Every mode honors `modality` (docs|code|both) and `detail` (ids|default) via
+/// [`apply_detail`]. `explain` returns the score-breakdown shape
+/// ([`search::search_explain`]) rather than a plain result array.
+fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
+    let params: SearchParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
+    let mode = params.mode.as_deref().unwrap_or("hybrid");
     let limit = params.limit.unwrap_or(10);
     let modality = params
         .modality
         .as_deref()
         .and_then(ctxvault_common::types::Modality::from_str_name)
         .unwrap_or_default();
-    let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
-    search::enrich_results_with_lineage(&mut results, engine.graph());
-    let results = apply_detail(results, params.detail.as_deref());
 
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Semantic vector search using embedding similarity.
-fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
-    if engine.is_fast_mode() || engine.vector_index().is_none() {
-        return Err(Error::Index(
-            "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
-        ));
-    }
-
-    let params: SearchSemanticParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let depth = params
-        .depth
-        .as_deref()
-        .and_then(ctxvault_common::types::SearchDepth::from_str_name)
-        .unwrap_or_default();
-    let modality = params
-        .modality
-        .as_deref()
-        .and_then(ctxvault_common::types::Modality::from_str_name)
-        .unwrap_or_default();
-
-    // Ensure the embedder is initialized.
-    let _ = engine.ensure_embedder()?;
-
-    let embedder = match engine.embedder_ref() {
-        Some(e) => e,
-        None => {
-            return Err(Error::Index(
-                "embedder not available — cannot perform semantic search".to_string(),
-            ));
+    match mode {
+        "bm25" => {
+            let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
+            search::enrich_results_with_lineage(&mut results, engine.graph());
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
         }
-    };
+        "semantic" => {
+            if engine.is_fast_mode() || engine.vector_index().is_none() {
+                return Err(Error::Index(
+                    "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+                ));
+            }
+            let depth = params
+                .depth
+                .as_deref()
+                .and_then(ctxvault_common::types::SearchDepth::from_str_name)
+                .unwrap_or_default();
 
-    let vector_index = engine.vector_index().unwrap();
+            // Ensure the embedder is initialized.
+            let _ = engine.ensure_embedder()?;
+            let embedder = match engine.embedder_ref() {
+                Some(e) => e,
+                None => {
+                    return Err(Error::Index(
+                        "embedder not available — cannot perform semantic search".to_string(),
+                    ));
+                }
+            };
+            let vector_index = engine.vector_index().unwrap();
 
-    let mut results = search::search_semantic_dual(
-        vector_index,
-        &embedder,
-        &params.query,
-        limit,
-        depth,
-        modality,
-    )?;
-    search::enrich_results_with_lineage(&mut results, engine.graph());
-    let results = apply_detail(results, params.detail.as_deref());
-
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// BM25 + vector + graph hybrid search (true 3-signal fusion via RRF).
-fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchHybridParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let graph_depth = params.graph_depth.unwrap_or(2);
-    let edge_type_filter = params.edge_types;
-    let modality = params
-        .modality
-        .as_deref()
-        .and_then(ctxvault_common::types::Modality::from_str_name)
-        .unwrap_or_default();
-    let code_paths = engine.code_paths_set();
-
-    // Default to Semantic class filter for hybrid search graph boost.
-    let edge_class_filter = match params.edge_class.as_deref() {
-        Some(s) => EdgeClass::from_str_name(s),
-        None => Some(EdgeClass::Semantic),
-    };
-
-    // Try to get a query embedding for full 3-signal hybrid.
-    // If embedder is not available, fall back to BM25+graph only.
-    let embedder_opt = engine.embedder_ref();
-    let query_embedding =
-        embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
-
-    let results_raw = if let Some(vector_index) = engine.vector_index() {
-        if params.decompose == Some(true) {
-            // Multi-hop query decomposition mode.
-            search::search_multihop(
-                engine.bm25(),
+            let mut results = search::search_semantic_dual(
                 vector_index,
-                engine.graph(),
-                embedder_opt.as_deref(),
+                &embedder,
                 &params.query,
-                query_embedding.as_deref(),
                 limit,
-                graph_depth,
+                depth,
+                modality,
+            )?;
+            search::enrich_results_with_lineage(&mut results, engine.graph());
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "hybrid" => {
+            let graph_depth = params.graph_depth.unwrap_or(2);
+            let edge_type_filter = params.edge_types;
+            let code_paths = engine.code_paths_set();
+
+            // Default to Semantic class filter for hybrid search graph boost.
+            let edge_class_filter = match params.edge_class.as_deref() {
+                Some(s) => EdgeClass::from_str_name(s),
+                None => Some(EdgeClass::Semantic),
+            };
+
+            // Try to get a query embedding for full 3-signal hybrid.
+            // If the embedder is unavailable, fall back to BM25+graph only.
+            let embedder_opt = engine.embedder_ref();
+            let query_embedding =
+                embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
+
+            let results_raw = if let Some(vector_index) = engine.vector_index() {
+                if params.decompose == Some(true) {
+                    // Multi-hop query decomposition mode.
+                    search::search_multihop(
+                        engine.bm25(),
+                        vector_index,
+                        engine.graph(),
+                        embedder_opt.as_deref(),
+                        &params.query,
+                        query_embedding.as_deref(),
+                        limit,
+                        graph_depth,
+                        edge_type_filter.as_deref(),
+                        modality,
+                        &code_paths,
+                    )?
+                } else {
+                    search::search_hybrid_full(
+                        engine.bm25(),
+                        vector_index,
+                        engine.graph(),
+                        &params.query,
+                        query_embedding.as_deref(),
+                        limit,
+                        graph_depth,
+                        edge_type_filter.as_deref(),
+                        edge_class_filter,
+                        modality,
+                        &code_paths,
+                    )?
+                }
+            } else {
+                // Fast Mode fallback: BM25 + Graph.
+                search::search_hybrid(
+                    engine.bm25(),
+                    engine.graph(),
+                    &params.query,
+                    limit,
+                    graph_depth,
+                    edge_type_filter.as_deref(),
+                    edge_class_filter,
+                    modality,
+                    &code_paths,
+                )?
+            };
+
+            let results = apply_detail(results_raw, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "graph" => {
+            let max_depth = params.graph_depth.unwrap_or(3);
+            let edge_type_filter = params.edge_types;
+            let code_paths = engine.code_paths_set();
+
+            // Default to Structural class filter for graph traversal search.
+            let edge_class_filter = match params.edge_class.as_deref() {
+                Some(s) => EdgeClass::from_str_name(s),
+                None => Some(EdgeClass::Structural),
+            };
+
+            let results = search::search_graph(
+                engine.bm25(),
+                engine.graph(),
+                &params.query,
+                limit,
+                max_depth,
                 edge_type_filter.as_deref(),
+                edge_class_filter,
                 modality,
                 &code_paths,
-            )?
-        } else {
-            search::search_hybrid_full(
+            )?;
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "explain" => {
+            let graph_depth = params.graph_depth.unwrap_or(2);
+            let edge_type_filter = params.edge_types;
+            let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
+            let code_paths = engine.code_paths_set();
+
+            // Try to get a query embedding for full 3-signal explanation.
+            let query_embedding =
+                engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
+
+            let dummy_vi;
+            let vector_index = match engine.vector_index() {
+                Some(vi) => vi,
+                None => {
+                    dummy_vi = ctxvault_core::vector_index::VectorIndex::new_default(384);
+                    &dummy_vi
+                }
+            };
+
+            let mut explanations = search::search_explain(
                 engine.bm25(),
                 vector_index,
                 engine.graph(),
@@ -1886,62 +1933,23 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
                 edge_class_filter,
                 modality,
                 &code_paths,
-            )?
+            )?;
+
+            // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
+            if params.detail.as_deref() == Some("ids") {
+                for e in &mut explanations {
+                    e.snippet = None;
+                }
+            }
+
+            serde_json::to_value(explanations)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
         }
-    } else {
-        // Fast Mode fallback: BM25 + Graph
-        search::search_hybrid(
-            engine.bm25(),
-            engine.graph(),
-            &params.query,
-            limit,
-            graph_depth,
-            edge_type_filter.as_deref(),
-            edge_class_filter,
-            modality,
-            &code_paths,
-        )?
-    };
-
-    let results = apply_detail(results_raw, params.detail.as_deref());
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Typed graph traversal search.
-fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchGraphParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let max_depth = params.max_depth.unwrap_or(3);
-    let edge_type_filter = params.edge_types;
-    let modality = params
-        .modality
-        .as_deref()
-        .and_then(ctxvault_common::types::Modality::from_str_name)
-        .unwrap_or_default();
-    let code_paths = engine.code_paths_set();
-
-    // Default to Structural class filter for graph traversal search.
-    let edge_class_filter = match params.edge_class.as_deref() {
-        Some(s) => EdgeClass::from_str_name(s),
-        None => Some(EdgeClass::Structural),
-    };
-
-    let results = search::search_graph(
-        engine.bm25(),
-        engine.graph(),
-        &params.query,
-        limit,
-        max_depth,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-        modality,
-        &code_paths,
-    )?;
-    let results = apply_detail(results, params.detail.as_deref());
-
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        other => Err(Error::Config(format!(
+            "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain",
+            other
+        ))),
+    }
 }
 
 /// Find related documents via PPR approximation.
@@ -1969,59 +1977,6 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
     let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Full scoring breakdown — returns detailed per-result explanation.
-fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchExplainParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let graph_depth = params.graph_depth.unwrap_or(2);
-    let edge_type_filter = params.edge_types;
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-    let modality = params
-        .modality
-        .as_deref()
-        .and_then(ctxvault_common::types::Modality::from_str_name)
-        .unwrap_or_default();
-    let code_paths = engine.code_paths_set();
-
-    // Try to get a query embedding for full 3-signal explanation.
-    let query_embedding =
-        engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
-
-    let dummy_vi;
-    let vector_index = match engine.vector_index() {
-        Some(vi) => vi,
-        None => {
-            dummy_vi = ctxvault_core::vector_index::VectorIndex::new_default(384);
-            &dummy_vi
-        }
-    };
-
-    let mut explanations = search::search_explain(
-        engine.bm25(),
-        vector_index,
-        engine.graph(),
-        &params.query,
-        query_embedding.as_deref(),
-        limit,
-        graph_depth,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-        modality,
-        &code_paths,
-    )?;
-
-    // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
-    if params.detail.as_deref() == Some("ids") {
-        for e in &mut explanations {
-            e.snippet = None;
-        }
-    }
-
-    serde_json::to_value(explanations).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// All notes linking TO a note, grouped by edge type.
@@ -2210,8 +2165,8 @@ fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     }))
 }
 
-/// Single-corpus status handler.
-fn handle_get_status_single(engine: &Engine, _args: Value) -> Result<Value> {
+/// Per-corpus statistics (document counts, mode, chunking, embedding model).
+fn corpus_stats(engine: &Engine) -> Result<Value> {
     let files = engine.store().list_files()?;
     let is_indexed = engine.is_indexed();
     Ok(serde_json::json!({
@@ -2226,10 +2181,30 @@ fn handle_get_status_single(engine: &Engine, _args: Value) -> Result<Value> {
     }))
 }
 
-/// Get detailed indexing status and progress throughput.
-fn handle_get_indexing_status(engine: &Engine, _args: Value) -> Result<Value> {
-    let status = engine.get_indexing_status()?;
-    serde_json::to_value(status).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+/// Consolidated status tool (engine-level): combines per-corpus statistics and
+/// indexing progress, selected by `scope` (`corpus` | `indexing` | `all`,
+/// default `all`).
+fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
+    let params: StatusParams = serde_json::from_value(args).unwrap_or(StatusParams { scope: None });
+    let scope = params.scope.as_deref().unwrap_or("all");
+
+    match scope {
+        "corpus" => corpus_stats(engine),
+        "indexing" => {
+            let status = engine.get_indexing_status()?;
+            serde_json::to_value(status)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        _ => {
+            let corpus = corpus_stats(engine)?;
+            let indexing = serde_json::to_value(engine.get_indexing_status()?)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
+            Ok(serde_json::json!({
+                "corpus": corpus,
+                "indexing": indexing,
+            }))
+        }
+    }
 }
 
 /// Graph density analysis.
@@ -3243,7 +3218,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 43, "Expected 43 tools registered");
+        assert_eq!(tools.len(), 37, "Expected 37 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -3252,12 +3227,8 @@ mod tests {
             "read_code_file",
             "list_notes",
             "get_frontmatter",
-            "search_bm25",
-            "search_semantic",
-            "search_hybrid",
-            "search_graph",
+            "search",
             "search_related",
-            "search_explain",
             "backlinks",
             "forwardlinks",
             "graph_path",
@@ -3283,23 +3254,37 @@ mod tests {
             "reembed_corpus",
             "sync_corpus",
             "reindex_corpus",
-            "get_status",
-            "get_corpus_stats",
-            "get_indexing_status",
+            "status",
             "get_symbol_definition",
             "find_callers",
             "get_architecture",
             "detect_changes",
         ];
 
+        assert_eq!(expected.len(), 37, "expected-name list must match the 37-tool count");
+
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
         }
 
+        // The consolidated tools replace the old per-mode / per-status tools.
+        for gone in [
+            "search_bm25",
+            "search_semantic",
+            "search_hybrid",
+            "search_graph",
+            "search_explain",
+            "get_status",
+            "get_corpus_stats",
+            "get_indexing_status",
+        ] {
+            assert!(registry.get(gone).is_none(), "Tool '{}' must no longer be registered", gone);
+        }
+
         // Verify read-only classification
         assert!(registry.is_read_only("read_note"));
-        assert!(registry.is_read_only("search_bm25"));
-        assert!(registry.is_read_only("get_indexing_status"));
+        assert!(registry.is_read_only("search"));
+        assert!(registry.is_read_only("status"));
         assert!(registry.is_read_only("get_symbol_definition"));
         assert!(registry.is_read_only("find_callers"));
         assert!(registry.is_read_only("get_architecture"));
@@ -3308,10 +3293,43 @@ mod tests {
         assert!(!registry.is_read_only("detect_changes"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
-        assert!(registry.is_read_only("search_bm25"));
-        assert!(registry.is_read_only("get_indexing_status"));
-        assert!(!registry.is_read_only("create_note"));
-        assert!(!registry.is_read_only("reindex_corpus"));
+    }
+
+    #[test]
+    fn test_tool_profiles_gate_listing() {
+        let all = MultiCorpusToolRegistry::with_profile(ToolProfile::All);
+        let analysis = MultiCorpusToolRegistry::with_profile(ToolProfile::Analysis);
+        let scout = MultiCorpusToolRegistry::with_profile(ToolProfile::Scout);
+
+        let all_count = all.list().len();
+        let analysis_count = analysis.list().len();
+        let scout_count = scout.list().len();
+
+        // scout ⊂ analysis ⊂ all.
+        assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
+        assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
+        assert_eq!(all_count, 37, "all profile advertises every registered tool");
+        assert_eq!(scout_count, 8, "scout profile advertises the minimal set");
+
+        // scout includes core retrieval/fetch but not writes.
+        let scout_names: HashSet<&str> = scout.list().iter().map(|t| t.name.as_str()).collect();
+        assert!(scout_names.contains("search"));
+        assert!(scout_names.contains("get_snippet"));
+        assert!(scout_names.contains("status"));
+        assert!(!scout_names.contains("create_note"));
+        assert!(!scout_names.contains("backlinks"));
+
+        // Hidden tools still execute (advertise-only filtering): create_note is
+        // registered even though scout does not advertise it.
+        assert!(scout.registry().get("create_note").is_some());
+
+        // analysis adds read-only tools but still hides writes.
+        let analysis_names: HashSet<&str> =
+            analysis.list().iter().map(|t| t.name.as_str()).collect();
+        assert!(analysis_names.contains("backlinks"));
+        assert!(analysis_names.contains("corpus_list"));
+        assert!(!analysis_names.contains("create_note"));
+        assert!(!analysis_names.contains("reindex_corpus"));
     }
 
     #[test]
@@ -3366,9 +3384,9 @@ mod tests {
 
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut engine,
-                serde_json::json!({ "query": "systems programming" }),
+                serde_json::json!({ "query": "systems programming", "mode": "bm25" }),
             )
             .unwrap();
 
@@ -3407,7 +3425,11 @@ mod tests {
 
         // Verify indexed (searchable).
         let search_result = registry
-            .execute("search_bm25", &mut engine, serde_json::json!({ "query": "new note" }))
+            .execute(
+                "search",
+                &mut engine,
+                serde_json::json!({ "query": "new note", "mode": "bm25" }),
+            )
             .unwrap();
         let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
         assert!(!hits.is_empty());
@@ -3579,7 +3601,11 @@ mod tests {
 
         // Should not be found in search.
         let search_result = registry
-            .execute("search_bm25", &mut engine, serde_json::json!({ "query": "Going away" }))
+            .execute(
+                "search",
+                &mut engine,
+                serde_json::json!({ "query": "Going away", "mode": "bm25" }),
+            )
             .unwrap();
         let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
         assert!(hits.is_empty() || hits.iter().all(|h| h["path"] != "delete-me.md"));
@@ -3674,21 +3700,20 @@ mod tests {
     // ─── Multi-Corpus Routing Tests ────────────────────────────────────
 
     #[test]
-    fn test_multi_corpus_registry_has_get_status() {
+    fn test_multi_corpus_registry_has_status() {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 43 tools.
-        assert_eq!(tools.len(), 43, "Expected 43 tools in multi-corpus registry");
-        assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
+        // Should have 37 tools.
+        assert_eq!(tools.len(), 37, "Expected 37 tools in multi-corpus registry");
         assert!(
-            registry.registry().get("get_corpus_stats").is_some(),
-            "get_corpus_stats should be registered"
+            registry.registry().get("status").is_some(),
+            "consolidated status tool should be registered"
         );
-        assert!(
-            registry.registry().get("get_indexing_status").is_some(),
-            "get_indexing_status should be registered"
-        );
+        // The old status tools/aliases are gone.
+        assert!(registry.registry().get("get_status").is_none());
+        assert!(registry.registry().get("get_corpus_stats").is_none());
+        assert!(registry.registry().get("get_indexing_status").is_none());
     }
 
     #[test]
@@ -3723,7 +3748,11 @@ mod tests {
 
         // Search without corpus param — should use default (wiki).
         let result = registry
-            .execute("search_bm25", &mut manager, serde_json::json!({ "query": "wiki content" }))
+            .execute(
+                "search",
+                &mut manager,
+                serde_json::json!({ "query": "wiki content", "mode": "bm25" }),
+            )
             .unwrap();
 
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -3786,9 +3815,9 @@ mod tests {
         // Search in wiki corpus explicitly.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "programming", "corpus": "wiki" }),
+                serde_json::json!({ "query": "programming", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -3798,9 +3827,9 @@ mod tests {
         // Search in docs corpus explicitly.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "documentation", "corpus": "docs" }),
+                serde_json::json!({ "query": "documentation", "mode": "bm25", "corpus": "docs" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -3810,9 +3839,9 @@ mod tests {
         // Verify isolation: searching wiki for python returns nothing.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "python documentation", "corpus": "wiki" }),
+                serde_json::json!({ "query": "python documentation", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -3866,9 +3895,9 @@ mod tests {
         // Fan out across both corpora with corpora = "all".
         let result = registry
             .execute_read(
-                "search_bm25",
+                "search",
                 &manager,
-                serde_json::json!({ "query": "shared", "corpora": "all" }),
+                serde_json::json!({ "query": "shared", "mode": "bm25", "corpora": "all" }),
             )
             .unwrap();
 
@@ -3885,9 +3914,9 @@ mod tests {
         // Single-corpus read via corpus="wiki" also tags its hit.
         let single = registry
             .execute_read(
-                "search_bm25",
+                "search",
                 &manager,
-                serde_json::json!({ "query": "shared", "corpus": "wiki" }),
+                serde_json::json!({ "query": "shared", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
         let single_results: Vec<ctxvault_common::types::SearchResult> =
@@ -3917,7 +3946,7 @@ mod tests {
 
         let registry = MultiCorpusToolRegistry::new();
 
-        let result = registry.execute("get_status", &mut manager, serde_json::json!({})).unwrap();
+        let result = registry.execute("status", &mut manager, serde_json::json!({})).unwrap();
 
         assert_eq!(result["corpus_count"], 1);
         assert_eq!(result["default_corpus"], "wiki");
@@ -3949,9 +3978,9 @@ mod tests {
 
         // Non-existent corpus should error.
         let result = registry.execute(
-            "search_bm25",
+            "search",
             &mut manager,
-            serde_json::json!({ "query": "test", "corpus": "nonexistent" }),
+            serde_json::json!({ "query": "test", "mode": "bm25", "corpus": "nonexistent" }),
         );
         assert!(result.is_err());
     }
@@ -4230,9 +4259,9 @@ pub fn tokenize(input: &str) -> Vec<String> {
         // 1. Semantic search must fail with the exact fast mode error message
         let sem_err = registry
             .execute_read(
-                "search_semantic",
+                "search",
                 &engine,
-                serde_json::json!({ "query": "architecture guide" }),
+                serde_json::json!({ "query": "architecture guide", "mode": "semantic" }),
             )
             .unwrap_err();
         assert!(
@@ -4244,7 +4273,11 @@ pub fn tokenize(input: &str) -> Vec<String> {
 
         // 2. Hybrid search must cleanly fall back to BM25+Graph
         let hyb_res = registry
-            .execute_read("search_hybrid", &engine, serde_json::json!({ "query": "architecture" }))
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "architecture", "mode": "hybrid" }),
+            )
             .unwrap();
         let hyb_array = hyb_res.as_array().unwrap();
         assert_eq!(hyb_array.len(), 1);
@@ -4306,9 +4339,9 @@ pub fn normalize(input: &str) -> Vec<String> {
         // Tier 1: a search with detail="ids" returns handles with snippet == None.
         let ids_res = registry
             .execute_read(
-                "search_bm25",
+                "search",
                 &engine,
-                serde_json::json!({ "query": "retrieval ranking", "detail": "ids" }),
+                serde_json::json!({ "query": "retrieval ranking", "mode": "bm25", "detail": "ids" }),
             )
             .unwrap();
         let ids_results: Vec<ctxvault_common::types::SearchResult> =
@@ -4322,9 +4355,9 @@ pub fn normalize(input: &str) -> Vec<String> {
         // Default detail keeps a short snippet.
         let default_res = registry
             .execute_read(
-                "search_bm25",
+                "search",
                 &engine,
-                serde_json::json!({ "query": "retrieval ranking" }),
+                serde_json::json!({ "query": "retrieval ranking", "mode": "bm25" }),
             )
             .unwrap();
         let default_results: Vec<ctxvault_common::types::SearchResult> =

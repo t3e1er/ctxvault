@@ -28,6 +28,13 @@ struct Cli {
     #[arg(long, default_value = "local")]
     mode: Mode,
 
+    /// Tool exposure profile controlling which tools `tools/list` advertises:
+    /// scout (minimal retrieve/navigate), analysis (+ read-only graph/analysis/code
+    /// intel), or all (every tool, including writes). Hidden tools still execute if
+    /// called directly.
+    #[arg(long, default_value = "all")]
+    profile: Profile,
+
     /// Bind address for server mode.
     #[arg(long, default_value = "127.0.0.1:9090")]
     bind: String,
@@ -72,6 +79,26 @@ struct Cli {
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Profile {
+    /// Minimal retrieve/navigate tool set.
+    Scout,
+    /// Scout plus read-only graph/validation/analysis/code-intel tools.
+    Analysis,
+    /// Every registered tool, including mutating/admin tools.
+    All,
+}
+
+impl From<Profile> for ctxvault_mcp::tools::ToolProfile {
+    fn from(p: Profile) -> Self {
+        match p {
+            Profile::Scout => ctxvault_mcp::tools::ToolProfile::Scout,
+            Profile::Analysis => ctxvault_mcp::tools::ToolProfile::Analysis,
+            Profile::All => ctxvault_mcp::tools::ToolProfile::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -225,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let registry = MultiCorpusToolRegistry::new();
+    let registry = MultiCorpusToolRegistry::with_profile(cli.profile.into());
 
     match cli.mode {
         Mode::Local => {

@@ -134,7 +134,7 @@ Verify: just clippy && just check ; targeted test for handle->fetch->full flow o
 Commit: feat(phase5): tiered progressive disclosure for code and docs
 
 ================================================================================
-[ ] PHASE 6 — Tool consolidation + profiles (Goal 5a, footprint)
+[x] PHASE 6 — Tool consolidation + profiles (Goal 5a, footprint)
 --------------------------------------------------------------------------------
 Goal: Shrink the tools/list token footprint while preserving capability.
 Scope:
