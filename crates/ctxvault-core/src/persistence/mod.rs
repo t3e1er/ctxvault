@@ -687,6 +687,46 @@ impl Store {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
     }
 
+    /// Find code symbols whose fully qualified `scope_path` matches exactly.
+    ///
+    /// Unlike [`Store::find_symbols_by_name`] (which does a fuzzy `LIKE`), this
+    /// performs an exact `scope_path = ?1` lookup so that cross-corpus resolution
+    /// can detect ambiguity by counting exact matches.
+    pub fn find_symbols_by_qualified_name(
+        &self,
+        scope_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE scope_path = ?1 ORDER BY file_path, start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![scope_path], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
     /// Retrieve all code symbols in the entire store.
     pub fn get_all_code_symbols(&self) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
         let conn = self.conn();

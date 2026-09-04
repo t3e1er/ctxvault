@@ -72,7 +72,7 @@ Verify: just clippy && just check ; targeted unit test for fan-out RRF merge + c
 Commit: feat(phase2): corpus discrimination args + cross-corpus fan-out RRF
 
 ================================================================================
-[ ] PHASE 3 — Cross-modal + cross-corpus edge/symbol linking (Goal 2b)
+[x] PHASE 3 — Cross-modal + cross-corpus edge/symbol linking (Goal 2b)
 --------------------------------------------------------------------------------
 Goal: Preserve doc<->code edges within a corpus; link symbols across corpora where resolvable.
 Scope:

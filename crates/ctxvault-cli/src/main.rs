@@ -211,6 +211,20 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Cross-corpus symbol linking: only meaningful with more than one corpus.
+    // Runs after startup indexing so freshly indexed symbols are resolvable, and
+    // for corpora not indexed this run, their persisted SQLite symbols still are.
+    if manager.corpus_count() > 1 {
+        match manager.link_cross_corpus_symbols() {
+            Ok(count) => {
+                tracing::info!(cross_corpus_edges = count, "cross-corpus symbol linking complete");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cross-corpus symbol linking failed");
+            }
+        }
+    }
+
     let registry = MultiCorpusToolRegistry::new();
 
     match cli.mode {

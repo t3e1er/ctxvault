@@ -228,6 +228,30 @@ impl Chunk {
     }
 }
 
+/// Confidence band for a resolved cross-corpus symbol link.
+///
+/// Resolution across independent corpora is inherently ambiguous, so each
+/// cross-corpus edge carries a provenance band describing how it was resolved:
+///
+/// - [`ResolutionConfidence::High`] — exactly one exact `scope_path` match across
+///   all corpora (unambiguous).
+/// - [`ResolutionConfidence::Medium`] — unique only after a tie-break heuristic
+///   (e.g. matching language).
+/// - [`ResolutionConfidence::Speculative`] — a weaker, best-effort match.
+///
+/// This phase only ever emits `High` edges; `Medium`/`Speculative` exist for the
+/// confidence-band API and are populated by later resolution phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResolutionConfidence {
+    /// Exactly one exact `scope_path` match across all corpora.
+    High,
+    /// Unique only after a tie-break heuristic (e.g. same language).
+    Medium,
+    /// A weaker, best-effort match.
+    Speculative,
+}
+
 /// A typed, weighted, directed edge in the knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
@@ -241,6 +265,17 @@ pub struct Edge {
     pub weight: f32,
     /// How this edge was created.
     pub provenance: EdgeProvenance,
+    /// Name of the corpus the target lives in, for cross-corpus links.
+    ///
+    /// `None` for intra-corpus edges; `Some(corpus)` when the target symbol was
+    /// resolved in a different corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_corpus: Option<String>,
+    /// Confidence band for a resolved cross-corpus link.
+    ///
+    /// `None` for intra-corpus edges; `Some(_)` for cross-corpus links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<ResolutionConfidence>,
 }
 
 /// How an edge came into existence.

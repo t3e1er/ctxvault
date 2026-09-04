@@ -49,6 +49,8 @@ impl CodeGraphExtractor {
                 edge_type: "defines".to_string(),
                 weight: 1.0,
                 provenance: EdgeProvenance::CodeDefines,
+                target_corpus: None,
+                confidence: None,
             });
         }
 
@@ -194,6 +196,8 @@ impl<'a> CallAndImportVisitor<'a> {
                             edge_type: "imports".to_string(),
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
+                            target_corpus: None,
+                            confidence: None,
                         });
                     }
                 }
@@ -211,6 +215,8 @@ impl<'a> CallAndImportVisitor<'a> {
                             edge_type: "imports".to_string(),
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
+                            target_corpus: None,
+                            confidence: None,
                         });
                     }
                 }
@@ -224,6 +230,8 @@ impl<'a> CallAndImportVisitor<'a> {
                         edge_type: "imports".to_string(),
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
+                        target_corpus: None,
+                        confidence: None,
                     });
                 }
             }
@@ -236,6 +244,8 @@ impl<'a> CallAndImportVisitor<'a> {
                         edge_type: "imports".to_string(),
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
+                        target_corpus: None,
+                        confidence: None,
                     });
                 }
             }
@@ -274,6 +284,8 @@ impl<'a> CallAndImportVisitor<'a> {
                     edge_type: "calls".to_string(),
                     weight: 0.8,
                     provenance: EdgeProvenance::CodeCalls,
+                    target_corpus: None,
+                    confidence: None,
                 });
             }
         }
@@ -342,6 +354,8 @@ impl<'a> CallAndImportVisitor<'a> {
                         edge_type: "implements_trait".to_string(),
                         weight: 0.9,
                         provenance: EdgeProvenance::CodeImplementsTrait,
+                        target_corpus: None,
+                        confidence: None,
                     });
                 }
             }

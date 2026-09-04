@@ -11,7 +11,7 @@ use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 
 use ctxvault_common::config::{EdgeClass, EdgeDirection, EdgeSource, EdgeTypeConfig};
-use ctxvault_common::types::{Document, EdgeProvenance};
+use ctxvault_common::types::{Document, EdgeProvenance, ResolutionConfidence};
 use ctxvault_common::{Error, Result};
 
 /// Node data stored in the graph.
@@ -34,6 +34,14 @@ pub struct GraphEdge {
     pub provenance: EdgeProvenance,
     /// Edge class for filtering purposes.
     pub class: EdgeClass,
+    /// Name of the corpus the target lives in, for cross-corpus links.
+    ///
+    /// `None` for intra-corpus edges; `Some(corpus)` when the target symbol was
+    /// resolved in a different corpus. Always serialized (graph.bin uses the
+    /// non-self-describing bincode format, so fields must be present on load).
+    pub target_corpus: Option<String>,
+    /// Confidence band for a resolved cross-corpus link (`None` for intra-corpus).
+    pub confidence: Option<ResolutionConfidence>,
 }
 
 /// Graph statistics.
@@ -100,7 +108,7 @@ impl KnowledgeGraph {
         Ok(())
     }
 
-    /// Add a directed edge between two nodes. Creates target node if missing.
+    /// Add a directed intra-corpus edge between two nodes. Creates target node if missing.
     pub fn add_edge(
         &mut self,
         source: &str,
@@ -109,6 +117,27 @@ impl KnowledgeGraph {
         weight: f32,
         provenance: EdgeProvenance,
         class: EdgeClass,
+    ) {
+        self.add_edge_full(source, target, edge_type, weight, provenance, class, None, None);
+    }
+
+    /// Add a directed edge carrying optional cross-corpus resolution metadata.
+    ///
+    /// `target_corpus`/`confidence` are `None` for ordinary intra-corpus edges and
+    /// `Some(_)` for edges resolved to a symbol defined in another corpus. Parallel
+    /// edges of the same `edge_type` between the same nodes are de-duplicated
+    /// (the existing edge is updated in place), keeping this operation idempotent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_edge_full(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
     ) {
         let src_idx = self.add_node(source, None);
         let tgt_idx = self.add_node(target, None);
@@ -124,11 +153,20 @@ impl KnowledgeGraph {
                 edge_mut.weight = weight;
                 edge_mut.provenance = provenance;
                 edge_mut.class = class;
+                edge_mut.target_corpus = target_corpus;
+                edge_mut.confidence = confidence;
             }
             return;
         }
 
-        let edge = GraphEdge { edge_type: edge_type.to_string(), weight, provenance, class };
+        let edge = GraphEdge {
+            edge_type: edge_type.to_string(),
+            weight,
+            provenance,
+            class,
+            target_corpus,
+            confidence,
+        };
         let _ = self.graph.add_edge(src_idx, tgt_idx, edge);
     }
 
@@ -170,6 +208,39 @@ impl KnowledgeGraph {
         self.node_map.get(path).copied()
     }
 
+    /// Whether a node with the given path exists in the graph.
+    pub fn contains_node(&self, path: &str) -> bool {
+        self.node_map.contains_key(path)
+    }
+
+    /// Enumerate a node's outgoing frontmatter-provenance edges as
+    /// `(edge_type, raw_target)` pairs.
+    ///
+    /// Used by the cross-corpus resolver to discover doc→code link candidates:
+    /// the raw target string is the verbatim frontmatter value (e.g. a code
+    /// symbol `scope_path`) that may or may not resolve within this corpus.
+    pub fn outgoing_frontmatter_targets(&self, path: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let Some(&idx) = self.node_map.get(path) else {
+            return out;
+        };
+        for edge in self.graph.edges_directed(idx, Direction::Outgoing) {
+            let edge_data = edge.weight();
+            if edge_data.provenance != EdgeProvenance::Frontmatter {
+                continue;
+            }
+            if let Some(target_node) = self.graph.node_weight(edge.target()) {
+                out.push((edge_data.edge_type.clone(), target_node.path.clone()));
+            }
+        }
+        out
+    }
+
+    /// Enumerate all node paths currently in the graph.
+    pub fn node_paths(&self) -> Vec<String> {
+        self.node_map.keys().cloned().collect()
+    }
+
     /// Number of nodes.
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
@@ -196,6 +267,8 @@ impl KnowledgeGraph {
                     edge_type: weight_data.edge_type.clone(),
                     weight: weight_data.weight,
                     provenance: weight_data.provenance.clone(),
+                    target_corpus: weight_data.target_corpus.clone(),
+                    confidence: weight_data.confidence,
                 });
             }
         }
