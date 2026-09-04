@@ -96,13 +96,13 @@ PHASE 3: TIER-2 `get_snippet` ERGONOMICS & CONTEXT ENRICHMENT
 Goal: Improve symbol retrieval UX so agents receive surrounding context hints
 (e.g., file header breadcrumbs or candidate suggestions on near-misses).
 
-[ ] Task 3.1: Candidate suggestions on symbol lookup failure
+[x] Task 3.1: Candidate suggestions on symbol lookup failure
     - When `fetch_code_symbol` fails to find any match for `qualified_name`,
       query by leaf name (`name = leaf`) across the catalog.
     - If matches exist under different scope paths, return an informative
       candidate list rather than an opaque `no code symbol matches` error.
 
-[ ] Task 3.2: Scope breadcrumbs and context enrichment in `get_snippet`
+[x] Task 3.2: Scope breadcrumbs and context enrichment in `get_snippet`
     - Ensure `get_snippet` response for code symbols includes:
       - `scope_path`: fully qualified container path.
       - `signature`: parsed method/function signature.
@@ -111,7 +111,7 @@ Goal: Improve symbol retrieval UX so agents receive surrounding context hints
     - Ensure empty caller/callee arrays in `include_neighbors` are serialized
       cleanly without crashing callers.
 
-[ ] Task 3.3: Verification & Phase 3 Commit
+[x] Task 3.3: Verification & Phase 3 Commit
     - Verify `cargo clippy` and `cargo test`.
     - Git commit: `feat(mcp): enhance get_snippet candidate suggestion and context enrichment`
 

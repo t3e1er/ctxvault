@@ -1504,7 +1504,7 @@ fn cap_lines(lines: &[&str], max_lines: usize) -> (String, bool) {
     }
 }
 
-/// Build a bare handle (no body) for a code symbol: scope_path + file + line range.
+/// Build a bare handle (no body) for a code symbol: scope_path + file + line range + signature/docstring.
 fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
     serde_json::json!({
         "scope_path": sym.scope_path,
@@ -1514,6 +1514,8 @@ fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
         "end_line": sym.end_line,
         "language": sym.language,
         "symbol_type": sym.symbol_type,
+        "signature": sym.signature,
+        "docstring": sym.docstring,
     })
 }
 
@@ -1570,7 +1572,28 @@ fn fetch_code_symbol(
     }
 
     match matches.len() {
-        0 => Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'"))),
+        0 => {
+            let leaf = qualified_name.split(" > ").last().unwrap_or(qualified_name).trim();
+            let leaf_candidates = engine.store().find_symbols_by_name(leaf).unwrap_or_default();
+            let leaf_matches: Vec<_> = leaf_candidates
+                .into_iter()
+                .filter(|s| s.name.eq_ignore_ascii_case(leaf))
+                .collect();
+
+            if !leaf_matches.is_empty() {
+                let candidates: Vec<Value> = leaf_matches.iter().map(code_symbol_handle).collect();
+                Ok(serde_json::json!({
+                    "kind": "candidate_suggestions",
+                    "note": format!(
+                        "No code symbol matches '{qualified_name}', but found {} candidate(s) with leaf name '{leaf}'. Disambiguate with an exact scope_path.",
+                        candidates.len()
+                    ),
+                    "candidates": candidates,
+                }))
+            } else {
+                Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'")))
+            }
+        }
         1 => {
             let sym = &matches[0];
             let full_path = corpus_root.join(&sym.file_path);
@@ -4822,5 +4845,68 @@ impl<'a, T> EarlyBinder<'a, T> {
         assert_eq!(candidates.len(), 2);
         assert!(candidates.iter().any(|c| c["file_path"] == "binder.rs"));
         assert!(candidates.iter().any(|c| c["file_path"] == "binder2.rs"));
+    }
+
+    #[test]
+    fn test_get_snippet_suggestions_and_enrichment() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust_code = r#"
+/// Compute hash of input data.
+pub fn compute_hash(data: &[u8]) -> u64 {
+    42
+}
+"#;
+        fs::write(corpus_dir.join("hash.rs"), rust_code).unwrap();
+        engine.index_file("hash.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Context enrichment: check scope_path, signature, docstring, language, path
+        let res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "compute_hash", "include_neighbors": true }),
+            )
+            .unwrap();
+        assert_eq!(res["kind"], "code_symbol");
+        assert_eq!(res["path"], "hash.rs");
+        assert_eq!(res["scope_path"], "compute_hash");
+        assert_eq!(res["language"], "rust");
+        assert!(res["signature"].as_str().unwrap().contains("pub fn compute_hash"));
+        assert!(res["docstring"].as_str().unwrap().contains("Compute hash of input data."));
+        // Empty neighbors serialized cleanly without crash
+        assert_eq!(res["callers"].as_array().unwrap().len(), 0);
+        assert_eq!(res["callees"].as_array().unwrap().len(), 0);
+
+        // 2. Candidate suggestions on near-miss: query with wrong container "CryptoEngine > compute_hash"
+        let sugg_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "CryptoEngine > compute_hash" }),
+            )
+            .unwrap();
+        assert_eq!(sugg_res["kind"], "candidate_suggestions");
+        let candidates = sugg_res["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["name"], "compute_hash");
+        assert_eq!(candidates[0]["scope_path"], "compute_hash");
+        assert!(candidates[0]["signature"].as_str().unwrap().contains("compute_hash"));
+
+        // 3. Complete miss returns 404
+        let err = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "CryptoEngine > unknown_fn" }),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no code symbol"));
     }
 }
