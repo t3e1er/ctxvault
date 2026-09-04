@@ -199,6 +199,117 @@ pub struct CodeSymbol {
     pub end_line: usize,
 }
 
+/// Status of an indexing operation for a corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexingStatus {
+    /// No indexing job in progress.
+    Idle,
+    /// Actively indexing files in batches.
+    Indexing,
+    /// Indexing is paused.
+    Paused,
+    /// Indexing encountered an error.
+    Error,
+    /// All discovered files successfully indexed.
+    Completed,
+}
+
+impl std::fmt::Display for IndexingStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Indexing => write!(f, "indexing"),
+            Self::Paused => write!(f, "paused"),
+            Self::Error => write!(f, "error"),
+            Self::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl std::str::FromStr for IndexingStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "idle" => Ok(Self::Idle),
+            "indexing" => Ok(Self::Indexing),
+            "paused" => Ok(Self::Paused),
+            "error" => Ok(Self::Error),
+            "completed" => Ok(Self::Completed),
+            _ => Ok(Self::Idle),
+        }
+    }
+}
+
+/// State tracking record for resumable paginated indexing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexingState {
+    /// Corpus identifier/name.
+    pub corpus_id: String,
+    /// Current indexing status.
+    pub status: IndexingStatus,
+    /// Total markdown files discovered in corpus.
+    pub total_files: usize,
+    /// Count of markdown files successfully committed.
+    pub indexed_files: usize,
+    /// Relative path of the last committed file.
+    pub last_processed_path: Option<String>,
+    /// When indexing started (Unix timestamp seconds).
+    pub started_at: i64,
+    /// When state was last updated (Unix timestamp seconds).
+    pub updated_at: i64,
+    /// Error message if status is Error.
+    pub error_message: Option<String>,
+}
+
+/// A tracked file in the index.
+#[derive(Debug, Clone)]
+pub struct FileRecord {
+    /// Relative path within the corpus.
+    pub path: String,
+    /// BLAKE3 content hash.
+    pub content_hash: String,
+    /// File modification time as Unix timestamp (seconds).
+    pub modified_at: i64,
+    /// Template declared in frontmatter.
+    pub template: Option<String>,
+    /// Document title.
+    pub title: Option<String>,
+    /// When this file was last indexed (Unix timestamp seconds).
+    pub indexed_at: i64,
+}
+
+/// A text chunk stored for a file.
+#[derive(Debug, Clone)]
+pub struct ChunkRecord {
+    /// Zero-based index within the parent document.
+    pub chunk_index: usize,
+    /// Byte offset of chunk start in original content.
+    pub start_byte: usize,
+    /// Byte offset of chunk end in original content.
+    pub end_byte: usize,
+    /// The text content of this chunk.
+    pub text: String,
+}
+
+/// A registered edge type configuration persisted to the database.
+#[derive(Debug, Clone)]
+pub struct EdgeTypeRecord {
+    /// Name of the edge type.
+    pub name: String,
+    /// Source kind (e.g. "wikilink", "tag", "frontmatter", "reference").
+    pub source: String,
+    /// Weight for scoring.
+    pub weight: f32,
+    /// Whether edges of this type are created in both directions.
+    pub bidirectional: bool,
+    /// Frontmatter field name (if source is frontmatter).
+    pub field: Option<String>,
+    /// Additional config serialized as JSON.
+    pub config: Option<String>,
+}
+
 /// Policy for whether a chunk should receive a dense vector embedding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkEmbedPolicy {
@@ -519,6 +630,40 @@ impl SearchResult {
     }
 }
 
+/// Metadata about a stored vector, mapping HNSW internal IDs to documents/chunks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorMeta {
+    /// Document path this vector belongs to.
+    pub doc_path: String,
+    /// Chunk index within the document (None for document-level embeddings).
+    pub chunk_index: Option<usize>,
+    /// Whether this is a document-level embedding (vs chunk-level).
+    pub is_doc_level: bool,
+    /// Coarse modality tag ("code" / "docs") for modality-filtered search.
+    #[serde(default = "default_modality")]
+    pub modality: String,
+}
+
+/// Default coarse modality tag ("docs") for round-tripping persisted vectors.
+fn default_modality() -> String {
+    "docs".to_string()
+}
+
+/// A single vector search result.
+#[derive(Debug, Clone)]
+pub struct VectorSearchResult {
+    /// Document path.
+    pub doc_path: String,
+    /// Chunk index (None for document-level).
+    pub chunk_index: Option<usize>,
+    /// Cosine similarity score (0.0 to 1.0, higher = more similar).
+    pub score: f64,
+    /// Whether this came from a document-level embedding.
+    pub is_doc_level: bool,
+    /// Coarse modality tag ("code" / "docs") of the matched vector.
+    pub modality: String,
+}
+
 /// Breakdown of how a search score was computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreBreakdown {
@@ -599,4 +744,102 @@ pub struct GraphExplanation {
     pub rank: usize,
     /// RRF contribution from graph signal.
     pub rrf_contribution: f64,
+}
+
+/// Graph statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphStats {
+    /// Total number of nodes.
+    pub node_count: usize,
+    /// Total number of edges.
+    pub edge_count: usize,
+    /// Nodes with zero edges (neither incoming nor outgoing).
+    pub orphan_count: usize,
+    /// Top 10 nodes by total degree (incoming + outgoing).
+    pub most_connected: Vec<(String, usize)>,
+    /// Count of edges per edge type.
+    pub edge_type_distribution: HashMap<String, usize>,
+}
+
+/// A step or node in a lineage traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LineageNode {
+    /// Document path.
+    pub path: String,
+    /// Document title if known.
+    pub title: Option<String>,
+    /// Hop distance from the start node (0 for start note).
+    pub depth: usize,
+    /// Edge type traversed to reach this note.
+    pub edge_type: String,
+    /// Direction traversed ("start", "outgoing", "incoming").
+    pub direction: String,
+}
+
+/// Broken link detected in taxonomy validation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrokenLink {
+    /// Source document path containing the link.
+    pub source: String,
+    /// Target path or wikilink that could not be resolved.
+    pub target: String,
+    /// Edge type (e.g. "Wikilink", "supersedes", etc.).
+    pub edge_type: String,
+    /// Edge provenance.
+    pub provenance: EdgeProvenance,
+}
+
+/// Circular dependency detected in a directed acyclic relation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CircularDependency {
+    /// The edge type where the cycle exists (e.g. "supersedes").
+    pub edge_type: String,
+    /// The cycle path (e.g. ["A.md", "B.md", "A.md"]).
+    pub cycle: Vec<String>,
+}
+
+/// Orphan ADR detected in taxonomy validation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrphanAdr {
+    /// Path to the orphan ADR note.
+    pub path: String,
+    /// Note title if known.
+    pub title: Option<String>,
+    /// Human-readable explanation.
+    pub reason: String,
+}
+
+/// A detected community of nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Community {
+    /// Community identifier.
+    pub id: usize,
+    /// Paths of nodes in this community.
+    pub members: Vec<String>,
+    /// Modularity contribution of this community to the overall partition.
+    pub modularity_contribution: f64,
+}
+
+/// Result of community detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityDetectionResult {
+    /// Detected communities.
+    pub communities: Vec<Community>,
+    /// Overall modularity of the partition (Q ∈ [-0.5, 1.0]).
+    pub modularity: f64,
+    /// Number of iterations the algorithm ran.
+    pub iterations: usize,
+}
+
+/// Per-community density statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityDensity {
+    /// Community id.
+    pub community_id: usize,
+    /// Number of nodes in the community.
+    pub node_count: usize,
+    /// Number of internal edges (edges within the community, treating as undirected).
+    pub internal_edges: usize,
+    /// Density: internal_edges / max_possible_internal_edges.
+    pub density: f64,
 }

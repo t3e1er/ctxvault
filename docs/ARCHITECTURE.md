@@ -506,6 +506,134 @@ Local process speaks stdio to the agent, forwards JSON-RPC to remote server over
 | CLI | `clap` | Argument parsing |
 | Tracing | `tracing` + `opentelemetry` | Observability |
 
+> These backend crates are consumed **only** through the ports described in the
+> next section. See [Ports & Adapters Architecture](#ports--adapters-architecture)
+> for how they are encapsulated behind traits.
+
+---
+
+## Ports & Adapters Architecture
+
+ctxvault is organized as **ports and adapters** (hexagonal architecture). A
+*port* is a trait expressing a capability the domain needs; an *adapter* is a
+concrete backend that satisfies a port. The domain depends on the ports, never
+on a concrete backend — so a backend type never crosses a port boundary, and the
+upper layers name no concrete backend.
+
+### The six ports (`ctxvault-common::ports`)
+
+All six port traits live **low**, in `ctxvault-common` (`crates/ctxvault-common/src/ports.rs`),
+so consumers depend on the contract rather than on a backend. Every signature
+speaks only `ctxvault-common` domain types (`ctxvault-common::types`) plus the
+standard library — no `rusqlite`, `tantivy`, `hnsw_rs`, `petgraph`, `ort`, or
+`tokenizers` type appears in a port signature.
+
+| Port | Contract |
+|------|----------|
+| `MetadataCatalog` | Durable catalog: files, text chunks, code symbols, edge-type config, key/value corpus config, and resumable indexing state. |
+| `TextIndex` | Full-text BM25 lexical retrieval: add/remove documents, commit/writer lifecycle, and ranked `search` / `search_with_modality`. |
+| `VectorStore` | Dense ANN vector store: single/batch `add`, per-document `remove`, modality-filtered `search`, `save`, plus dimension / model-version / stale / dirty bookkeeping. |
+| `GraphStore` | Typed knowledge graph: node/edge mutation, edge construction from parsed documents, traversal (BFS / shortest path / lineage), backlinks/forwardlinks, taxonomy validation, community detection, stats, and `save`. |
+| `EmbeddingProvider` | Dense embeddings: `embed_query`, `embed_batch`, and `dimensions`. |
+| `SearchService` | Search-mode dispatch (`bm25` \| `semantic` \| `hybrid` \| `graph` \| `explain`) plus `search_related`, fusing signals via RRF over the other ports; inputs arrive as a `SearchQuery`. |
+
+The domain records these ports exchange (`FileRecord`, `ChunkRecord`,
+`EdgeTypeRecord`, `IndexingState`/`IndexingStatus`, `VectorSearchResult`,
+`VectorMeta`, `GraphStats`, `LineageNode`, `BrokenLink`, `CircularDependency`,
+`OrphanAdr`, `Community`, `CommunityDetectionResult`, `CommunityDensity`, …) all
+live in `ctxvault-common::types`, so no adapter type leaks through a return value.
+
+### The adapters (`ctxvault-core`)
+
+Each adapter is a concrete backend implementing one port and keeping its backend
+crate encapsulated inside `ctxvault-core`:
+
+| Adapter | Backend | Implements | Location |
+|---------|---------|------------|----------|
+| `Store` | SQLite (`rusqlite`, bundled) | `MetadataCatalog` | `persistence/mod.rs` |
+| `BM25Index` | Tantivy | `TextIndex` | `index/mod.rs` |
+| `VectorIndex` | HNSW (`hnsw_rs`) | `VectorStore` | `vector_index.rs` |
+| `KnowledgeGraph` | Petgraph | `GraphStore` | `graph/mod.rs` |
+| `Embedder` | ONNX (`ort` + `tokenizers`) | `EmbeddingProvider` | `embedding.rs` |
+| `CoreSearchService` | port-generic `search::` free functions | `SearchService` | `search_service.rs` |
+
+That is five infrastructure adapters plus `CoreSearchService`, which owns no
+backend of its own — it forwards to the port-generic search free functions that
+operate over the other adapters.
+
+### Domain orchestrator: `Engine` (concrete)
+
+`Engine` (`ctxvault-core/src/engine.rs`) is a single **concrete** type — it is
+**not** generic over the ports (this is "Approach B"). It owns the five adapters
+by value (the `Embedder` lazily, behind an `RwLock<Option<Arc<Embedder>>>`), and
+exposes consumers **port-typed** access rather than the concrete backends:
+
+- `graph() -> &impl GraphStore`, `graph_mut() -> &mut impl GraphStore`
+- `store() -> &impl MetadataCatalog`
+- `search_service() -> CoreSearchService` (a `SearchService`)
+- plus narrow domain methods (analytics wrappers such as `analyze_density` /
+  `find_semantic_gaps` / `suggest_splits` / `coverage_report`; and
+  `has_vector_index`, `embedder_active`, `vector_count`, indexing / commit /
+  delta-scan / reembed operations).
+
+There are no concrete-returning accessors — consumers cannot reach a `BM25Index`,
+`VectorIndex`, or `Embedder` directly.
+
+### Construction seam: `EngineBuilder`
+
+`EngineBuilder::open(config, index_dir) -> Result<Engine>`
+(`ctxvault-core/src/engine_builder.rs`) is the single place the concrete adapters
+are constructed and injected. It derives the `.index/` paths
+(`meta.db`, `tantivy/`, `vectors.json`, `graph.bin`), reconciles vector staleness,
+persists edge types, and hands the assembled adapters to `Engine::from_parts`.
+`Engine::open` is a thin delegate to it.
+
+### Multi-corpus router: `CorpusManager`
+
+`CorpusManager` (`ctxvault-core`) holds N `Engine`s keyed by corpus name, building
+each via `EngineBuilder::open`. It routes read/write tool calls to the right
+engine and performs cross-corpus symbol linking through the `MetadataCatalog` and
+`GraphStore` ports.
+
+### Composition root: `ctxvault-cli`
+
+`ctxvault-cli` (`main.rs`) is the entry composition root. It parses flags/config,
+builds the `CorpusManager` (which drives `EngineBuilder` to construct and inject
+the concrete adapters), and selects the transport mode (Local stdio / Server HTTP
+/ Proxy / Client). The CLI names **no** concrete backend type — construction is
+injection that flows through the builder.
+
+### Layering (acyclic, ports low)
+
+```
+ctxvault-common   (ports + domain types; dependency-light)
+      ▲
+ctxvault-core     (adapters + Engine + EngineBuilder + CorpusManager; owns the heavy backend crates)
+      ▲
+ctxvault-mcp      (tool registry + transport; depends only on ports + SearchService + domain types + the Engine/CorpusManager orchestrators)
+      ▲
+ctxvault-cli      (composition root: constructs and injects the concrete adapters)
+```
+
+The invariant that keeps this clean: **a backend type never crosses a port
+boundary, and `ctxvault-mcp` and `ctxvault-cli` name no concrete backend type.**
+`ctxvault-common` stays dependency-light precisely so the ports remain
+backend-free.
+
+### Wiring policy and design intent
+
+Hot-path ports are consumed as generics / `&impl Trait` — monomorphized and
+zero-cost. There is **no** `Arc<dyn>` runtime-swap seam today. `Engine` is
+deliberately concrete (Approach B): the ports exist to decouple consumers from
+backends and to keep the layering acyclic, not to make `Engine` runtime-pluggable.
+
+The design intent the ports **unblock** — *not yet built* — is that an alternative
+backend (for example a different persistence or vector store) would arrive as a
+**new crate with its own adapters implementing these same ports**, plus its own
+composition root, without editing the domain or widening a port. No such
+alternative backend exists today; the current adapters (SQLite, Tantivy, HNSW,
+Petgraph, ONNX) are the only ones.
+
 ---
 
 ## 10. Roadmap (Revisited Post-Research)

@@ -29,3 +29,47 @@ clean, minimal, cohesive codebase over compatibility with any prior shape.
   or leaves an unused helper is INCOMPLETE. Finish the deletion.
 - Clippy runs with `-D warnings`; unused-code warnings are hard failures, not noise to
   silence with `#[allow(dead_code)]`. Remove the code instead.
+
+## Ports & adapters (hexagonal architecture)
+
+ctxvault is organized as ports-and-adapters. Every major concern is a trait (a
+**port**); the concrete backend that satisfies it is an **adapter**. This keeps the
+domain decoupled from infrastructure and makes new backends additive rather than
+invasive.
+
+- The major ports are: `MetadataCatalog` (SQLite metadata/catalog), `TextIndex`
+  (Tantivy BM25), `VectorStore` (HNSW vectors), `GraphStore` (Petgraph graph),
+  `EmbeddingProvider` (ONNX embedder), and `SearchService` (search-mode dispatch +
+  RRF fusion). Adapters are the concrete implementors (e.g. Tantivy `TextIndex`,
+  HNSW `VectorStore`).
+- **Adapters never leak their backend types across a port.** Concrete infrastructure
+  types (`rusqlite::Connection`, `tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`)
+  stay encapsulated inside the adapter. Port signatures use domain types from
+  `ctxvault-common` only. If a signature would force a heavy infra crate onto a
+  consumer, the abstraction is wrong.
+- **The domain depends on ports, not adapters.** `Engine` holds ports; it does not
+  own concrete backends and does not hand them out via accessors. `ctxvault-mcp`
+  depends on ports + `SearchService` + domain types, never on concrete core internals.
+- **Composition root is the only place adapters are named.** `ctxvault-cli` (`main.rs`)
+  constructs the concrete adapters and injects them via the engine builder /
+  `CorpusManager`. Construction is injection, not scattered `new()`/`open()` calls
+  reaching down through layers.
+
+### Rust DI policy
+
+- Prefer **generics with trait bounds** for the stable hot path — monomorphized,
+  zero-cost. Use **trait objects** (`Arc<dyn _>` / `Box<dyn _>`) only where a runtime
+  swap is genuinely the point (plugin-style seams). Do not reach for a DI-container
+  crate; Rust's type system is the container.
+- Wire dependencies once, at the composition root, via **constructor injection**.
+- New backends (SQLite-backed graph, Postgres/S3, managed vector stores, dynamic
+  language packs, pipeline-stage plugins) arrive as **new adapters behind existing
+  ports** — never by editing the domain or widening a port to leak a backend type.
+
+### Consequences for reviewers / agents
+
+- A change that makes `ctxvault-mcp` (or any consumer) name a concrete backend type,
+  or that adds a domain accessor handing out a concrete backend, breaks the
+  architecture and is INCOMPLETE — route it through a port instead.
+- A change that constructs a concrete adapter anywhere other than the composition
+  root has leaked wiring into the domain — move it to the root.

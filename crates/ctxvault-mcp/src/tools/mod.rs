@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use ctxvault_common::config::{CorpusMode, EdgeClass};
+use ctxvault_common::ports::{GraphStore, MetadataCatalog, SearchQuery, SearchService};
 use ctxvault_common::{Error, Result};
 use ctxvault_core::engine::Engine;
 use ctxvault_core::search;
@@ -1937,206 +1938,70 @@ fn apply_detail(
 /// Consolidated search tool: dispatches to a retrieval mode selected by `mode`
 /// (default `hybrid`). Modes: `bm25`, `semantic`, `hybrid`, `graph`, `explain`.
 ///
-/// Every mode honors `modality` (docs|code|both) and `detail` (ids|default) via
-/// [`apply_detail`]. `explain` returns the score-breakdown shape
-/// ([`search::search_explain`]) rather than a plain result array.
+/// This is a thin adapter: it obtains the engine's search service (which
+/// resolves the retrieval backends internally) and delegates the mode dispatch
+/// to it via the [`SearchService`] port, then applies detail/verbosity shaping
+/// and JSON serialization. Every mode honors `modality` (docs|code|both) and
+/// `detail` (ids|default) via [`apply_detail`]. `explain` returns the
+/// score-breakdown shape ([`SearchService::explain`]) rather than a plain
+/// result array.
 fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let mode = params.mode.as_deref().unwrap_or("hybrid");
-    let limit = params.limit.unwrap_or(10);
+    let is_semantic = mode == "semantic";
+    let is_explain = mode == "explain";
     let modality = params
         .modality
         .as_deref()
         .and_then(ctxvault_common::types::Modality::from_str_name)
         .unwrap_or_default();
+    let depth = params
+        .depth
+        .as_deref()
+        .and_then(ctxvault_common::types::SearchDepth::from_str_name)
+        .unwrap_or_default();
 
-    match mode {
-        "bm25" => {
-            let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
-            search::enrich_results_with_lineage(&mut results, engine.graph());
-            let results = apply_detail(results, params.detail.as_deref());
-            serde_json::to_value(results)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        "semantic" => {
-            if engine.is_fast_mode() || engine.vector_index().is_none() {
-                return Err(Error::Index(
-                    "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
-                ));
+    // Semantic mode lazily initializes the embedder, but only once the fast-mode
+    // guard (no vector index) has passed — mirroring the original ordering.
+    if is_semantic && engine.has_vector_index() {
+        let _ = engine.ensure_embedder()?;
+    }
+
+    // Build the search service from the engine (it resolves its own backends
+    // internally) and dispatch through the port. Detail/verbosity shaping and
+    // serialization stay here.
+    let service = engine.search_service();
+
+    let query = SearchQuery {
+        query: params.query,
+        mode: params.mode,
+        limit: params.limit,
+        modality,
+        depth,
+        graph_depth: params.graph_depth,
+        edge_types: params.edge_types,
+        edge_class: params.edge_class,
+        decompose: params.decompose,
+    };
+
+    if is_explain {
+        let mut explanations = service.explain(&query)?;
+
+        // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
+        if params.detail.as_deref() == Some("ids") {
+            for e in &mut explanations {
+                e.snippet = None;
             }
-            let depth = params
-                .depth
-                .as_deref()
-                .and_then(ctxvault_common::types::SearchDepth::from_str_name)
-                .unwrap_or_default();
-
-            // Ensure the embedder is initialized.
-            let _ = engine.ensure_embedder()?;
-            let embedder = match engine.embedder_ref() {
-                Some(e) => e,
-                None => {
-                    return Err(Error::Index(
-                        "embedder not available — cannot perform semantic search".to_string(),
-                    ));
-                }
-            };
-            let vector_index = engine.vector_index().unwrap();
-
-            let mut results = search::search_semantic_dual(
-                vector_index,
-                &embedder,
-                &params.query,
-                limit,
-                depth,
-                modality,
-            )?;
-            search::enrich_results_with_lineage(&mut results, engine.graph());
-            let results = apply_detail(results, params.detail.as_deref());
-            serde_json::to_value(results)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
         }
-        "hybrid" => {
-            let graph_depth = params.graph_depth.unwrap_or(2);
-            let edge_type_filter = params.edge_types;
-            let code_paths = engine.code_paths_set();
 
-            // Default to Semantic class filter for hybrid search graph boost.
-            let edge_class_filter = match params.edge_class.as_deref() {
-                Some(s) => EdgeClass::from_str_name(s),
-                None => Some(EdgeClass::Semantic),
-            };
-
-            // Try to get a query embedding for full 3-signal hybrid.
-            // If the embedder is unavailable, fall back to BM25+graph only.
-            let embedder_opt = engine.embedder_ref();
-            let query_embedding =
-                embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
-
-            let results_raw = if let Some(vector_index) = engine.vector_index() {
-                if params.decompose == Some(true) {
-                    // Multi-hop query decomposition mode.
-                    search::search_multihop(
-                        engine.bm25(),
-                        vector_index,
-                        engine.graph(),
-                        embedder_opt.as_deref(),
-                        &params.query,
-                        query_embedding.as_deref(),
-                        limit,
-                        graph_depth,
-                        edge_type_filter.as_deref(),
-                        modality,
-                        &code_paths,
-                    )?
-                } else {
-                    search::search_hybrid_full(
-                        engine.bm25(),
-                        vector_index,
-                        engine.graph(),
-                        &params.query,
-                        query_embedding.as_deref(),
-                        limit,
-                        graph_depth,
-                        edge_type_filter.as_deref(),
-                        edge_class_filter,
-                        modality,
-                        &code_paths,
-                    )?
-                }
-            } else {
-                // Fast Mode fallback: BM25 + Graph.
-                search::search_hybrid(
-                    engine.bm25(),
-                    engine.graph(),
-                    &params.query,
-                    limit,
-                    graph_depth,
-                    edge_type_filter.as_deref(),
-                    edge_class_filter,
-                    modality,
-                    &code_paths,
-                )?
-            };
-
-            let results = apply_detail(results_raw, params.detail.as_deref());
-            serde_json::to_value(results)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        "graph" => {
-            let max_depth = params.graph_depth.unwrap_or(3);
-            let edge_type_filter = params.edge_types;
-            let code_paths = engine.code_paths_set();
-
-            // Default to Structural class filter for graph traversal search.
-            let edge_class_filter = match params.edge_class.as_deref() {
-                Some(s) => EdgeClass::from_str_name(s),
-                None => Some(EdgeClass::Structural),
-            };
-
-            let results = search::search_graph(
-                engine.bm25(),
-                engine.graph(),
-                &params.query,
-                limit,
-                max_depth,
-                edge_type_filter.as_deref(),
-                edge_class_filter,
-                modality,
-                &code_paths,
-            )?;
-            let results = apply_detail(results, params.detail.as_deref());
-            serde_json::to_value(results)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        "explain" => {
-            let graph_depth = params.graph_depth.unwrap_or(2);
-            let edge_type_filter = params.edge_types;
-            let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-            let code_paths = engine.code_paths_set();
-
-            // Try to get a query embedding for full 3-signal explanation.
-            let query_embedding =
-                engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
-
-            let dummy_vi;
-            let vector_index = match engine.vector_index() {
-                Some(vi) => vi,
-                None => {
-                    dummy_vi = ctxvault_core::vector_index::VectorIndex::new_default(384);
-                    &dummy_vi
-                }
-            };
-
-            let mut explanations = search::search_explain(
-                engine.bm25(),
-                vector_index,
-                engine.graph(),
-                &params.query,
-                query_embedding.as_deref(),
-                limit,
-                graph_depth,
-                edge_type_filter.as_deref(),
-                edge_class_filter,
-                modality,
-                &code_paths,
-            )?;
-
-            // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
-            if params.detail.as_deref() == Some("ids") {
-                for e in &mut explanations {
-                    e.snippet = None;
-                }
-            }
-
-            serde_json::to_value(explanations)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        other => Err(Error::Config(format!(
-            "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain",
-            other
-        ))),
+        serde_json::to_value(explanations)
+            .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    } else {
+        let results = service.search(&query)?;
+        let results = apply_detail(results, params.detail.as_deref());
+        serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
     }
 }
 
@@ -2151,17 +2016,14 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
         .as_deref()
         .and_then(ctxvault_common::types::Modality::from_str_name)
         .unwrap_or_default();
-    let code_paths = engine.code_paths_set();
 
-    let results = search::search_related(
-        engine.graph(),
-        &params.seeds,
-        limit,
-        0.85,
-        20,
-        modality,
-        &code_paths,
-    )?;
+    // Related search only traverses the graph, but the service is built the same
+    // way `handle_search` builds it; the embedder is left as-is (never lazily
+    // initialized here, matching prior behaviour) since related does not touch
+    // it. Detail/verbosity shaping stays here.
+    let service = engine.search_service();
+
+    let results = service.search_related(&params.seeds, limit, modality)?;
     let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
@@ -2281,8 +2143,8 @@ fn handle_corpus_list(engine: &Engine, _args: Value) -> Result<Value> {
         "path": engine.config().path,
         "mode": format!("{:?}", engine.config().mode),
         "file_count": file_count,
-        "embedder_active": engine.embedder_ref().is_some(),
-        "vector_count": engine.vector_index().map(|vi| vi.len()).unwrap_or(0),
+        "embedder_active": engine.embedder_active(),
+        "vector_count": engine.vector_count(),
         "graph_node_count": engine.graph().node_count(),
     }]);
 
@@ -2406,14 +2268,14 @@ fn handle_analyze_density(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let top_hubs = params.top_hubs.unwrap_or(10);
-    let report = ctxvault_core::analytics::analyze_density(engine.graph(), top_hubs);
+    let report = engine.analyze_density(top_hubs);
 
     serde_json::to_value(report).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// Find semantic gaps between BM25 and vector search.
 fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
-    if engine.is_fast_mode() || engine.vector_index().is_none() {
+    if engine.is_fast_mode() || !engine.has_vector_index() {
         return Err(Error::Index(
             "Semantic gap analysis is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
         ));
@@ -2423,33 +2285,19 @@ fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let top_k = params.top_k.unwrap_or(10);
+    let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
 
-    // Embed each query (requires embedder).
-    let query_embeddings: Vec<Vec<f32>> = if let Some(embedder) = engine.embedder_ref() {
-        params.queries.iter().filter_map(|q| embedder.embed_query(q).ok()).collect()
-    } else {
-        Vec::new()
-    };
-
-    // If no embeddings available, return empty gaps (can't compare).
-    if query_embeddings.len() != params.queries.len() {
-        return Ok(serde_json::json!({
+    // The engine runs the analysis over its own backends. `Ok(None)` signals the
+    // embedder was unavailable or some queries failed to embed.
+    match engine.find_semantic_gaps(&query_refs, top_k)? {
+        Some(gaps) => {
+            serde_json::to_value(gaps).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        None => Ok(serde_json::json!({
             "error": "embedder not available or some queries failed to embed",
             "gaps": []
-        }));
+        })),
     }
-
-    let vector_index = engine.vector_index().unwrap();
-    let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
-    let gaps = ctxvault_core::analytics::find_semantic_gaps(
-        engine.bm25(),
-        vector_index,
-        &query_refs,
-        &query_embeddings,
-        top_k,
-    )?;
-
-    serde_json::to_value(gaps).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// Suggest chunks that may benefit from splitting.
@@ -2458,7 +2306,7 @@ fn handle_suggest_splits(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let max_chunk_chars = params.max_chunk_chars.unwrap_or(2000);
-    let suggestions = ctxvault_core::analytics::suggest_splits(engine.store(), max_chunk_chars)?;
+    let suggestions = engine.suggest_splits(max_chunk_chars)?;
 
     serde_json::to_value(suggestions).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -2470,13 +2318,8 @@ fn handle_coverage_report(engine: &Engine, args: Value) -> Result<Value> {
 
     let top_k = params.top_k.unwrap_or(10);
 
-    // Get all known note paths from the store.
-    let files = engine.store().list_files()?;
-    let all_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-
     let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
-    let report =
-        ctxvault_core::analytics::coverage_report(engine.bm25(), &query_refs, &all_paths, top_k)?;
+    let report = engine.coverage_report(&query_refs, top_k)?;
 
     serde_json::to_value(report).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -4537,7 +4380,7 @@ pub fn indexed_fn() -> u32 {
         let files_indexed = engine.full_reindex().unwrap();
         assert_eq!(files_indexed, 1);
         assert!(engine.is_fast_mode());
-        assert!(engine.vector_index().is_none());
+        assert!(!engine.has_vector_index());
 
         let mut registry = ToolRegistry::new();
         registry.register_all();

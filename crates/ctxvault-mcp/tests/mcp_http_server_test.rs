@@ -62,8 +62,20 @@ async fn test_mcp_http_server_and_client_e2e() {
     // 2. Initialize CorpusManager and index notes
     let manager = build_manager("test-corpus", &corpus_path);
     {
+        use ctxvault_common::ports::{SearchQuery, SearchService};
         let engine = manager.default_engine().expect("default engine");
-        let direct_bm25 = engine.bm25().search("architecture", 5).expect("direct bm25");
+        let query = SearchQuery {
+            query: "architecture".to_string(),
+            mode: Some("bm25".to_string()),
+            limit: Some(5),
+            modality: ctxvault_common::types::Modality::Both,
+            depth: ctxvault_common::types::SearchDepth::default(),
+            graph_depth: None,
+            edge_types: None,
+            edge_class: None,
+            decompose: None,
+        };
+        let direct_bm25 = engine.search_service().search(&query).expect("direct bm25");
         println!("direct_bm25 count: {}, items: {:?}", direct_bm25.len(), direct_bm25);
     }
 

@@ -24,8 +24,6 @@ pub struct BM25Index {
     reader: IndexReader,
     writer: Option<IndexWriter>,
     index_path: Option<std::path::PathBuf>,
-    #[allow(dead_code)]
-    schema: Schema,
     // Field handles
     field_path: Field,
     field_chunk_index: Field,
@@ -105,8 +103,7 @@ impl BM25Index {
 
         let dir = MmapDirectory::open(index_path).map_err(|e| Error::Index(e.to_string()))?;
 
-        let index =
-            Index::open_or_create(dir, schema.clone()).map_err(|e| Error::Index(e.to_string()))?;
+        let index = Index::open_or_create(dir, schema).map_err(|e| Error::Index(e.to_string()))?;
 
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
@@ -120,7 +117,6 @@ impl BM25Index {
             reader,
             writer: None,
             index_path: Some(index_path.to_path_buf()),
-            schema,
             field_path,
             field_chunk_index,
             field_title,
@@ -142,7 +138,7 @@ impl BM25Index {
             field_modality,
         ) = Self::build_schema();
 
-        let index = Index::create_in_ram(schema.clone());
+        let index = Index::create_in_ram(schema);
 
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
@@ -156,7 +152,6 @@ impl BM25Index {
             reader,
             writer: None,
             index_path: None,
-            schema,
             field_path,
             field_chunk_index,
             field_title,
@@ -362,6 +357,47 @@ impl BM25Index {
         }
 
         Ok(results)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port adapter: TextIndex
+// ---------------------------------------------------------------------------
+
+impl ctxvault_common::ports::TextIndex for BM25Index {
+    fn release_writer(&mut self) {
+        BM25Index::release_writer(self)
+    }
+
+    fn add_document(
+        &mut self,
+        doc_path: &str,
+        title: Option<&str>,
+        tags: &[String],
+        chunks: &[Chunk],
+    ) -> Result<()> {
+        BM25Index::add_document(self, doc_path, title, tags, chunks)
+    }
+
+    fn remove_document(&mut self, doc_path: &str) -> Result<()> {
+        BM25Index::remove_document(self, doc_path)
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        BM25Index::commit(self)
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        BM25Index::search(self, query, limit)
+    }
+
+    fn search_with_modality(
+        &self,
+        query: &str,
+        limit: usize,
+        modality: Modality,
+    ) -> Result<Vec<SearchResult>> {
+        BM25Index::search_with_modality(self, query, limit, modality)
     }
 }
 
