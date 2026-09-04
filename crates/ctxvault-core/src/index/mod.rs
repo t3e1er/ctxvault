@@ -4,7 +4,6 @@ pub mod pipeline;
 
 use std::path::Path;
 
-
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,

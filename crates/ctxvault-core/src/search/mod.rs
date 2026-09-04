@@ -327,9 +327,7 @@ pub fn search_hybrid_full(
     edge_type_filter: Option<&[String]>,
     edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
 ) -> Result<Vec<SearchResult>> {
-    tracing::debug!(
-        "hybrid search: vector results from anchor embeddings, BM25 from full corpus"
-    );
+    tracing::debug!("hybrid search: vector results from anchor embeddings, BM25 from full corpus");
     const RRF_K: f64 = 60.0;
 
     // 1. Get BM25 seeds.

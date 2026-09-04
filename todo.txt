@@ -1,0 +1,195 @@
+ctxvault upgrade — phased plan
+branch: feature/codebase-semantic-indexing
+runbook: PLAN_PROMPT.md (coordinator delegates each phase to a sub-agent, checks, commits, ticks the box)
+
+Legend: [ ] pending   [x] done
+Per-phase gate: just fmt -> just clippy (-D warnings) -> just check. Full `just test` runs in the final phase.
+GREENFIELD: no backwards compat, no dead code, no tech debt. Each phase REPLACES old shapes and
+DELETES the code it supersedes. New args are required where that is cleanest; defaults are for
+ergonomics only, never to preserve legacy behavior. Nothing unused may remain after a phase.
+Run each implementation sub-agent under the user's preferred model (set at Kiro agent/model level).
+
+================================================================================
+[x] PHASE 0 — Baseline & branch hygiene
+--------------------------------------------------------------------------------
+Goal: Establish a clean, green starting point on the feature branch.
+Scope:
+  - Confirm on branch feature/codebase-semantic-indexing.
+  - Run just fmt-check, just clippy, just check, just test to capture a green baseline.
+  - Reconcile the documented-but-missing `update_frontmatter` tool so registry == steering
+    (registry is source of truth: either implement it cleanly or strike it from steering/docs).
+  - Note the two index-dir layout conventions (CLI uses <corpus>/.index; CorpusManager uses
+    <base>/<name>). Phase 1 will collapse to ONE convention and delete the other.
+  - Add the greenfield/no-dead-code rule to steering (see new .kiro/steering entry in Phase 8,
+    but create the rule now so all phases inherit it).
+Acceptance:
+  - Baseline suite result recorded (pass, or known-failures documented).
+  - Registry and mcp-tools steering agree on the exact tool set.
+  - A steering rule forbidding backwards-compat shims / dead code / tech debt exists.
+Verify: just clippy && just check
+Commit: chore(phase0): green baseline + tool-surface reconciliation
+
+================================================================================
+[ ] PHASE 1 — Wire multi-corpus / multi-root from one central MCP (Goal 1)
+--------------------------------------------------------------------------------
+Goal: One central MCP process serves N index roots via the existing CorpusManager.
+Scope:
+  - crates/ctxvault-cli/src/main.rs: for local + server modes, load each --corpus root's
+    corpus.toml and CorpusManager::add_corpus per root; support `--corpus name=path` and
+    bare `--corpus path` (name derived from dir). Add `--default-corpus <name>`.
+  - Call run_stdio_multi / run_http_server_multi instead of the single-corpus entrypoints.
+  - Standardize the index-dir layout for multi-corpus (decide per Phase 0 note). There is
+    ONE code path: CorpusManager. A single --corpus is just N=1.
+  - DELETE the now-superseded single-corpus transport/dispatch/registry paths
+    (run_stdio, run_http_server, dispatch/dispatch_read/dispatch_write single variants,
+    SingleCorpusServerState, ToolRegistry if MultiCorpusToolRegistry replaces it). The
+    multi path becomes the only path.
+  - Optional top-level workspace config (ctxvault.toml listing corpora) — only if it does
+    not balloon scope; CLI flags are sufficient for MVP.
+Acceptance:
+  - Launching with one or many --corpus roots serves them all from one process via CorpusManager.
+  - The single-corpus transport/dispatch/registry code is removed; only the multi path remains.
+  - No dead code: grep confirms the deleted single-corpus symbols have no remaining references.
+Verify: just clippy && just check ; manual: start server with 2 roots, hit /health and tools/list.
+Commit: feat(phase1): wire multi-corpus CorpusManager into CLI (local+server)
+
+================================================================================
+[ ] PHASE 2 — Corpus discrimination arg + cross-corpus fan-out RRF (Goal 2a)
+--------------------------------------------------------------------------------
+Goal: Agents can target a corpus, or search across all corpora with merged ranking.
+Scope:
+  - Add `corpus: string` and `corpora: string[] | "all"` to every read tool via the
+    multi-corpus registry. Omitting both resolves to the default corpus (ergonomic default,
+    not a legacy shim).
+  - Implement cross-corpus fan-out: run the query per selected corpus, RRF-merge results,
+    and tag each SearchResult with its source corpus (add a `corpus` field to results).
+  - Write tools take an explicit corpus (or the single default) and never span corpora silently.
+Acceptance:
+  - `corpus="x"` restricts to one root; `corpora=["a","b"]` or `"all"` fans out + RRF-merges.
+  - Each cross-corpus hit is labeled with its origin corpus.
+  - No leftover single-corpus-only tool code paths remain.
+Verify: just clippy && just check ; targeted unit test for fan-out RRF merge + corpus tagging.
+Commit: feat(phase2): corpus discrimination args + cross-corpus fan-out RRF
+
+================================================================================
+[ ] PHASE 3 — Cross-modal + cross-corpus edge/symbol linking (Goal 2b)
+--------------------------------------------------------------------------------
+Goal: Preserve doc<->code edges within a corpus; link symbols across corpora where resolvable.
+Scope:
+  - crates/ctxvault-core/src/graph/ + graph/code.rs: keep intra-corpus cross-modal edges
+    (implements/documents doc<->code) working under the multi-corpus manager.
+  - Add cross-corpus symbol linking: resolve a doc's implements/documents target (or a code
+    import) to a symbol in ANOTHER corpus by qualified_name where unambiguous. Attach a
+    confidence/provenance marker (inspired by codebase-memory registry confidence bands).
+  - Expose resolution via existing graph tools (backlinks/forwardlinks/traverse_lineage)
+    so cross-corpus links are navigable; degrade gracefully (unresolved = no edge).
+Acceptance:
+  - Intra-corpus doc<->code edges still build and traverse.
+  - A doc in corpus A that implements a symbol defined in corpus B links to it when the
+    qualified_name resolves uniquely; ambiguous/unresolved cases produce no false edge.
+Verify: just clippy && just check ; targeted test for cross-corpus symbol resolution (unique + ambiguous cases).
+Commit: feat(phase3): cross-modal + cross-corpus symbol/edge linking
+
+================================================================================
+[ ] PHASE 4 — Bi-modal search: modality filter docs|code|both (Goal 3)
+--------------------------------------------------------------------------------
+Goal: Every search modality can be restricted to docs, code, or both.
+Scope:
+  - crates/ctxvault-common: add a Modality enum (Docs|Code|Both, default Both) parsed from args.
+  - Tantivy: add an indexed `modality` (or entity_kind) field so BM25 can filter cheaply;
+    requires a reindex path — ensure sync/reindex populate it and stale indices are handled.
+  - Vector: filter results by stored entity_kind (post-filter now; note per-modality sub-index
+    as a future optimization if perf demands).
+  - Graph: filter traversal by node kind (Documentation vs Code*).
+  - Thread `modality` through the search functions (this lands before Phase 6 consolidation;
+    do not duplicate logic that Phase 6 will merge — keep it in one place per backend).
+Acceptance:
+  - `modality="code"` returns only code entities; `"docs"` only documentation; `"both"` (default) both.
+  - Filter applies consistently across BM25, vector, graph, and the fused hybrid path.
+Verify: just clippy && just check ; targeted test asserting modality filtering per backend.
+Commit: feat(phase4): bi-modal search with docs|code|both modality filter
+
+================================================================================
+[ ] PHASE 5 — Progressive disclosure for code AND docs (Goal 4)
+--------------------------------------------------------------------------------
+Goal: Adopt+adapt codebase-memory's tiered disclosure; apply it to markdown docs too.
+Scope:
+  - Tier 1 (handles): search results return path/qualified_name + line range + metadata,
+    NO bodies by default. Add `detail: ids|default` (ids = bare handles for wide sweeps).
+    Keep snippet available under `detail=default` but ensure body text is not dumped.
+  - Tier 2 (fetch): add a unified fetch tool (e.g. `get_snippet` / `read_chunk`) that returns:
+      * for code: symbol source by stored start/end line, capped (e.g. 500 lines), with
+        optional `include_neighbors` (caller/callee handles);
+      * for docs: the specific matched chunk (by path + chunk_index) or heading section,
+        capped, with optional neighbor chunks (prev/next heading section).
+  - Tier 3 (full file): read_note (docs) + a read_code_file (or generalize read_note) for
+    whole-file reads; keep as the explicit last resort.
+  - Encode the ordering in tool descriptions ("search for handles first; fetch source only
+    for what you need; read the whole file only if required").
+Acceptance:
+  - Search returns handles without bodies at `detail=ids`; default keeps a short snippet only.
+  - A single fetch call retrieves exactly one code symbol OR one doc chunk/section, bounded.
+  - Neighbor expansion works for both code (callers/callees) and docs (adjacent sections).
+Verify: just clippy && just check ; targeted test for handle->fetch->full flow on a doc and a symbol.
+Commit: feat(phase5): tiered progressive disclosure for code and docs
+
+================================================================================
+[ ] PHASE 6 — Tool consolidation + profiles (Goal 5a, footprint)
+--------------------------------------------------------------------------------
+Goal: Shrink the tools/list token footprint while preserving capability.
+Scope:
+  - Collapse search_bm25/semantic/hybrid/graph/explain into ONE `search` tool with
+    `mode: bm25|semantic|hybrid|graph|explain` (default hybrid), plus `modality`, `corpus`,
+    `detail`. DELETE the five old tools and their handlers — no deprecated aliases.
+  - Fold get_status/get_corpus_stats/get_indexing_status into one `status` tool; delete the
+    old three (the get_corpus_stats alias in particular must go).
+  - Introduce tool PROFILES (scout|analysis|all) gating which tools tools/list exposes;
+    add a CLI flag (e.g. --profile) defaulting to `all`. scout = search+fetch+read only;
+    analysis = + graph/code/validate; all = + write/crystallize/admin.
+  - Update the expected-tools test and the mcp-tools steering to match the consolidated set.
+Acceptance:
+  - One `search` tool covers all former search modes; `status` covers all status tools.
+  - `tools/list` payload is measurably smaller (record before/after tool count + rough token
+    size); `--profile scout` exposes a minimal set.
+  - No capability lost — every old function reachable via the consolidated surface.
+Verify: just clippy && just check ; expected-tools test updated and passing.
+Commit: feat(phase6): consolidate search/status tools + add tool profiles
+
+================================================================================
+[ ] PHASE 7 — Parity fill-ins vs reference MCPs (Goal 5b)
+--------------------------------------------------------------------------------
+Goal: Close remaining capability gaps in the condensed surface.
+Scope (implement those that fit cleanly; skip with a note if disproportionate):
+  - Leiden community detection to replace/augment Louvain in get_architecture/graph_communities.
+  - Import-resolution confidence bands surfaced on code edges (high/medium/speculative).
+  - check_index_coverage-style tool: report coverage/parse status for given paths/scopes.
+  - Batch read (read_multiple_notes / read_multiple) for token-efficient multi-fetch.
+  - Doc-side parity: status/tier/domain post-filters and/or load_priority boost IF they add
+    signal (optional — justify inclusion or skip).
+Acceptance:
+  - Each included item works and is covered by the consolidated tool surface + profiles.
+  - Skipped items are explicitly noted with rationale in the commit body.
+Verify: just clippy && just check ; targeted tests for any new algorithm (Leiden determinism, coverage report).
+Commit: feat(phase7): parity fill-ins (Leiden, confidence bands, coverage, batch read)
+
+================================================================================
+[ ] PHASE 8 — Docs, steering & final full verification
+--------------------------------------------------------------------------------
+Goal: Bring docs/steering in line and prove the whole suite is green.
+Scope:
+  - Update docs/ARCHITECTURE.md and docs/CODEROADMAP.md for multi-corpus, modality,
+    progressive disclosure, consolidated tools + profiles.
+  - Update .kiro steering (mcp-tools, product, structure) to reflect the new surface.
+    (engineering-principles.md — greenfield/no-dead-code — was created in Phase 0.)
+  - Update corpus.toml / add example multi-corpus config + README/examples note.
+  - Run the FULL gate: just fmt-check && just clippy && just test && just deny (deps
+    only if changed) && just docs.
+Acceptance:
+  - Full `just test` suite passes (156+ tests) on the branch.
+  - clippy clean (-D warnings), docs build, deny passes if deps changed.
+  - Steering + docs match the shipped tool surface.
+Verify: just ci  (fmt-check + clippy + test + deny + docs)
+Commit: docs(phase8): align docs/steering + final green full-suite verification
+
+================================================================================
+END. Do not push. Leave the branch ready for review/PR by the user.

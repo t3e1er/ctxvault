@@ -31,11 +31,7 @@ use std::{
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 
-use crate::{
-    embedding::Embedder,
-    engine::PendingChunk,
-    vector_index::VectorIndex,
-};
+use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
 
 use ctxvault_common::{Error, Result};
 
@@ -149,10 +145,8 @@ impl AsyncEmbeddingPipeline {
                         Err(RecvTimeoutError::Disconnected) => {
                             // Producer has finished sending; stage remaining chunks and exit
                             if !accumulator.is_empty() {
-                                let batches = Self::stage_batches(
-                                    accumulator,
-                                    &embedder_for_prefetch,
-                                );
+                                let batches =
+                                    Self::stage_batches(accumulator, &embedder_for_prefetch);
                                 for staged in batches {
                                     let _ = staged_tx.send(staged);
                                 }
@@ -225,7 +219,10 @@ impl AsyncEmbeddingPipeline {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(session_index, "GPU inference failed in pipeline: {e}");
+                                tracing::warn!(
+                                    session_index,
+                                    "GPU inference failed in pipeline: {e}"
+                                );
                             }
                         }
                     }
@@ -288,11 +285,8 @@ impl AsyncEmbeddingPipeline {
 
         for sub_indices in sub_batches {
             let batch_size = sub_indices.len();
-            let raw_max_len = sub_indices
-                .iter()
-                .map(|&i| encodings[i].get_ids().len())
-                .max()
-                .unwrap_or(1);
+            let raw_max_len =
+                sub_indices.iter().map(|&i| encodings[i].get_ids().len()).max().unwrap_or(1);
             let max_len = raw_max_len.min(max_model_len).max(1);
 
             let mut sub_chunks = Vec::with_capacity(batch_size);
@@ -347,8 +341,7 @@ impl AsyncEmbeddingPipeline {
     /// Send a single anchor chunk into the pipeline.
     pub fn send(&self, chunk: PendingChunk) -> Result<()> {
         if let Some(ref tx) = self.chunk_tx {
-            tx.send(chunk)
-                .map_err(|e| Error::Index(format!("pipeline send error: {e}")))?;
+            tx.send(chunk).map_err(|e| Error::Index(format!("pipeline send error: {e}")))?;
         }
         Ok(())
     }
@@ -357,8 +350,7 @@ impl AsyncEmbeddingPipeline {
     pub fn send_batch(&self, chunks: impl IntoIterator<Item = PendingChunk>) -> Result<()> {
         if let Some(ref tx) = self.chunk_tx {
             for chunk in chunks {
-                tx.send(chunk)
-                    .map_err(|e| Error::Index(format!("pipeline send error: {e}")))?;
+                tx.send(chunk).map_err(|e| Error::Index(format!("pipeline send error: {e}")))?;
             }
         }
         Ok(())
@@ -439,12 +431,7 @@ impl AsyncEmbeddingPipeline {
             let chunk_indices: Vec<Option<usize>> =
                 file_chunks.iter().map(|c| Some(c.chunk_index)).collect();
 
-            vector_index.add_batch(
-                file_embeddings,
-                doc_path,
-                &chunk_indices,
-                false,
-            )?;
+            vector_index.add_batch(file_embeddings, doc_path, &chunk_indices, false)?;
 
             if let Some(doc_embedding) = Embedder::average_embeddings(file_embeddings) {
                 vector_index.add(&doc_embedding, doc_path, None, true)?;
@@ -487,7 +474,9 @@ mod tests {
                 .send(PendingChunk {
                     doc_path: "doc_a.md".to_string(),
                     chunk_index: i,
-                    text: format!("Document A section {i} describing architecture decisions and rules."),
+                    text: format!(
+                        "Document A section {i} describing architecture decisions and rules."
+                    ),
                     embed_policy: ChunkEmbedPolicy::Anchor,
                 })
                 .expect("send should succeed");
@@ -498,21 +487,20 @@ mod tests {
                 .send(PendingChunk {
                     doc_path: "doc_b.md".to_string(),
                     chunk_index: i,
-                    text: format!("Document B section {i} containing implementation guide and algorithms."),
+                    text: format!(
+                        "Document B section {i} containing implementation guide and algorithms."
+                    ),
                     embed_policy: ChunkEmbedPolicy::Anchor,
                 })
                 .expect("send should succeed");
         }
 
         // Finish pipeline and assert all 6 chunks were processed
-        let total_inserted = pipeline
-            .finish(&mut vector_index)
-            .expect("pipeline should finish cleanly");
+        let total_inserted =
+            pipeline.finish(&mut vector_index).expect("pipeline should finish cleanly");
         assert_eq!(total_inserted, 6);
 
         // vector_index should have 6 chunk embeddings + 2 doc-level embeddings = 8 entries
         assert_eq!(vector_index.len(), 8);
     }
 }
-
-

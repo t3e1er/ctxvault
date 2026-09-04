@@ -73,7 +73,6 @@ pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
         }
     };
 
-
     // Apply overlap if configured.
     if config.overlap_tokens > 0 && raw_chunks.len() > 1 {
         apply_overlap(raw_chunks, config.overlap_tokens)
@@ -326,7 +325,6 @@ fn chunk_by_heading(doc_path: &str, body: &str, config: &ChunkingConfig) -> Vec<
                 .with_embed_policy(ctxvault_common::types::ChunkEmbedPolicy::Anchor),
         );
     }
-
 
     chunks
 }

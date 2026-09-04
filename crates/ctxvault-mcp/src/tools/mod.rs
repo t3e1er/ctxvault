@@ -1207,13 +1207,8 @@ fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
 
     let vector_index = engine.vector_index().unwrap();
 
-    let mut results = search::search_semantic_dual(
-        vector_index,
-        &embedder,
-        &params.query,
-        limit,
-        depth,
-    )?;
+    let mut results =
+        search::search_semantic_dual(vector_index, &embedder, &params.query, limit, depth)?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
@@ -1523,8 +1518,11 @@ fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
 
 /// Full reindex: clear all indices and rebuild from scratch or resume in configurable batches.
 fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: ReindexCorpusParams = serde_json::from_value(args)
-        .unwrap_or(ReindexCorpusParams { batch_size: None, resume: None, fast: None });
+    let params: ReindexCorpusParams = serde_json::from_value(args).unwrap_or(ReindexCorpusParams {
+        batch_size: None,
+        resume: None,
+        fast: None,
+    });
     if let Some(fast) = params.fast {
         engine.config_mut().index_mode = if fast {
             ctxvault_common::config::IndexMode::Fast
@@ -3504,11 +3502,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
 
         // 2. Hybrid search must cleanly fall back to BM25+Graph
         let hyb_res = registry
-            .execute_read(
-                "search_hybrid",
-                &engine,
-                serde_json::json!({ "query": "architecture" }),
-            )
+            .execute_read("search_hybrid", &engine, serde_json::json!({ "query": "architecture" }))
             .unwrap();
         let hyb_array = hyb_res.as_array().unwrap();
         assert_eq!(hyb_array.len(), 1);
@@ -3526,11 +3520,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
 
         // 4. Sync corpus with fast: true maintains fast mode
         let sync_res = registry
-            .execute(
-                "sync_corpus",
-                &mut engine,
-                serde_json::json!({ "fast": true }),
-            )
+            .execute("sync_corpus", &mut engine, serde_json::json!({ "fast": true }))
             .unwrap();
         assert_eq!(sync_res["status"], "complete");
         assert!(engine.is_fast_mode());

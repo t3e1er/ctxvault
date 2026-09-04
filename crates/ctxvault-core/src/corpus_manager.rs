@@ -177,7 +177,9 @@ impl CorpusManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ctxvault_common::config::{ChunkingConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode};
+    use ctxvault_common::config::{
+        ChunkingConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode,
+    };
     use std::fs;
     use tempfile::TempDir;
 

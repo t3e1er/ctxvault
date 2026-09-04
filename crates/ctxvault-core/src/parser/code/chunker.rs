@@ -63,7 +63,12 @@ struct AstExtractor<'a> {
 }
 
 impl<'a> AstExtractor<'a> {
-    fn new(file_path: String, content: &'a str, language: SupportedLanguage, max_chars: usize) -> Self {
+    fn new(
+        file_path: String,
+        content: &'a str,
+        language: SupportedLanguage,
+        max_chars: usize,
+    ) -> Self {
         Self {
             file_path,
             content,
@@ -163,7 +168,9 @@ impl<'a> AstExtractor<'a> {
             // For the container itself, emit header up to max_chars to describe the container.
             let emit_text = if is_container && raw_node_text.len() > self.max_chars {
                 let mut truncated = raw_node_text;
-                if let Some((idx, _)) = truncated.char_indices().nth(self.max_chars.saturating_sub(breadcrumb.len())) {
+                if let Some((idx, _)) =
+                    truncated.char_indices().nth(self.max_chars.saturating_sub(breadcrumb.len()))
+                {
                     truncated = &truncated[..idx];
                 }
                 format!("{breadcrumb}{truncated}")
@@ -178,7 +185,8 @@ impl<'a> AstExtractor<'a> {
             };
 
             // Register AST chunk
-            let embed_policy = classify_embed_policy(sym_type, raw_node_text, lang, &self.file_path);
+            let embed_policy =
+                classify_embed_policy(sym_type, raw_node_text, lang, &self.file_path);
             let chunk =
                 Chunk::new(&self.file_path, self.chunk_index, emit_text, start_byte, end_byte)
                     .with_code_metadata(lang.name(), &full_scope, start_line, end_line)
@@ -759,7 +767,10 @@ pub fn classify_embed_policy(
         CodeSymbolType::Module => {
             // Only public modules are anchors
             if lang == SupportedLanguage::Rust {
-                if trimmed.starts_with("pub mod") || trimmed.starts_with("pub(crate) mod") || trimmed.contains("pub mod") {
+                if trimmed.starts_with("pub mod")
+                    || trimmed.starts_with("pub(crate) mod")
+                    || trimmed.contains("pub mod")
+                {
                     return ChunkEmbedPolicy::Anchor;
                 } else {
                     return ChunkEmbedPolicy::GraphOnly;
@@ -822,11 +833,7 @@ pub fn classify_embed_policy(
                     text = text[close_idx + 1..].trim_start();
                 }
             }
-            let is_exported = text
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false);
+            let is_exported = text.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false);
 
             if is_exported && !text.starts_with("Test") && !text.starts_with("Benchmark") {
                 ChunkEmbedPolicy::Anchor
@@ -1095,47 +1102,287 @@ deploy_app() {
     #[test]
     fn test_classify_embed_policy() {
         // Containers are always anchors (except impl blocks)
-        assert_eq!(classify_embed_policy(CodeSymbolType::Struct, "struct Internal;", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Class, "class Secret {}", SupportedLanguage::TypeScript, "src/lib.ts"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Trait, "trait Handler {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Interface, "interface Api {}", SupportedLanguage::TypeScript, "src/lib.ts"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Enum, "enum Status {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Module, "pub mod internal {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Module, "impl<T> Handler for Service<T> {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Struct,
+                "struct Internal;",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Class,
+                "class Secret {}",
+                SupportedLanguage::TypeScript,
+                "src/lib.ts"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Trait,
+                "trait Handler {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Interface,
+                "interface Api {}",
+                SupportedLanguage::TypeScript,
+                "src/lib.ts"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Enum,
+                "enum Status {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Module,
+                "pub mod internal {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Module,
+                "impl<T> Handler for Service<T> {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
 
         // Test files are always GraphOnly
-        assert_eq!(classify_embed_policy(CodeSymbolType::Struct, "pub struct TestFixture {}", SupportedLanguage::Rust, "src/tests.rs"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub fn test_helper() {}", SupportedLanguage::Rust, "tests/integration.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Struct,
+                "pub struct TestFixture {}",
+                SupportedLanguage::Rust,
+                "src/tests.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "pub fn test_helper() {}",
+                SupportedLanguage::Rust,
+                "tests/integration.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
 
         // Rust functions/methods
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub fn exported() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "pub(crate) fn crate_visible() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "#[inline]\npub fn with_attr() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "fn private_helper() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "fn private_method(&self) {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "#[test]\npub fn my_test() {}", SupportedLanguage::Rust, "src/lib.rs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "pub fn exported() {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "pub(crate) fn crate_visible() {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "#[inline]\npub fn with_attr() {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "fn private_helper() {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "fn private_method(&self) {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "#[test]\npub fn my_test() {}",
+                SupportedLanguage::Rust,
+                "src/lib.rs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
 
         // Go functions/methods
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "func ExportedFunction() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "func internalHelper() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "func (s *Server) ListenAndServe() error {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "func (s *Server) cleanup() {}", SupportedLanguage::Go, "server.go"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "func ExportedFunction() {}",
+                SupportedLanguage::Go,
+                "server.go"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "func internalHelper() {}",
+                SupportedLanguage::Go,
+                "server.go"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "func (s *Server) ListenAndServe() error {}",
+                SupportedLanguage::Go,
+                "server.go"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "func (s *Server) cleanup() {}",
+                SupportedLanguage::Go,
+                "server.go"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
 
         // TypeScript / JavaScript
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "export function search() {}", SupportedLanguage::TypeScript, "src/index.ts"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "function localHelper() {}", SupportedLanguage::TypeScript, "src/index.ts"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "export default function handler() {}", SupportedLanguage::JavaScript, "src/index.js"), ChunkEmbedPolicy::Anchor);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "export function search() {}",
+                SupportedLanguage::TypeScript,
+                "src/index.ts"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "function localHelper() {}",
+                SupportedLanguage::TypeScript,
+                "src/index.ts"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "export default function handler() {}",
+                SupportedLanguage::JavaScript,
+                "src/index.js"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
 
         // Python
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "def public_endpoint(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "def _private_worker(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "async def fetch_data(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Function, "async def _internal(): pass", SupportedLanguage::Python, "api.py"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "def public_endpoint(): pass",
+                SupportedLanguage::Python,
+                "api.py"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "def _private_worker(): pass",
+                SupportedLanguage::Python,
+                "api.py"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "async def fetch_data(): pass",
+                SupportedLanguage::Python,
+                "api.py"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Function,
+                "async def _internal(): pass",
+                SupportedLanguage::Python,
+                "api.py"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
 
         // Java / C#
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "public void handleRequest() {}", SupportedLanguage::Java, "Server.java"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "private void calculate() {}", SupportedLanguage::Java, "Server.java"), ChunkEmbedPolicy::GraphOnly);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "public async Task Execute() {}", SupportedLanguage::CSharp, "Worker.cs"), ChunkEmbedPolicy::Anchor);
-        assert_eq!(classify_embed_policy(CodeSymbolType::Method, "internal void Init() {}", SupportedLanguage::CSharp, "Worker.cs"), ChunkEmbedPolicy::GraphOnly);
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "public void handleRequest() {}",
+                SupportedLanguage::Java,
+                "Server.java"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "private void calculate() {}",
+                SupportedLanguage::Java,
+                "Server.java"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "public async Task Execute() {}",
+                SupportedLanguage::CSharp,
+                "Worker.cs"
+            ),
+            ChunkEmbedPolicy::Anchor
+        );
+        assert_eq!(
+            classify_embed_policy(
+                CodeSymbolType::Method,
+                "internal void Init() {}",
+                SupportedLanguage::CSharp,
+                "Worker.cs"
+            ),
+            ChunkEmbedPolicy::GraphOnly
+        );
     }
 }

@@ -25,7 +25,6 @@ use crate::parser::chunker;
 use crate::persistence::{ChunkRecord, EdgeTypeRecord, IndexingState, IndexingStatus, Store};
 use crate::vector_index::VectorIndex;
 
-
 /// Detailed indexing status response for client queries and monitoring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingStatusResponse {
@@ -129,7 +128,8 @@ impl Engine {
             }
             ctxvault_common::config::IndexMode::Full => {
                 let configured_model_name =
-                    crate::embedding::ModelName::from_str_name(&config.embedding.model).unwrap_or_default();
+                    crate::embedding::ModelName::from_str_name(&config.embedding.model)
+                        .unwrap_or_default();
                 let configured_dimensions = configured_model_name.dimensions();
                 let configured_model_version = configured_model_name.version_string();
 
@@ -157,7 +157,8 @@ impl Engine {
                 } else if let Some(stored_version) = vi.model_version() {
                     let is_compatible = stored_version == configured_model_version
                         || (stored_version.starts_with("jina-embeddings-v2-base-code")
-                            && configured_model_version.starts_with("jina-embeddings-v2-base-code"));
+                            && configured_model_version
+                                .starts_with("jina-embeddings-v2-base-code"));
                     if !is_compatible {
                         warn!(
                             "Embedding model version mismatch: stored='{}', configured='{}'. Vectors marked as stale.",
@@ -168,7 +169,9 @@ impl Engine {
                         vi.clear_stale();
                     }
                 } else if !vi.is_empty() {
-                    warn!("Vector index has no model_version metadata. Marking as stale for safety.");
+                    warn!(
+                        "Vector index has no model_version metadata. Marking as stale for safety."
+                    );
                     vi.mark_stale();
                 } else {
                     vi.set_model_version(&configured_model_version);
@@ -404,10 +407,8 @@ impl Engine {
         }
 
         // Partition buffer into anchor chunks and graph-only chunks
-        let anchor_chunks: Vec<&PendingChunk> = buffer
-            .iter()
-            .filter(|c| c.embed_policy == ChunkEmbedPolicy::Anchor)
-            .collect();
+        let anchor_chunks: Vec<&PendingChunk> =
+            buffer.iter().filter(|c| c.embed_policy == ChunkEmbedPolicy::Anchor).collect();
 
         tracing::debug!(
             total = buffer.len(),
@@ -429,7 +430,11 @@ impl Engine {
         let embeddings = match embedder.embed_batch(&texts) {
             Ok(embs) => embs,
             Err(e) => {
-                warn!("Failed to generate embeddings for batch of {} anchor chunks: {}", anchor_chunks.len(), e);
+                warn!(
+                    "Failed to generate embeddings for batch of {} anchor chunks: {}",
+                    anchor_chunks.len(),
+                    e
+                );
                 return Ok(());
             }
         };
@@ -459,12 +464,7 @@ impl Engine {
                 file_chunks.iter().map(|c| Some(c.chunk_index)).collect();
 
             if let Some(ref mut vi) = self.vector_index {
-                let _ = vi.add_batch(
-                    file_embeddings,
-                    doc_path,
-                    &chunk_indices,
-                    false,
-                );
+                let _ = vi.add_batch(file_embeddings, doc_path, &chunk_indices, false);
 
                 if let Some(doc_embedding) = Embedder::average_embeddings(file_embeddings) {
                     let _ = vi.add(&doc_embedding, doc_path, None, true);
@@ -537,7 +537,6 @@ impl Engine {
         let mut seen_on_disk = HashMap::new();
         let mut uncommitted_count = 0usize;
         let embedding_pipeline = self.embedder_ref().map(AsyncEmbeddingPipeline::new);
-
 
         for (rel_path, full_path) in &disk_files {
             let content = fs::read_to_string(full_path).map_err(|e| {
@@ -621,7 +620,6 @@ impl Engine {
             }
         }
         self.commit()?;
-
 
         info!(
             "Delta scan complete: {} new, {} modified, {} deleted",
@@ -789,7 +787,6 @@ impl Engine {
         if processed_in_current_batch > 0 {
             self.commit()?;
         }
-
 
         // Second pass: build tag-based edges with all documents available.
         let tag_configs: Vec<_> = self
@@ -979,7 +976,10 @@ impl Engine {
     /// Returns the number of chunks re-embedded.
     pub fn reembed(&mut self) -> Result<usize> {
         if self.is_fast_mode() || self.vector_index.is_none() {
-            return Err(Error::Index("re-embedding is unavailable in fast mode. Re-index with index_mode = 'full'".to_string()));
+            return Err(Error::Index(
+                "re-embedding is unavailable in fast mode. Re-index with index_mode = 'full'"
+                    .to_string(),
+            ));
         }
 
         // 1. Ensure embedder is available.

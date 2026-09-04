@@ -280,7 +280,8 @@ impl KnowledgeGraph {
 
         // 2. Add edges for each tag edge config
         for config in configs {
-            let class = config.class.unwrap_or_else(|| EdgeClass::infer_from_source(&config.source));
+            let class =
+                config.class.unwrap_or_else(|| EdgeClass::infer_from_source(&config.source));
             for (&_tag, paths) in &tag_postings {
                 let doc_freq = paths.len();
                 if let Some(max_freq) = config.max_frequency {
@@ -296,9 +297,23 @@ impl KnowledgeGraph {
 
                 for (i, p1) in paths.iter().enumerate() {
                     for p2 in &paths[i + 1..] {
-                        self.add_edge(p1, p2, &config.name, edge_weight, EdgeProvenance::SharedTag, class);
+                        self.add_edge(
+                            p1,
+                            p2,
+                            &config.name,
+                            edge_weight,
+                            EdgeProvenance::SharedTag,
+                            class,
+                        );
                         if config.bidirectional {
-                            self.add_edge(p2, p1, &config.name, edge_weight, EdgeProvenance::SharedTag, class);
+                            self.add_edge(
+                                p2,
+                                p1,
+                                &config.name,
+                                edge_weight,
+                                EdgeProvenance::SharedTag,
+                                class,
+                            );
                         }
                     }
                 }

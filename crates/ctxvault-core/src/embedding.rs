@@ -9,16 +9,19 @@
 //! GPU Out-of-Memory (OOM) errors and unrecoverable DirectX 12 device-lost states.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 use ctxvault_common::{Error, Result};
 
-#[cfg(target_os = "windows")]
-use ort::ep::DirectML;
 #[cfg(target_os = "macos")]
 use ort::ep::CoreML;
+#[cfg(target_os = "windows")]
+use ort::ep::DirectML;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use tokenizers::Tokenizer;
@@ -113,7 +116,6 @@ pub fn detect_gpu_vram_mb() -> usize {
     let _ = select_directml_device_id();
     DETECTED_GPU.get().map(|&(_, vram)| vram).unwrap_or(1024)
 }
-
 
 /// Supported embedding model names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,11 +230,8 @@ impl AimdController {
         }
         self.sample_count += 1;
         let d = dispatch_ms as f64;
-        self.ema_latency_ms = if self.sample_count <= 1 {
-            d
-        } else {
-            0.8 * self.ema_latency_ms + 0.2 * d
-        };
+        self.ema_latency_ms =
+            if self.sample_count <= 1 { d } else { 0.8 * self.ema_latency_ms + 0.2 * d };
 
         if dispatch_ms < 50 {
             // Additive increase: +10%
@@ -353,10 +352,7 @@ impl HardwareGovernor for DirectMlGovernor {
             _ => 256,
         };
 
-        let base_batch = batch_by_mem
-            .min(batch_by_tokens)
-            .min(tdr_safe_cap)
-            .max(1);
+        let base_batch = batch_by_mem.min(batch_by_tokens).min(tdr_safe_cap).max(1);
 
         let scaled = ((base_batch as f64) * scale).round() as usize;
         scaled.clamp(1, tdr_safe_cap)
@@ -405,7 +401,11 @@ impl HardwareGovernor for CoreMlGovernor {
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
         let free = sys.available_memory() as usize;
-        if free == 0 { 8 * 1024 * 1024 * 1024 } else { free }
+        if free == 0 {
+            8 * 1024 * 1024 * 1024
+        } else {
+            free
+        }
     }
 
     fn total_memory_bytes(&self) -> usize {
@@ -480,7 +480,11 @@ impl HardwareGovernor for CpuGovernor {
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
         let free = sys.available_memory() as usize;
-        if free == 0 { 4 * 1024 * 1024 * 1024 } else { free }
+        if free == 0 {
+            4 * 1024 * 1024 * 1024
+        } else {
+            free
+        }
     }
 
     fn total_memory_bytes(&self) -> usize {
@@ -531,9 +535,11 @@ pub fn default_hardware_governor() -> Arc<dyn HardwareGovernor> {
     }
 }
 
-
 /// Helper to check whether a directory contains tokenizer.json and any of the candidate ONNX models.
-fn check_directory_for_model(dir: &Path, candidate_subpaths: &[&'static str]) -> Option<(PathBuf, PathBuf)> {
+fn check_directory_for_model(
+    dir: &Path,
+    candidate_subpaths: &[&'static str],
+) -> Option<(PathBuf, PathBuf)> {
     let tokenizer_path = dir.join("tokenizer.json");
     if !tokenizer_path.exists() {
         return None;
@@ -586,7 +592,9 @@ fn resolve_model_files(model_name: &ModelName) -> Result<(PathBuf, PathBuf)> {
 
             if let Some(parent) = exe_dir.parent() {
                 let parent_models = parent.join("models").join(model_name.model_dir_name());
-                if let Some((onnx, tok)) = check_directory_for_model(&parent_models, candidate_subpaths) {
+                if let Some((onnx, tok)) =
+                    check_directory_for_model(&parent_models, candidate_subpaths)
+                {
                     tracing::info!(
                         model = %model_name.version_string(),
                         onnx = %onnx.display(),
@@ -621,40 +629,54 @@ impl Embedder {
     pub fn new(model_name: ModelName, governor: Arc<dyn HardwareGovernor>) -> Result<Self> {
         let (model_path, tokenizer_path) = resolve_model_files(&model_name)?;
 
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| Error::Index(format!("failed to load tokenizer from {}: {e}", tokenizer_path.display())))?;
+        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
+            Error::Index(format!("failed to load tokenizer from {}: {e}", tokenizer_path.display()))
+        })?;
 
         let create_builder = || -> Result<ort::session::builder::SessionBuilder> {
+            // `mut` is only needed on platforms that reassign `builder` to attach a
+            // hardware execution provider below (Windows/DirectML, macOS/CoreML).
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             let mut builder = Session::builder()
                 .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
                 .with_optimization_level(GraphOptimizationLevel::Level1)
-                .map_err(|e| Error::Index(format!("failed to set graph optimization level: {e}")))?;
+                .map_err(|e| {
+                    Error::Index(format!("failed to set graph optimization level: {e}"))
+                })?;
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            let builder = Session::builder()
+                .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
+                .with_optimization_level(GraphOptimizationLevel::Level1)
+                .map_err(|e| {
+                    Error::Index(format!("failed to set graph optimization level: {e}"))
+                })?;
 
             #[cfg(target_os = "windows")]
             {
                 let device_id = select_directml_device_id();
                 builder = builder
-                    .with_execution_providers([
-                        DirectML::default().with_device_id(device_id).build(),
-                    ])
-                    .map_err(|e| Error::Index(format!("failed to configure DirectML provider: {e}")))?;
+                    .with_execution_providers([DirectML::default()
+                        .with_device_id(device_id)
+                        .build()])
+                    .map_err(|e| {
+                        Error::Index(format!("failed to configure DirectML provider: {e}"))
+                    })?;
             }
 
             #[cfg(target_os = "macos")]
             {
-                builder = builder
-                    .with_execution_providers([
-                        CoreML::default().build(),
-                    ])
-                    .map_err(|e| Error::Index(format!("failed to configure CoreML provider: {e}")))?;
+                builder =
+                    builder.with_execution_providers([CoreML::default().build()]).map_err(|e| {
+                        Error::Index(format!("failed to configure CoreML provider: {e}"))
+                    })?;
             }
 
             Ok(builder)
         };
 
-        let session_0 = create_builder()?
-            .commit_from_file(&model_path)
-            .map_err(|e| Error::Index(format!("failed to load ONNX model from {}: {e}", model_path.display())))?;
+        let session_0 = create_builder()?.commit_from_file(&model_path).map_err(|e| {
+            Error::Index(format!("failed to load ONNX model from {}: {e}", model_path.display()))
+        })?;
 
         let has_token_type_ids = session_0.inputs().iter().any(|i| i.name() == "token_type_ids");
 
@@ -663,12 +685,17 @@ impl Embedder {
         // Strategy 3: Dual Concurrent Inference Streams
         // Only spawn dual sessions if governor reports total memory >= 4 GB on hardware acceleration platforms
         let has_sufficient_vram = governor.total_memory_bytes() >= 4 * 1024 * 1024 * 1024;
-        let can_use_dual_stream = cfg!(any(target_os = "windows", target_os = "macos")) && has_sufficient_vram;
+        let can_use_dual_stream =
+            cfg!(any(target_os = "windows", target_os = "macos")) && has_sufficient_vram;
 
         if can_use_dual_stream {
             match create_builder().and_then(|mut b| {
-                b.commit_from_file(&model_path)
-                    .map_err(|e| Error::Index(format!("failed to load dual ONNX session from {}: {e}", model_path.display())))
+                b.commit_from_file(&model_path).map_err(|e| {
+                    Error::Index(format!(
+                        "failed to load dual ONNX session from {}: {e}",
+                        model_path.display()
+                    ))
+                })
             }) {
                 Ok(session_1) => {
                     tracing::info!("Dual hardware acceleration sessions initialized for concurrent inference streams");
@@ -797,7 +824,8 @@ impl Embedder {
             let seq_len = encodings[idx].get_ids().len().min(max_model_len).max(1);
             let max_allowed_batch = self.governor.compute_adaptive_batch(seq_len, 0);
 
-            if !current_batch_indices.is_empty() && current_batch_indices.len() >= max_allowed_batch {
+            if !current_batch_indices.is_empty() && current_batch_indices.len() >= max_allowed_batch
+            {
                 // Flush current sub-batch
                 let sub_batch_encodings: Vec<&tokenizers::Encoding> =
                     current_batch_indices.iter().map(|&i| &encodings[i]).collect();
@@ -868,7 +896,10 @@ impl Embedder {
     }
 
     /// Embed a pre-tokenized sub-batch in a single tensor forward pass.
-    fn embed_encoded_sub_batch(&self, encodings: &[&tokenizers::Encoding]) -> Result<Vec<Vec<f32>>> {
+    fn embed_encoded_sub_batch(
+        &self,
+        encodings: &[&tokenizers::Encoding],
+    ) -> Result<Vec<Vec<f32>>> {
         if encodings.is_empty() {
             return Ok(Vec::new());
         }
@@ -943,12 +974,23 @@ impl Embedder {
                 .map_err(|e| Error::Index(format!("session {session_idx} lock poisoned: {e}")))?;
 
             let run_result = if let Some(ref type_ids) = flat_token_type_ids {
-                let input_ids_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids.clone()))
-                    .map_err(|e| Error::Index(format!("failed to construct input_ids tensor: {e}")))?;
-                let attention_mask_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_attention_mask.clone()))
-                    .map_err(|e| Error::Index(format!("failed to construct attention_mask tensor: {e}")))?;
-                let token_type_ids_val = ort::value::Tensor::from_array(([batch_size, max_len], type_ids.clone()))
-                    .map_err(|e| Error::Index(format!("failed to construct token_type_ids tensor: {e}")))?;
+                let input_ids_val =
+                    ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids.clone()))
+                        .map_err(|e| {
+                            Error::Index(format!("failed to construct input_ids tensor: {e}"))
+                        })?;
+                let attention_mask_val = ort::value::Tensor::from_array((
+                    [batch_size, max_len],
+                    flat_attention_mask.clone(),
+                ))
+                .map_err(|e| {
+                    Error::Index(format!("failed to construct attention_mask tensor: {e}"))
+                })?;
+                let token_type_ids_val =
+                    ort::value::Tensor::from_array(([batch_size, max_len], type_ids.clone()))
+                        .map_err(|e| {
+                            Error::Index(format!("failed to construct token_type_ids tensor: {e}"))
+                        })?;
 
                 session_guard.run(ort::inputs![
                     "input_ids" => input_ids_val,
@@ -956,10 +998,18 @@ impl Embedder {
                     "token_type_ids" => token_type_ids_val,
                 ])
             } else {
-                let input_ids_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids.clone()))
-                    .map_err(|e| Error::Index(format!("failed to construct input_ids tensor: {e}")))?;
-                let attention_mask_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_attention_mask.clone()))
-                    .map_err(|e| Error::Index(format!("failed to construct attention_mask tensor: {e}")))?;
+                let input_ids_val =
+                    ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids.clone()))
+                        .map_err(|e| {
+                            Error::Index(format!("failed to construct input_ids tensor: {e}"))
+                        })?;
+                let attention_mask_val = ort::value::Tensor::from_array((
+                    [batch_size, max_len],
+                    flat_attention_mask.clone(),
+                ))
+                .map_err(|e| {
+                    Error::Index(format!("failed to construct attention_mask tensor: {e}"))
+                })?;
 
                 session_guard.run(ort::inputs![
                     "input_ids" => input_ids_val,
@@ -985,7 +1035,8 @@ impl Embedder {
                     }
                 },
                 Err(e) => {
-                    hw_error = Some(format!("hardware forward pass failed on session {session_idx}: {e}"));
+                    hw_error =
+                        Some(format!("hardware forward pass failed on session {session_idx}: {e}"));
                 }
             }
 
@@ -1000,32 +1051,45 @@ impl Embedder {
         // Fall back to CPU session
         if let Some(ref cpu_session_mutex) = self.cpu_session {
             if let Some(ref err) = hw_error {
-                tracing::warn!("Hardware forward pass failed ({err}); executing on CPU fallback session");
+                tracing::warn!(
+                    "Hardware forward pass failed ({err}); executing on CPU fallback session"
+                );
             }
 
             let mut cpu_session = cpu_session_mutex
                 .lock()
                 .map_err(|e| Error::Index(format!("cpu session lock poisoned: {e}")))?;
 
-            let input_ids_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids))
-                .map_err(|e| Error::Index(format!("failed to construct input_ids tensor: {e}")))?;
-            let attention_mask_val = ort::value::Tensor::from_array(([batch_size, max_len], flat_attention_mask.clone()))
-                .map_err(|e| Error::Index(format!("failed to construct attention_mask tensor: {e}")))?;
+            let input_ids_val =
+                ort::value::Tensor::from_array(([batch_size, max_len], flat_input_ids)).map_err(
+                    |e| Error::Index(format!("failed to construct input_ids tensor: {e}")),
+                )?;
+            let attention_mask_val = ort::value::Tensor::from_array((
+                [batch_size, max_len],
+                flat_attention_mask.clone(),
+            ))
+            .map_err(|e| Error::Index(format!("failed to construct attention_mask tensor: {e}")))?;
 
             let outputs = if let Some(type_ids) = flat_token_type_ids {
-                let token_type_ids_val = ort::value::Tensor::from_array(([batch_size, max_len], type_ids))
-                    .map_err(|e| Error::Index(format!("failed to construct token_type_ids tensor: {e}")))?;
+                let token_type_ids_val =
+                    ort::value::Tensor::from_array(([batch_size, max_len], type_ids)).map_err(
+                        |e| Error::Index(format!("failed to construct token_type_ids tensor: {e}")),
+                    )?;
 
-                cpu_session.run(ort::inputs![
-                    "input_ids" => input_ids_val,
-                    "attention_mask" => attention_mask_val,
-                    "token_type_ids" => token_type_ids_val,
-                ]).map_err(|e| Error::Index(format!("CPU fallback forward pass failed: {e}")))?
+                cpu_session
+                    .run(ort::inputs![
+                        "input_ids" => input_ids_val,
+                        "attention_mask" => attention_mask_val,
+                        "token_type_ids" => token_type_ids_val,
+                    ])
+                    .map_err(|e| Error::Index(format!("CPU fallback forward pass failed: {e}")))?
             } else {
-                cpu_session.run(ort::inputs![
-                    "input_ids" => input_ids_val,
-                    "attention_mask" => attention_mask_val,
-                ]).map_err(|e| Error::Index(format!("CPU fallback forward pass failed: {e}")))?
+                cpu_session
+                    .run(ort::inputs![
+                        "input_ids" => input_ids_val,
+                        "attention_mask" => attention_mask_val,
+                    ])
+                    .map_err(|e| Error::Index(format!("CPU fallback forward pass failed: {e}")))?
             };
 
             let hidden_tensor = outputs["last_hidden_state"]
@@ -1115,7 +1179,10 @@ mod tests {
             ModelName::from_str_name("jinaai/jina-embeddings-v2-base-code"),
             Some(ModelName::JinaEmbeddingsV2BaseCode)
         );
-        assert_eq!(ModelName::from_str_name("jina-code"), Some(ModelName::JinaEmbeddingsV2BaseCode));
+        assert_eq!(
+            ModelName::from_str_name("jina-code"),
+            Some(ModelName::JinaEmbeddingsV2BaseCode)
+        );
         assert_eq!(ModelName::from_str_name("jina"), Some(ModelName::JinaEmbeddingsV2BaseCode));
         assert_eq!(ModelName::from_str_name("unknown-model"), None);
     }
