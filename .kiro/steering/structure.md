@@ -17,19 +17,24 @@ Keep layering clean: `common` has no deps on the others; `core` depends on `comm
 
 ## Key Modules in `ctxvault-core/src`
 
-- `engine.rs` — top-level `Engine` orchestrating index + search + write.
-- `search/` — hybrid/graph/related/explain search strategies + RRF fusion.
-- `graph/` — Petgraph construction; `graph/code.rs` extracts code edges (`defines`, `imports`, `calls`).
-- `index/` — indexing pipeline (`pipeline.rs`).
+- `engine.rs` — top-level `Engine` (one per corpus) orchestrating index + search + write; exposes `code_paths_set()` for graph modality filtering.
+- `search/` — bm25/semantic/hybrid/graph/related/explain strategies, all threading a `Modality` filter; single-corpus `rrf_fuse` plus public `rrf_fuse_cross_corpus` for multi-corpus fan-out.
+- `graph/` — Petgraph construction; `graph/code.rs` extracts code edges (`defines`, `imports`, `calls`, `implements_trait`) with resolution `confidence` bands; `detect_communities` (Louvain) + `detect_communities_leiden` (connectivity-refined, deterministic).
+- `corpus_manager.rs` — `CorpusManager` holds N engines (one per root), routes by corpus name, and resolves cross-corpus symbol links (`link_cross_corpus_symbols`, `resolve_symbol_across_corpora`).
+- `index/` — indexing pipeline (`pipeline.rs`); BM25 schema carries an indexed `modality` field.
 - `parser/` — `markdown.rs`, `frontmatter.rs`, `wikilink.rs`, `chunker.rs`; `parser/code/` holds AST-aware polyglot code chunking + `languages.rs`.
-- `persistence/`, `vector_index.rs`, `embedding.rs`, `corpus_manager.rs`, `template.rs`, `analytics.rs`, `watcher/`.
+- `persistence/`, `vector_index.rs` (VectorMeta carries a coarse modality tag), `embedding.rs`, `template.rs`, `analytics.rs`, `watcher/`.
 
 ## Corpus & Index Layout
 
 - `corpus.toml` — per-corpus config: `[chunking]`, `[embedding]`, `[[graph.edge_types]]` (name, source, weight, direction/bidirectional, `class` = structural|semantic|hybrid), `[templates]`.
 - Edge types are **data, not code** — declared per corpus, never hardcoded.
 - Templates: TOML files in the corpus's `.templates/` dir; enforce required frontmatter/sections and declarative `edge_rules`.
-- `.index/` (gitignored, per corpus): `meta.db` (SQLite), `tantivy/`, `vectors/` (HNSW), `graph.bin` (bincode). All derived and rebuildable.
+- `.index/` (gitignored, per corpus, at `<corpus_path>/.index`): `meta.db` (SQLite), `tantivy/`, `vectors.json` (HNSW), `graph.bin` (bincode). All derived and rebuildable. This is the ONE index-dir convention — `CorpusManager` derives it from each corpus's path.
+
+## Multi-corpus CLI
+
+`ctxvault` (crates/ctxvault-cli) wires one `CorpusManager` for local + server modes. `--corpus` is repeatable and accepts `name=path` or a bare `path` (name derived from the directory); `--default-corpus <name>` picks the default (else the first added). `--profile <scout|analysis|all>` (default `all`) gates the advertised tool set.
 
 ## Docs
 

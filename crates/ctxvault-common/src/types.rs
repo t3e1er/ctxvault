@@ -188,7 +188,7 @@ pub struct CodeSymbol {
     pub symbol_type: CodeSymbolType,
     /// Source code language (e.g. "rust", "typescript", "python", "go").
     pub language: String,
-    /// Signature or declaration snippet (e.g. "pub fn search_hybrid(&self, ...) -> Result<Vec<SearchResult>>").
+    /// Signature or declaration snippet (e.g. `pub fn search_hybrid(&self, ...) -> Result<Vec<SearchResult>>`).
     pub signature: String,
     /// Docstring or preceding documentation comments if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]

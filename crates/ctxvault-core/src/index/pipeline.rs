@@ -15,7 +15,7 @@
 //!    - Packs and pads tensors into contiguous flat host arrays (`input_ids`, `attention_mask`).
 //!    - Dispatches [`StagedBatch`] to a double-buffered channel (`staged_tx`, capacity 2).
 //! 3. Dedicated GPU Inference Worker (DirectML execution thread):
-//!    - Pulls pre-staged batches from [`staged_rx`].
+//!    - Pulls pre-staged batches from the `staged_rx` channel receiver.
 //!    - Dispatches contiguous GEMM command lists via DirectML ONNX Runtime session.
 //!    - Performs average pooling and L2 normalization on GPU hidden state tensors.
 //!    - Emits [`CompletedBatch`] to `completed_tx`.

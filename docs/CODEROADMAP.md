@@ -283,3 +283,33 @@ Source Code (.rs, .py, .ts, .go, .java)
   - Extend `promote_concept` tool to accept code symbol links and synthesize `implements`/`documents` lineage edges.
   - Add automated **Code Drift Detection**: scan indexed code to alert when an ADR references deprecated or renamed symbols/functions.
 * **Verification**: Crystallization benchmark testing lineage integrity between ADR notes and source code.
+
+---
+
+## 9. Delivered: Multi-Corpus, Cross-Modal & Progressive-Disclosure Enhancements
+
+The multi-corpus upgrade (branch `feature/codebase-semantic-indexing`) extended the code
+roadmap above with cross-cutting capabilities that apply to both code and docs:
+
+* **Multi-corpus from one MCP.** `CorpusManager` serves N roots; read tools take
+  `corpus`/`corpora` and cross-corpus queries RRF-merge with per-hit corpus tagging.
+* **Cross-corpus symbol/edge linking.** A doc's `implements`/`documents` target (or a code
+  import) resolves to a code symbol in another corpus by qualified name — only on a unique
+  match, never producing a false edge — carrying a `ResolutionConfidence` band.
+* **Import-resolution confidence bands.** `calls` edges are tagged `High` (unique in-file /
+  unique in-workspace), `Medium` (same-directory disambiguation), or `Speculative`
+  (first-of-many); `imports` are `Speculative`; `defines`/`implements_trait` are `High`.
+  `find_callers` surfaces the band per caller.
+* **Bi-modal search.** `modality` = `docs`|`code`|`both` threads through BM25 (indexed
+  field), vector (post-filter), and graph (code-path classifier), consistently in the fused
+  hybrid path.
+* **Progressive disclosure.** `search` (handles) → `get_snippet` (one symbol/chunk, bounded,
+  neighbors) → `read_note`/`read_code_file`/`read_multiple` (whole file), encoded in tool
+  descriptions.
+* **Consolidated surface + profiles.** `search` (`mode`) and `status` (`scope`) replace the
+  former per-mode/per-status families; `--profile scout|analysis|all` gates `tools/list`.
+* **Leiden community refinement.** `detect_communities_leiden` refines the Louvain partition
+  so every community is internally connected (deterministic); `get_architecture` uses it,
+  `graph_communities` accepts `algorithm=louvain` for the raw partition.
+* **`check_index_coverage`.** Reports index/parse coverage for given paths or prefixes
+  (distinct from the query-driven `coverage_report`).

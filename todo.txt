@@ -173,7 +173,7 @@ Verify: just clippy && just check ; targeted tests for any new algorithm (Leiden
 Commit: feat(phase7): parity fill-ins (Leiden, confidence bands, coverage, batch read)
 
 ================================================================================
-[ ] PHASE 8 — Docs, steering & final full verification
+[x] PHASE 8 — Docs, steering & final full verification
 --------------------------------------------------------------------------------
 Goal: Bring docs/steering in line and prove the whole suite is green.
 Scope:
