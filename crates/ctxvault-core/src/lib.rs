@@ -1,4 +1,4 @@
-﻿//! Core engine: indexing, search, graph, embeddings, and persistence.
+//! Core engine: indexing, search, graph, embeddings, and persistence.
 //!
 //! This crate contains all domain logic. It has no knowledge of MCP protocol
 //! or CLI concerns — those belong in `ctxvault-mcp` and `ctxvault-cli` respectively.
@@ -25,3 +25,5 @@ pub mod search_service;
 pub mod template;
 pub mod vector_index;
 pub mod watcher;
+
+pub use parser::code::normalize_scope_path;

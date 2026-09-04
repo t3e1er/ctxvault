@@ -158,14 +158,12 @@ impl ModelName {
         "jina-embeddings-v2-base-code"
     }
 
-    /// Candidate ONNX subpaths to probe within a model directory, in preference order.
+    /// Candidate ONNX subpaths to probe within a model directory.
     ///
-    /// These mirror the upstream Hugging Face repo layout 1:1 (no renaming) so a
-    /// plain `hf download`/`git clone` of `jinaai/jina-embeddings-v2-base-code`
-    /// into the sidecar directory works as-is. The quantized weights are preferred
-    /// (smallest, INT8 dynamic quantization); the fp32 `model.onnx` is the fallback.
+    /// Mirrors the upstream Hugging Face repo layout 1:1 (no renaming), deployed as a
+    /// sidecar downloaded and packaged by CI/CD (`onnx/model_quantized.onnx` + `tokenizer.json`).
     pub fn onnx_candidate_subpaths(&self) -> &[&'static str] {
-        &["onnx/model_quantized.onnx", "onnx/model.onnx"]
+        &["onnx/model_quantized.onnx"]
     }
 
     /// Maximum context token sequence length.

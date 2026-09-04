@@ -1504,7 +1504,7 @@ fn cap_lines(lines: &[&str], max_lines: usize) -> (String, bool) {
     }
 }
 
-/// Build a bare handle (no body) for a code symbol: scope_path + file + line range.
+/// Build a bare handle (no body) for a code symbol: scope_path + file + line range + signature/docstring.
 fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
     serde_json::json!({
         "scope_path": sym.scope_path,
@@ -1514,6 +1514,8 @@ fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
         "end_line": sym.end_line,
         "language": sym.language,
         "symbol_type": sym.symbol_type,
+        "signature": sym.signature,
+        "docstring": sym.docstring,
     })
 }
 
@@ -1563,11 +1565,33 @@ fn fetch_code_symbol(
 ) -> Result<Value> {
     let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
     if matches.is_empty() {
+        matches = engine.store().find_symbols_by_normalized_scope(qualified_name)?;
+    }
+    if matches.is_empty() {
         matches = engine.store().find_symbols_by_name(qualified_name)?;
     }
 
     match matches.len() {
-        0 => Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'"))),
+        0 => {
+            let leaf = qualified_name.split(" > ").last().unwrap_or(qualified_name).trim();
+            let leaf_candidates = engine.store().find_symbols_by_name(leaf).unwrap_or_default();
+            let leaf_matches: Vec<_> =
+                leaf_candidates.into_iter().filter(|s| s.name.eq_ignore_ascii_case(leaf)).collect();
+
+            if !leaf_matches.is_empty() {
+                let candidates: Vec<Value> = leaf_matches.iter().map(code_symbol_handle).collect();
+                Ok(serde_json::json!({
+                    "kind": "candidate_suggestions",
+                    "note": format!(
+                        "No code symbol matches '{qualified_name}', but found {} candidate(s) with leaf name '{leaf}'. Disambiguate with an exact scope_path.",
+                        candidates.len()
+                    ),
+                    "candidates": candidates,
+                }))
+            } else {
+                Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'")))
+            }
+        }
         1 => {
             let sym = &matches[0];
             let full_path = corpus_root.join(&sym.file_path);
@@ -1917,11 +1941,12 @@ fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
 
 /// Full-text BM25 keyword search.
 /// Apply Tier-1 progressive-disclosure verbosity to a set of search results.
+/// Apply detail level shaping to search results.
 ///
-/// `detail == "ids"` strips the `snippet` from every result, leaving bare
-/// handles (path/qualified-name + line range + metadata carried by
+/// `detail == "ids"` strips the `snippet`, `lineage`, and `score_components`
+/// from every result, leaving bare handles (path/qualified-name + line range + metadata carried by
 /// `entity_kind`/`language`/`chunk_index`). Any other value (including the
-/// omitted default) keeps the existing short snippet. Full bodies are never
+/// omitted default) keeps the existing short snippet and metadata. Full bodies are never
 /// emitted here — callers fetch source via `get_snippet`.
 fn apply_detail(
     mut results: Vec<ctxvault_common::types::SearchResult>,
@@ -1930,6 +1955,8 @@ fn apply_detail(
     if detail == Some("ids") {
         for r in &mut results {
             r.snippet = None;
+            r.lineage = None;
+            r.score_components = None;
         }
     }
     results
@@ -4601,5 +4628,294 @@ pub fn normalize(input: &str) -> Vec<String> {
             serde_json::json!({ "path": "router.rs" }),
         );
         assert!(hint.is_err(), "bare path must hint toward Tier 3");
+    }
+
+    #[test]
+    fn test_search_detail_ids_stripping_and_explain() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let md_old = "# Legacy\n\nLegacy architecture and design.\n";
+        let md_new = "# Modern\n\nModern architecture and design.\n";
+        fs::write(corpus_dir.join("legacy.md"), md_old).unwrap();
+        fs::write(corpus_dir.join("modern.md"), md_new).unwrap();
+        engine.index_file("legacy.md", md_old).unwrap();
+        engine.index_file("modern.md", md_new).unwrap();
+
+        let rust = r#"
+pub struct Service;
+
+impl Service {
+    pub fn process(&self) -> bool {
+        true
+    }
+}
+"#;
+        fs::write(corpus_dir.join("service.rs"), rust).unwrap();
+        engine.index_file("service.rs", rust).unwrap();
+
+        // Add structural edge so legacy.md has lineage: modern.md supersedes legacy.md
+        engine.graph_mut().add_edge(
+            "modern.md",
+            "legacy.md",
+            "supersedes",
+            1.0,
+            EdgeProvenance::Frontmatter,
+            ctxvault_common::config::EdgeClass::Structural,
+        );
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. detail="ids" on code search: snippet, lineage, and score_components must all be None
+        let code_ids_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Service process",
+                    "modality": "code",
+                    "mode": "bm25",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let code_ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(code_ids_res).unwrap();
+        assert!(!code_ids_results.is_empty(), "expected hits for Service process");
+        for r in &code_ids_results {
+            assert!(r.snippet.is_none(), "code hit snippet must be None with detail=ids");
+            assert!(r.lineage.is_none(), "code hit lineage must be None with detail=ids");
+            assert!(
+                r.score_components.is_none(),
+                "code hit score_components must be None with detail=ids"
+            );
+        }
+
+        // 2. detail="ids" on doc search with lineage: snippet, lineage, and score_components must all be None
+        let doc_ids_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "modality": "docs",
+                    "mode": "bm25",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let doc_ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(doc_ids_res).unwrap();
+        assert!(!doc_ids_results.is_empty(), "expected hits for Legacy architecture");
+        for r in &doc_ids_results {
+            assert!(r.snippet.is_none(), "doc hit snippet must be None with detail=ids");
+            assert!(r.lineage.is_none(), "doc hit lineage must be None with detail=ids");
+            assert!(
+                r.score_components.is_none(),
+                "doc hit score_components must be None with detail=ids"
+            );
+        }
+
+        // 3. detail="default" preserves snippet, lineage, and score_components
+        let default_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "modality": "docs",
+                    "mode": "bm25",
+                    "detail": "default"
+                }),
+            )
+            .unwrap();
+        let default_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(default_res).unwrap();
+        assert!(!default_results.is_empty());
+        let legacy_hit = default_results.iter().find(|r| r.path.contains("legacy.md")).unwrap();
+        assert!(legacy_hit.snippet.is_some(), "snippet must be preserved with detail=default");
+        assert!(legacy_hit.lineage.is_some(), "lineage must be preserved with detail=default");
+        assert!(
+            legacy_hit.score_components.is_some(),
+            "score_components must be preserved with detail=default"
+        );
+
+        // 4. mode="explain" preserves score breakdown even with detail="ids"
+        let explain_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({
+                    "query": "Legacy architecture",
+                    "mode": "explain",
+                    "detail": "ids"
+                }),
+            )
+            .unwrap();
+        let explanations: Vec<ctxvault_common::types::SearchExplanation> =
+            serde_json::from_value(explain_res).unwrap();
+        assert!(!explanations.is_empty(), "explain should return explanations");
+        for exp in &explanations {
+            assert!(exp.snippet.is_none(), "snippet must be None when detail=ids in explain");
+            assert!(exp.final_score > 0.0, "final_score must be preserved in explain");
+            assert!(exp.bm25.raw_score > 0.0, "bm25 score component must be preserved in explain");
+        }
+    }
+
+    #[test]
+    fn test_generic_normalized_scope_resolution() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust_code = r#"
+pub struct EarlyBinder<'tcx, T> {
+    value: T,
+    _marker: std::marker::PhantomData<&'tcx ()>,
+}
+
+impl<'tcx, T> EarlyBinder<'tcx, T> {
+    pub fn instantiate(&self) -> &T {
+        &self.value
+    }
+}
+
+pub struct OtherBinder<'a, A> {
+    item: A,
+    _life: &'a str,
+}
+
+impl<'a, A> OtherBinder<'a, A> {
+    pub fn instantiate(&self) -> &A {
+        &self.item
+    }
+}
+"#;
+        fs::write(corpus_dir.join("binder.rs"), rust_code).unwrap();
+        engine.index_file("binder.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Resolve EarlyBinder > instantiate when defined as EarlyBinder<'tcx, T> > instantiate
+        let res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
+            )
+            .unwrap();
+        assert_eq!(res["kind"], "code_symbol");
+        assert_eq!(res["name"], "instantiate");
+        assert!(res["scope_path"].as_str().unwrap().contains("EarlyBinder"));
+        assert!(res["source"].as_str().unwrap().contains("&self.value"));
+
+        // 2. Nonexistent symbol returns clean 404 Not Found error
+        let err = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Nonexistent > missing" }),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not found") || err.to_string().contains("no code symbol")
+        );
+
+        // 3. Ambiguous method: two EarlyBinder > instantiate in different files
+        let rust_code_2 = r#"
+pub struct EarlyBinder<'a, T> {
+    alt: T,
+}
+
+impl<'a, T> EarlyBinder<'a, T> {
+    pub fn instantiate(&self) -> &T {
+        &self.alt
+    }
+}
+"#;
+        fs::write(corpus_dir.join("binder2.rs"), rust_code_2).unwrap();
+        engine.index_file("binder2.rs", rust_code_2).unwrap();
+        engine.commit().unwrap();
+
+        let amb_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
+            )
+            .unwrap();
+        assert_eq!(amb_res["kind"], "ambiguous");
+        let candidates = amb_res["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|c| c["file_path"] == "binder.rs"));
+        assert!(candidates.iter().any(|c| c["file_path"] == "binder2.rs"));
+    }
+
+    #[test]
+    fn test_get_snippet_suggestions_and_enrichment() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust_code = r#"
+/// Compute hash of input data.
+pub fn compute_hash(data: &[u8]) -> u64 {
+    42
+}
+"#;
+        fs::write(corpus_dir.join("hash.rs"), rust_code).unwrap();
+        engine.index_file("hash.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Context enrichment: check scope_path, signature, docstring, language, path
+        let res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "compute_hash", "include_neighbors": true }),
+            )
+            .unwrap();
+        assert_eq!(res["kind"], "code_symbol");
+        assert_eq!(res["path"], "hash.rs");
+        assert_eq!(res["scope_path"], "compute_hash");
+        assert_eq!(res["language"], "rust");
+        assert!(res["signature"].as_str().unwrap().contains("pub fn compute_hash"));
+        assert!(res["docstring"].as_str().unwrap().contains("Compute hash of input data."));
+        // Empty neighbors serialized cleanly without crash
+        assert_eq!(res["callers"].as_array().unwrap().len(), 0);
+        assert_eq!(res["callees"].as_array().unwrap().len(), 0);
+
+        // 2. Candidate suggestions on near-miss: query with wrong container "CryptoEngine > compute_hash"
+        let sugg_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "CryptoEngine > compute_hash" }),
+            )
+            .unwrap();
+        assert_eq!(sugg_res["kind"], "candidate_suggestions");
+        let candidates = sugg_res["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["name"], "compute_hash");
+        assert_eq!(candidates[0]["scope_path"], "compute_hash");
+        assert!(candidates[0]["signature"].as_str().unwrap().contains("compute_hash"));
+
+        // 3. Complete miss returns 404
+        let err = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "CryptoEngine > unknown_fn" }),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no code symbol"));
     }
 }
