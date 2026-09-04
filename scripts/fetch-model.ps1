@@ -39,11 +39,16 @@ $ModelDirName = "jina-embeddings-v2-base-code"
 $BaseUrl      = "https://huggingface.co/$HfRepo/resolve/$HfRevision"
 $DestDir      = Join-Path $ModelsDir $ModelDirName
 
-# Files mirrored verbatim from the HF repo (relative path + expected size).
+# Files mirrored verbatim from the HF repo (relative path + expected size + sha256).
 # model_quantized.onnx = INT8 dynamic quantization (preferred, smallest).
+#
+# The SHA256 for model_quantized.onnx equals Hugging Face's own LFS content hash at
+# the pinned revision (verified against the HF tree API). A mismatch means the bytes
+# changed vs the model we build releases against, so the fetch fails rather than
+# silently using a different model. Trust is critical for an MCP context server.
 $Files = @(
-    @{ Rel = "onnx/model_quantized.onnx"; Bytes = 161895621 },
-    @{ Rel = "tokenizer.json";            Bytes = 2561316   }
+    @{ Rel = "onnx/model_quantized.onnx"; Bytes = 161895621; Sha256 = "ed45870251c9f0cf656e78aab0d37a23489066df8a222bb1c8caf8a45f2cb16d" },
+    @{ Rel = "tokenizer.json";            Bytes = 2561316;   Sha256 = "b01c78a902aa4facb2f47f95449f48e2f7bbfea5d2472ee2f6ce92323c6f86e5" }
 )
 
 function Get-FileSize([string]$Path) {
@@ -51,27 +56,36 @@ function Get-FileSize([string]$Path) {
     return 0
 }
 
+function Test-Integrity([string]$Path, [long]$Bytes, [string]$Sha256, [string]$Rel) {
+    if ((Get-FileSize $Path) -ne $Bytes) { return $false }
+    $got = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower()
+    return ($got -eq $Sha256.ToLower())
+}
+
 New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
 
 foreach ($f in $Files) {
     $dest = Join-Path $DestDir ($f.Rel -replace '/', '\')
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
-    if ((Test-Path $dest) -and ((Get-FileSize $dest) -eq $f.Bytes)) {
-        Write-Host "[=] $($f.Rel) already present ($($f.Bytes) bytes), skipping."
+
+    # Skip only if the existing file passes full integrity verification.
+    if ((Test-Path $dest) -and (Test-Integrity $dest $f.Bytes $f.Sha256 $f.Rel)) {
+        Write-Host "[=] $($f.Rel) already present and verified (sha256 ok), skipping."
         continue
     }
+
     $url  = "$BaseUrl/$($f.Rel)"
     $part = "$dest.part"
     Write-Host "[*] Downloading $($f.Rel) ($($f.Bytes) bytes)..."
     Invoke-WebRequest -Uri $url -OutFile $part -MaximumRedirection 5
-    $got = Get-FileSize $part
-    if ($got -ne $f.Bytes) {
+    if (-not (Test-Integrity $part $f.Bytes $f.Sha256 $f.Rel)) {
+        $got = (Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower()
         Remove-Item -Force $part
-        Write-Error "size mismatch for $($f.Rel): got $got, expected $($f.Bytes)"
+        Write-Error "integrity check failed for $($f.Rel): sha256 got $got, expected $($f.Sha256). Refusing to use an unverified model."
         exit 1
     }
     Move-Item -Force $part $dest
-    Write-Host "[+] $($f.Rel) ok."
+    Write-Host "[+] $($f.Rel) ok (sha256 verified)."
 }
 
 $resolved = (Resolve-Path $ModelsDir).Path
