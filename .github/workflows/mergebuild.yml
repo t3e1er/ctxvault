@@ -28,6 +28,17 @@ jobs:
         with:
           key: mergebuild-validate
 
+      # Cache the embedding model (sidecar) across runs. Keyed on the fetch
+      # script so the cache busts when the pinned model revision/sizes change.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ctxvault-model-${{ hashFiles('scripts/fetch-model.sh') }}
+
+      - name: Fetch embedding model (sidecar)
+        run: bash scripts/fetch-model.sh ./models
+
       # 1. Format check
       - name: Format check (cargo fmt)
         run: cargo fmt --all -- --check
@@ -36,8 +47,10 @@ jobs:
       - name: Clippy lints (cargo clippy)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      # 3. Unit and integration tests
+      # 3. Unit and integration tests (embedder resolves the model via CTX_MODELS_DIR)
       - name: Test suite (cargo test)
+        env:
+          CTX_MODELS_DIR: ${{ github.workspace }}/models
         run: cargo test --workspace --all-features --locked
 
       # 4. Doc warnings

@@ -14,6 +14,9 @@ ctxvault-common = { path = "../ctxvault-common" }
 
 # Async
 tokio = { workspace = true }
+crossbeam-channel = { workspace = true }
+sysinfo = { workspace = true }
+
 
 # Serialization
 serde = { workspace = true }
@@ -34,8 +37,8 @@ tantivy = { workspace = true }
 # Vector search
 hnsw_rs = { workspace = true }
 
-# Embeddings
-fastembed = { workspace = true }
+# Embeddings & Hardware Acceleration
+tokenizers = { workspace = true }
 
 # Graph
 petgraph = { workspace = true }
@@ -51,9 +54,30 @@ fs4 = { workspace = true }
 # Hashing
 blake3 = { workspace = true }
 
+# AST Code Parsing (Polyglot)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.23"
+tree-sitter-swift = "=0.6.0"
+tree-sitter-elixir = "0.3"
+tree-sitter-lua = "=0.2.0"
+tree-sitter-bash = "0.23"
+
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+
+[features]
+default = []
+
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -66,3 +90,12 @@ path = "src/bin/test_decompose.rs"
 [[bin]]
 name = "run_benchmark"
 path = "src/bin/run_benchmark.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["directml", "copy-dylibs", "download-binaries"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["coreml", "copy-dylibs", "download-binaries"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["copy-dylibs", "download-binaries"] }

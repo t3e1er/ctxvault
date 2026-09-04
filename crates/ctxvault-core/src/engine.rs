@@ -14,12 +14,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use ctxvault_common::config::CorpusConfig;
-use ctxvault_common::types::Document;
+use ctxvault_common::types::{ChunkEmbedPolicy, Document, EntityKind};
 use ctxvault_common::{Error, Result};
 
 use crate::embedding::Embedder;
 use crate::graph::KnowledgeGraph;
-use crate::index::BM25Index;
+use crate::index::{pipeline::AsyncEmbeddingPipeline, BM25Index};
 use crate::parser;
 use crate::parser::chunker;
 use crate::persistence::{ChunkRecord, EdgeTypeRecord, IndexingState, IndexingStatus, Store};
@@ -54,13 +54,28 @@ pub struct IndexingStatusResponse {
     pub error_message: Option<String>,
 }
 
+/// A text chunk staged for vectorized batch embedding.
+#[derive(Debug, Clone)]
+pub struct PendingChunk {
+    /// Document relative path.
+    pub doc_path: String,
+    /// Chunk index within document.
+    pub chunk_index: usize,
+    /// Prepared context-prefixed text for embedding.
+    pub text: String,
+    /// Policy determining if this chunk receives a dense vector embedding.
+    pub embed_policy: ChunkEmbedPolicy,
+    /// Coarse modality tag ("code" / "docs") carried into the vector index.
+    pub modality: String,
+}
+
 /// Coordinates persistence, full-text index, knowledge graph, and vector index for a corpus.
 pub struct Engine {
     config: CorpusConfig,
     store: Store,
     bm25: BM25Index,
     graph: KnowledgeGraph,
-    vector_index: VectorIndex,
+    vector_index: Option<VectorIndex>,
     embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
 }
@@ -82,7 +97,7 @@ impl Engine {
     /// - `config`: Corpus configuration (includes path, chunking settings, graph edge types).
     /// - `index_dir`: Path to the `.index/` directory. Will be created if it doesn't exist.
     ///
-    /// Initializes SQLite store, Tantivy BM25 index, knowledge graph, and vector index.
+    /// Initializes SQLite store, Tantivy BM25 index, knowledge graph, and vector index (if in Full mode).
     /// The embedder is initialized lazily on first use via `ensure_embedder()`.
     pub fn open(config: CorpusConfig, index_dir: &Path) -> Result<Self> {
         // 1. Create index directory if needed.
@@ -107,35 +122,66 @@ impl Engine {
             KnowledgeGraph::new()
         };
 
-        // 5. Load or create vector index.
-        let vector_path = index_dir.join("vectors.json");
-        let mut vector_index = if vector_path.exists() {
-            VectorIndex::load(&vector_path).unwrap_or_else(|e| {
-                warn!("Failed to load vector index from disk, starting fresh: {}", e);
-                VectorIndex::new_default(crate::vector_index::DEFAULT_DIMENSIONS)
-            })
-        } else {
-            VectorIndex::new_default(crate::vector_index::DEFAULT_DIMENSIONS)
-        };
-
-        // 5b. Check model version staleness.
-        // Use the configured model from corpus config.
-        let configured_model_name =
-            crate::embedding::ModelName::from_str_name(&config.embedding.model).unwrap_or_default();
-        let configured_model_version = configured_model_name.version_string();
-        if let Some(stored_version) = vector_index.model_version() {
-            if stored_version != configured_model_version {
-                warn!(
-                    "Embedding model version mismatch: stored='{}', configured='{}'. Vectors marked as stale.",
-                    stored_version, configured_model_version
-                );
-                vector_index.mark_stale();
+        // 5. Load or create vector index (skipped entirely in Fast Mode).
+        let vector_index = match config.index_mode {
+            ctxvault_common::config::IndexMode::Fast => {
+                info!(corpus = %config.name, "Fast Mode enabled: skipping vector index allocation and ONNX embedder initialization");
+                None
             }
-        } else if !vector_index.is_empty() {
-            // Vectors exist but no model version stored — legacy data, mark stale for safety.
-            warn!("Vector index has no model_version metadata. Marking as stale for safety.");
-            vector_index.mark_stale();
-        }
+            ctxvault_common::config::IndexMode::Full => {
+                let configured_model_name =
+                    crate::embedding::ModelName::from_str_name(&config.embedding.model)
+                        .unwrap_or_default();
+                let configured_dimensions = configured_model_name.dimensions();
+                let configured_model_version = configured_model_name.version_string();
+
+                let vector_path = index_dir.join("vectors.json");
+                let mut vi = if vector_path.exists() {
+                    VectorIndex::load(&vector_path).unwrap_or_else(|e| {
+                        warn!("Failed to load vector index from disk, starting fresh: {}", e);
+                        VectorIndex::new_default(configured_dimensions)
+                    })
+                } else {
+                    VectorIndex::new_default(configured_dimensions)
+                };
+
+                // Check model version staleness and dimension match.
+                if vi.dimensions() != configured_dimensions {
+                    warn!(
+                        "Vector index dimension mismatch: stored={}, configured={}. Recreating index with {} dimensions and marking stale.",
+                        vi.dimensions(),
+                        configured_dimensions,
+                        configured_dimensions
+                    );
+                    vi = VectorIndex::new_default(configured_dimensions);
+                    vi.set_model_version(&configured_model_version);
+                    vi.mark_stale();
+                } else if let Some(stored_version) = vi.model_version() {
+                    let is_compatible = stored_version == configured_model_version
+                        || (stored_version.starts_with("jina-embeddings-v2-base-code")
+                            && configured_model_version
+                                .starts_with("jina-embeddings-v2-base-code"));
+                    if !is_compatible {
+                        warn!(
+                            "Embedding model version mismatch: stored='{}', configured='{}'. Vectors marked as stale.",
+                            stored_version, configured_model_version
+                        );
+                        vi.mark_stale();
+                    } else {
+                        vi.clear_stale();
+                    }
+                } else if !vi.is_empty() {
+                    warn!(
+                        "Vector index has no model_version metadata. Marking as stale for safety."
+                    );
+                    vi.mark_stale();
+                } else {
+                    vi.set_model_version(&configured_model_version);
+                }
+
+                Some(vi)
+            }
+        };
 
         // 6. Register edge type configs in the persistence store.
         let edge_type_records: Vec<EdgeTypeRecord> = config
@@ -168,9 +214,13 @@ impl Engine {
 
     /// Ensure the embedder is initialized. Returns Ok(true) if available, Ok(false) if skipped.
     ///
-    /// The embedder is lazily created to avoid model download during tests or when
-    /// vector indexing is not needed. Uses the model specified in corpus config.
+    /// In Fast Mode, this immediately returns Ok(false) without loading the model.
+    /// In Full Mode, the embedder is lazily created to avoid model download during tests or when
+    /// vector indexing is not needed.
     pub fn ensure_embedder(&self) -> Result<bool> {
+        if self.config.index_mode == ctxvault_common::config::IndexMode::Fast {
+            return Ok(false);
+        }
         {
             let guard = self.embedder.read().unwrap();
             if guard.is_some() {
@@ -195,19 +245,107 @@ impl Engine {
         }
     }
 
-    /// Index a single file. Parses, chunks, stores metadata, indexes in Tantivy,
-    /// embeds in vector index (if embedder available), and builds graph edges.
-    pub fn index_file(&mut self, rel_path: &str, content: &str) -> Result<()> {
+    /// Staged file indexing: parses, chunks, updates persistence, BM25, vector removal,
+    /// and graph edges without immediately triggering embedding inference.
+    ///
+    /// Returns pending chunks ready for batched embedding, along with the parsed markdown
+    /// document (if markdown) for constructing global tag edges without re-parsing.
+    pub fn index_file_staged(
+        &mut self,
+        rel_path: &str,
+        content: &str,
+    ) -> Result<(Vec<PendingChunk>, Option<Document>)> {
+        let path = Path::new(rel_path);
+        let modified_at = now_unix();
+
+        if crate::parser::code::is_code_file(path) {
+            let parse_res = crate::parser::code::chunker::CodeChunker::parse_and_chunk(
+                path,
+                content,
+                &self.config.chunking,
+            );
+
+            let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let file_title =
+                path.file_name().and_then(|n| n.to_str()).unwrap_or(rel_path).to_string();
+
+            // 1. Store file record in persistence
+            self.store.insert_file(
+                rel_path,
+                &content_hash,
+                modified_at,
+                None,
+                Some(&file_title),
+            )?;
+
+            let mut pending = Vec::new();
+
+            // 2. Chunks and symbols
+            if let Some(res) = parse_res {
+                self.store.delete_chunks_for_file(rel_path)?;
+                let chunk_records: Vec<ChunkRecord> = res
+                    .chunks
+                    .iter()
+                    .map(|c| ChunkRecord {
+                        chunk_index: c.chunk_index,
+                        start_byte: c.start_byte,
+                        end_byte: c.end_byte,
+                        text: c.text.clone(),
+                    })
+                    .collect();
+                self.store.insert_chunks(rel_path, &chunk_records)?;
+                self.store.save_code_symbols(rel_path, &res.symbols)?;
+
+                // 3. BM25
+                self.bm25.remove_document(rel_path)?;
+                self.bm25.add_document(rel_path, Some(&file_title), &[], &res.chunks)?;
+
+                // 4. Vector index: clear existing vectors for this doc
+                if let Some(ref mut vi) = self.vector_index {
+                    vi.remove_document(rel_path);
+                }
+
+                // Build pending chunks for embedding
+                for c in &res.chunks {
+                    let modality = c
+                        .entity_kind
+                        .as_ref()
+                        .map(EntityKind::modality_tag)
+                        .unwrap_or("docs")
+                        .to_string();
+                    pending.push(PendingChunk {
+                        doc_path: rel_path.to_string(),
+                        chunk_index: c.chunk_index,
+                        text: c.text.clone(),
+                        embed_policy: c.embed_policy,
+                        modality,
+                    });
+                }
+
+                // 5. Code Graph
+                self.graph.remove_edges_for_node(rel_path);
+                let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
+                    path,
+                    content,
+                    &res.symbols,
+                    &res.symbols,
+                );
+                for edge in &edges {
+                    self.graph.add_code_edge(edge);
+                }
+            }
+
+            debug!("Staged code file: {}", rel_path);
+            return Ok((pending, None));
+        }
+
         // 1. Parse document.
         let doc = parser::parse_document(Path::new(rel_path), content)?;
 
         // 2. Chunk document.
         let chunks = chunker::chunk_document(rel_path, &doc.content, &self.config.chunking);
 
-        // 3. Compute modified_at timestamp.
-        let modified_at = now_unix();
-
-        // 4. Store file record in persistence.
+        // 3. Store file record in persistence.
         self.store.insert_file(
             rel_path,
             &doc.content_hash,
@@ -216,7 +354,7 @@ impl Engine {
             doc.title.as_deref(),
         )?;
 
-        // 5. Delete old chunks and insert new ones.
+        // 4. Delete old chunks and insert new ones.
         self.store.delete_chunks_for_file(rel_path)?;
         let chunk_records: Vec<ChunkRecord> = chunks
             .iter()
@@ -229,62 +367,141 @@ impl Engine {
             .collect();
         self.store.insert_chunks(rel_path, &chunk_records)?;
 
-        // 6. Remove old document from BM25, add new.
+        // 5. Remove old document from BM25, add new.
         self.bm25.remove_document(rel_path)?;
         self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
 
-        // 7. Embed chunks and add to vector index (if embedder is available).
-        self.vector_index.remove_document(rel_path);
-        if let Some(embedder) = self.embedder_ref() {
-            // Build context-prefixed text for embedding (original text preserved for BM25/snippets).
-            let doc_title = doc.title.as_deref().unwrap_or("").trim();
-            let texts_for_embedding: Vec<String> = chunks
-                .iter()
-                .map(|c| {
-                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                    if !doc_title.is_empty() && !section.is_empty() {
-                        format!("{} > {}: {}", doc_title, section, c.text)
-                    } else if !doc_title.is_empty() {
-                        format!("{}: {}", doc_title, c.text)
-                    } else if !section.is_empty() {
-                        format!("{}: {}", section, c.text)
-                    } else {
-                        c.text.clone()
-                    }
-                })
-                .collect();
-            let texts: Vec<&str> = texts_for_embedding.iter().map(|s| s.as_str()).collect();
-            if !texts.is_empty() {
-                match embedder.embed_batch(&texts) {
-                    Ok(embeddings) => {
-                        // Add chunk-level embeddings.
-                        let chunk_indices: Vec<Option<usize>> =
-                            chunks.iter().map(|c| Some(c.chunk_index)).collect();
-                        let _ = self.vector_index.add_batch(
-                            &embeddings,
-                            rel_path,
-                            &chunk_indices,
-                            false,
-                        );
-
-                        // Add document-level embedding (average of chunks).
-                        if let Some(doc_embedding) = Embedder::average_embeddings(&embeddings) {
-                            let _ = self.vector_index.add(&doc_embedding, rel_path, None, true);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to embed chunks for {}: {}", rel_path, e);
-                    }
-                }
-            }
+        // 6. Vector index: clear existing vectors for this doc
+        if let Some(ref mut vi) = self.vector_index {
+            vi.remove_document(rel_path);
         }
 
-        // 8. Remove old edges and rebuild from document.
-        //    Note: pass empty slice for all_docs — tag edges are only built during full_reindex.
+        // Build context-prefixed text for embedding
+        let doc_title = doc.title.as_deref().unwrap_or("").trim();
+        let pending: Vec<PendingChunk> = chunks
+            .iter()
+            .map(|c| {
+                let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                let text = if !doc_title.is_empty() && !section.is_empty() {
+                    format!("{} > {}: {}", doc_title, section, c.text)
+                } else if !doc_title.is_empty() {
+                    format!("{}: {}", doc_title, c.text)
+                } else if !section.is_empty() {
+                    format!("{}: {}", section, c.text)
+                } else {
+                    c.text.clone()
+                };
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
+                PendingChunk {
+                    doc_path: rel_path.to_string(),
+                    chunk_index: c.chunk_index,
+                    text,
+                    embed_policy: c.embed_policy,
+                    modality,
+                }
+            })
+            .collect();
+
+        // 7. Remove old edges and rebuild from document.
         self.graph.remove_edges_for_node(rel_path);
         self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
 
-        debug!("Indexed file: {}", rel_path);
+        debug!("Staged markdown file: {}", rel_path);
+        Ok((pending, Some(doc)))
+    }
+
+    /// Flush a batch of pending chunks into the vector index in a single vectorized forward pass.
+    /// Only anchor chunks receive dense vector embeddings; graph-only chunks are skipped.
+    pub fn flush_chunk_buffer(&mut self, buffer: &[PendingChunk]) -> Result<()> {
+        if buffer.is_empty() {
+            return Ok(());
+        }
+
+        // Partition buffer into anchor chunks and graph-only chunks
+        let anchor_chunks: Vec<&PendingChunk> =
+            buffer.iter().filter(|c| c.embed_policy == ChunkEmbedPolicy::Anchor).collect();
+
+        tracing::debug!(
+            total = buffer.len(),
+            anchors = anchor_chunks.len(),
+            graph_only = buffer.len() - anchor_chunks.len(),
+            "flush_chunk_buffer: partitioned by embed policy"
+        );
+
+        if anchor_chunks.is_empty() {
+            return Ok(());
+        }
+
+        let embedder = match self.embedder_ref() {
+            Some(emb) => emb,
+            None => return Ok(()),
+        };
+
+        let texts: Vec<&str> = anchor_chunks.iter().map(|c| c.text.as_str()).collect();
+        let embeddings = match embedder.embed_batch(&texts) {
+            Ok(embs) => embs,
+            Err(e) => {
+                warn!(
+                    "Failed to generate embeddings for batch of {} anchor chunks: {}",
+                    anchor_chunks.len(),
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        if embeddings.len() != anchor_chunks.len() {
+            warn!(
+                "Embedding count mismatch: expected {}, got {}",
+                anchor_chunks.len(),
+                embeddings.len()
+            );
+            return Ok(());
+        }
+
+        // Group by contiguous document slices (zero allocation, zero hash map overhead)
+        let mut start = 0;
+        while start < anchor_chunks.len() {
+            let doc_path = &anchor_chunks[start].doc_path;
+            let mut end = start + 1;
+            while end < anchor_chunks.len() && anchor_chunks[end].doc_path == *doc_path {
+                end += 1;
+            }
+
+            let file_chunks = &anchor_chunks[start..end];
+            let file_embeddings = &embeddings[start..end];
+
+            let chunk_indices: Vec<Option<usize>> =
+                file_chunks.iter().map(|c| Some(c.chunk_index)).collect();
+            // All chunks for a doc_path share the same file, hence the same modality.
+            let modality = file_chunks[0].modality.as_str();
+
+            if let Some(ref mut vi) = self.vector_index {
+                let _ = vi.add_batch(file_embeddings, doc_path, &chunk_indices, false, modality);
+
+                if let Some(doc_embedding) = Embedder::average_embeddings(file_embeddings) {
+                    let _ = vi.add(&doc_embedding, doc_path, None, true, modality);
+                }
+            }
+
+            start = end;
+        }
+
+        Ok(())
+    }
+
+    /// Index a single file. Parses, chunks, stores metadata, indexes in Tantivy,
+    /// embeds in vector index (if embedder available), and builds graph edges.
+    pub fn index_file(&mut self, rel_path: &str, content: &str) -> Result<()> {
+        let (pending, _doc) = self.index_file_staged(rel_path, content)?;
+        if !pending.is_empty() {
+            self.flush_chunk_buffer(&pending)?;
+        }
         Ok(())
     }
 
@@ -297,7 +514,9 @@ impl Engine {
         self.bm25.remove_document(rel_path)?;
 
         // 3. Remove from vector index.
-        self.vector_index.remove_document(rel_path);
+        if let Some(ref mut vi) = self.vector_index {
+            vi.remove_document(rel_path);
+        }
 
         // 4. Remove edges from graph.
         self.graph.remove_edges_for_node(rel_path);
@@ -335,6 +554,7 @@ impl Engine {
         let mut modified_files = Vec::new();
         let mut seen_on_disk = HashMap::new();
         let mut uncommitted_count = 0usize;
+        let embedding_pipeline = self.embedder_ref().map(AsyncEmbeddingPipeline::new);
 
         for (rel_path, full_path) in &disk_files {
             let content = fs::read_to_string(full_path).map_err(|e| {
@@ -346,13 +566,33 @@ impl Engine {
             match stored_map.get(rel_path) {
                 None => {
                     // New file.
-                    self.index_file(rel_path, &content)?;
+                    let (chunks, _) = self.index_file_staged(rel_path, &content)?;
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        for chunk in chunks {
+                            if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                pipeline.send(chunk)?;
+                            }
+                        }
+                        if let Some(ref mut vi) = self.vector_index {
+                            pipeline.try_recv_completed(vi)?;
+                        }
+                    }
                     new_files.push(rel_path.clone());
                     uncommitted_count += 1;
                 }
                 Some(stored_hash) if *stored_hash != hash => {
                     // Modified file.
-                    self.index_file(rel_path, &content)?;
+                    let (chunks, _) = self.index_file_staged(rel_path, &content)?;
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        for chunk in chunks {
+                            if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                pipeline.send(chunk)?;
+                            }
+                        }
+                        if let Some(ref mut vi) = self.vector_index {
+                            pipeline.try_recv_completed(vi)?;
+                        }
+                    }
                     modified_files.push(rel_path.clone());
                     uncommitted_count += 1;
                 }
@@ -362,6 +602,11 @@ impl Engine {
             }
 
             if uncommitted_count >= batch_size {
+                if let Some(ref pipeline) = embedding_pipeline {
+                    if let Some(ref mut vi) = self.vector_index {
+                        pipeline.try_recv_completed(vi)?;
+                    }
+                }
                 self.commit()?;
                 uncommitted_count = 0;
             }
@@ -376,12 +621,22 @@ impl Engine {
                 uncommitted_count += 1;
             }
             if uncommitted_count >= batch_size {
+                if let Some(ref pipeline) = embedding_pipeline {
+                    if let Some(ref mut vi) = self.vector_index {
+                        pipeline.try_recv_completed(vi)?;
+                    }
+                }
                 self.commit()?;
                 uncommitted_count = 0;
             }
         }
 
-        // 4. Commit remaining changes.
+        // 4. Finish embedding pipeline and commit remaining changes.
+        if let Some(mut pipeline) = embedding_pipeline {
+            if let Some(ref mut vi) = self.vector_index {
+                pipeline.finish(vi)?;
+            }
+        }
         self.commit()?;
 
         info!(
@@ -428,7 +683,9 @@ impl Engine {
                 self.bm25.remove_document(&file.path)?;
             }
             self.graph = KnowledgeGraph::new();
-            self.vector_index = VectorIndex::new_default(self.vector_index.dimensions());
+            if let Some(ref mut vi) = self.vector_index {
+                *vi = VectorIndex::new_default(vi.dimensions());
+            }
             self.store.reset_indexing_state(&corpus_id)?;
         } else {
             // Resuming: load existing indexed files and their content hashes
@@ -469,7 +726,9 @@ impl Engine {
         self.store.update_indexing_state(&state)?;
 
         let mut all_docs: Vec<Document> = Vec::new();
+        let embedding_pipeline = self.embedder_ref().map(AsyncEmbeddingPipeline::new);
         let mut processed_in_current_batch = 0usize;
+
         let mut newly_indexed_count = 0usize;
 
         for (rel_path, full_path) in &disk_files {
@@ -492,89 +751,37 @@ impl Engine {
                 }
             }
 
-            // 1. Parse document.
-            let doc = parser::parse_document(Path::new(rel_path.as_str()), &content)?;
-            let chunks = chunker::chunk_document(rel_path, &doc.content, &self.config.chunking);
+            // Staged indexing (handles both markdown and polyglot code files, returning chunks for batched embedding)
+            let (chunks, maybe_doc) = self.index_file_staged(rel_path, &content)?;
+            if let Some(doc) = maybe_doc {
+                all_docs.push(doc);
+            }
 
-            // 2. Insert file record into SQLite.
-            let modified_at = now_unix();
-            self.store.insert_file(
-                rel_path,
-                &doc.content_hash,
-                modified_at,
-                doc.template.as_deref(),
-                doc.title.as_deref(),
-            )?;
-
-            // 3. Insert chunk records into SQLite.
-            self.store.delete_chunks_for_file(rel_path)?;
-            let chunk_records: Vec<ChunkRecord> = chunks
-                .iter()
-                .map(|c| ChunkRecord {
-                    chunk_index: c.chunk_index,
-                    start_byte: c.start_byte,
-                    end_byte: c.end_byte,
-                    text: c.text.clone(),
-                })
-                .collect();
-            self.store.insert_chunks(rel_path, &chunk_records)?;
-
-            // 4. Tantivy BM25.
-            self.bm25.remove_document(rel_path)?;
-            self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
-
-            // 5. Vector index (embed chunks if embedder available).
-            self.vector_index.remove_document(rel_path);
-            if let Some(embedder) = self.embedder_ref() {
-                let doc_title = doc.title.as_deref().unwrap_or(rel_path);
-                let texts_for_embedding: Vec<String> = chunks
-                    .iter()
-                    .map(|c| {
-                        if let Some(ref chain) = c.heading_chain {
-                            format!("{} > {}: {}", doc_title, chain, c.text)
-                        } else if let Some(ref title) = doc.title {
-                            format!("{}: {}", title, c.text)
-                        } else {
-                            c.text.clone()
-                        }
-                    })
-                    .collect();
-                let texts: Vec<&str> = texts_for_embedding.iter().map(|s| s.as_str()).collect();
-                if !texts.is_empty() {
-                    match embedder.embed_batch(&texts) {
-                        Ok(embeddings) => {
-                            let chunk_indices: Vec<Option<usize>> =
-                                chunks.iter().map(|c| Some(c.chunk_index)).collect();
-                            let _ = self.vector_index.add_batch(
-                                &embeddings,
-                                rel_path,
-                                &chunk_indices,
-                                false,
-                            );
-
-                            if let Some(doc_embedding) = Embedder::average_embeddings(&embeddings) {
-                                let _ = self.vector_index.add(&doc_embedding, rel_path, None, true);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to embed chunks for {}: {}", rel_path, e);
-                        }
+            // Stream anchor chunks to the async GPU pipeline and poll any completed batches
+            if let Some(ref pipeline) = embedding_pipeline {
+                for chunk in chunks {
+                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                        pipeline.send(chunk)?;
                     }
+                }
+                if let Some(ref mut vi) = self.vector_index {
+                    pipeline.try_recv_completed(vi)?;
                 }
             }
 
-            // 6. Build document non-tag graph edges.
-            self.graph.remove_edges_for_node(rel_path);
-            self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
-
-            all_docs.push(doc);
             processed_in_current_batch += 1;
             newly_indexed_count += 1;
             state.indexed_files += 1;
             state.last_processed_path = Some(rel_path.clone());
 
             // Check if batch is full -> commit checkpoint!
+            // Notice: SQLite and Tantivy commit immediately without blocking on GPU forward pass!
             if processed_in_current_batch >= batch_size {
+                if let Some(ref pipeline) = embedding_pipeline {
+                    if let Some(ref mut vi) = self.vector_index {
+                        pipeline.try_recv_completed(vi)?;
+                    }
+                }
                 self.commit()?;
                 state.updated_at = now_unix();
                 self.store.update_indexing_state(&state)?;
@@ -583,6 +790,14 @@ impl Engine {
                     processed_in_current_batch, state.indexed_files, total_files
                 );
                 processed_in_current_batch = 0;
+            }
+        }
+
+        // Finish embedding pipeline: drains all remaining in-flight batches, joins threads,
+        // and inserts completed embeddings into self.vector_index.
+        if let Some(mut pipeline) = embedding_pipeline {
+            if let Some(ref mut vi) = self.vector_index {
+                pipeline.finish(vi)?;
             }
         }
 
@@ -602,9 +817,7 @@ impl Engine {
             .collect();
 
         if !tag_configs.is_empty() && !all_docs.is_empty() {
-            for doc in &all_docs {
-                self.graph.build_edges_for_document(doc, &tag_configs, &all_docs);
-            }
+            self.graph.build_all_tag_edges(&tag_configs, &all_docs);
         }
 
         // Final commit and update state to Completed
@@ -626,11 +839,13 @@ impl Engine {
     pub fn commit(&mut self) -> Result<()> {
         self.bm25.commit()?;
         self.graph.save(&self.index_dir.join("graph.bin"))?;
-        // Save vector index (only if it has data).
-        if !self.vector_index.is_empty() {
-            self.vector_index.save(&self.index_dir.join("vectors.json")).unwrap_or_else(|e| {
-                warn!("Failed to save vector index: {}", e);
-            });
+        // Save vector index (only if it has data and has unpersisted changes).
+        if let Some(ref vi) = self.vector_index {
+            if vi.is_dirty() && !vi.is_empty() {
+                vi.save(&self.index_dir.join("vectors.json")).unwrap_or_else(|e| {
+                    warn!("Failed to save vector index: {}", e);
+                });
+            }
         }
         Ok(())
     }
@@ -640,9 +855,14 @@ impl Engine {
         &self.bm25
     }
 
-    /// Get a reference to the vector index for semantic search.
-    pub fn vector_index(&self) -> &VectorIndex {
-        &self.vector_index
+    /// Get a reference to the vector index for semantic search (None if in Fast Mode).
+    pub fn vector_index(&self) -> Option<&VectorIndex> {
+        self.vector_index.as_ref()
+    }
+
+    /// Check whether the engine is running in Fast Mode.
+    pub fn is_fast_mode(&self) -> bool {
+        self.config.index_mode == ctxvault_common::config::IndexMode::Fast
     }
 
     /// Get an Arc reference to the embedder (if initialized).
@@ -726,6 +946,26 @@ impl Engine {
         &mut self.graph
     }
 
+    /// Build the set of graph node keys that represent code entities.
+    ///
+    /// Used by the search layer to classify a result path as code vs docs for
+    /// modality filtering. Keys include each code symbol's `scope_path`, its
+    /// defining file path, and the `<corpus>::scope_path` cross-corpus form.
+    /// Returns an empty set on catalog read error (all paths then classify as
+    /// docs, which is the safe default).
+    pub fn code_paths_set(&self) -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        let corpus = &self.config.name;
+        if let Ok(symbols) = self.store.get_all_code_symbols() {
+            for sym in symbols {
+                let _ = set.insert(sym.scope_path.clone());
+                let _ = set.insert(sym.file_path.clone());
+                let _ = set.insert(format!("{}::{}", corpus, sym.scope_path));
+            }
+        }
+        set
+    }
+
     /// Get a reference to the store for metadata queries.
     pub fn store(&self) -> &Store {
         &self.store
@@ -736,9 +976,14 @@ impl Engine {
         &self.config
     }
 
+    /// Get a mutable reference to the corpus config.
+    pub fn config_mut(&mut self) -> &mut CorpusConfig {
+        &mut self.config
+    }
+
     /// Check whether vectors are stale (model version mismatch).
     pub fn vectors_stale(&self) -> bool {
-        self.vector_index.is_stale()
+        self.vector_index.as_ref().map(|vi| vi.is_stale()).unwrap_or(false)
     }
 
     /// Check whether the corpus has been indexed (has any files in the store).
@@ -748,12 +993,12 @@ impl Engine {
 
     /// Get the model version stored in the vector index.
     pub fn stored_model_version(&self) -> Option<&str> {
-        self.vector_index.model_version()
+        self.vector_index.as_ref().and_then(|vi| vi.model_version())
     }
 
     /// Get a mutable reference to the vector index.
-    pub fn vector_index_mut(&mut self) -> &mut VectorIndex {
-        &mut self.vector_index
+    pub fn vector_index_mut(&mut self) -> Option<&mut VectorIndex> {
+        self.vector_index.as_mut()
     }
 
     /// Re-embed all chunks with the current model, replacing old vectors.
@@ -768,6 +1013,13 @@ impl Engine {
     ///
     /// Returns the number of chunks re-embedded.
     pub fn reembed(&mut self) -> Result<usize> {
+        if self.is_fast_mode() || self.vector_index.is_none() {
+            return Err(Error::Index(
+                "re-embedding is unavailable in fast mode. Re-index with index_mode = 'full'"
+                    .to_string(),
+            ));
+        }
+
         // 1. Ensure embedder is available.
         let available = self.ensure_embedder()?;
         if !available {
@@ -779,11 +1031,12 @@ impl Engine {
         let files = self.store.list_files()?;
 
         // 3. Reset vector index (preserve dimensions and params).
-        let dims = self.vector_index.dimensions();
-        self.vector_index = VectorIndex::new_default(dims);
+        let dims = self.vector_index.as_ref().unwrap().dimensions();
+        self.vector_index = Some(VectorIndex::new_default(dims));
 
         // 4. Re-embed all chunks.
         let mut total_chunks = 0usize;
+        let mut chunk_buffer: Vec<PendingChunk> = Vec::new();
 
         let corpus_path = std::path::PathBuf::from(&self.config.path);
         for file in &files {
@@ -807,13 +1060,14 @@ impl Engine {
                 let chunk_records = self.store.get_chunks_for_file(&file.path)?;
                 let chunks: Vec<ctxvault_common::types::Chunk> = chunk_records
                     .into_iter()
-                    .map(|cr| ctxvault_common::types::Chunk {
-                        doc_path: file.path.clone(),
-                        chunk_index: cr.chunk_index,
-                        text: cr.text,
-                        start_byte: cr.start_byte,
-                        end_byte: cr.end_byte,
-                        heading_chain: None,
+                    .map(|cr| {
+                        ctxvault_common::types::Chunk::new(
+                            file.path.clone(),
+                            cr.chunk_index,
+                            cr.text,
+                            cr.start_byte,
+                            cr.end_byte,
+                        )
                     })
                     .collect();
                 (chunks, file.title.clone())
@@ -823,46 +1077,53 @@ impl Engine {
                 continue;
             }
 
-            // Build context-prefixed text for embedding.
             let doc_title = title.as_deref().unwrap_or("").trim();
-            let texts_for_embedding: Vec<String> = chunks
-                .iter()
-                .map(|c| {
-                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                    if !doc_title.is_empty() && !section.is_empty() {
-                        format!("{} > {}: {}", doc_title, section, c.text)
-                    } else if !doc_title.is_empty() {
-                        format!("{}: {}", doc_title, c.text)
-                    } else if !section.is_empty() {
-                        format!("{}: {}", section, c.text)
-                    } else {
-                        c.text.clone()
-                    }
-                })
-                .collect();
-            let texts: Vec<&str> = texts_for_embedding.iter().map(|s| s.as_str()).collect();
+            for c in &chunks {
+                let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                let text = if !doc_title.is_empty() && !section.is_empty() {
+                    format!("{} > {}: {}", doc_title, section, c.text)
+                } else if !doc_title.is_empty() {
+                    format!("{}: {}", doc_title, c.text)
+                } else if !section.is_empty() {
+                    format!("{}: {}", section, c.text)
+                } else {
+                    c.text.clone()
+                };
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
+                chunk_buffer.push(PendingChunk {
+                    doc_path: file.path.clone(),
+                    chunk_index: c.chunk_index,
+                    text,
+                    embed_policy: c.embed_policy,
+                    modality,
+                });
+            }
 
-            // Embed using the current embedder.
-            let embeddings = embedder.embed_batch(&texts)?;
-
-            // Add chunk-level embeddings.
-            let chunk_indices: Vec<Option<usize>> =
-                chunks.iter().map(|c| Some(c.chunk_index)).collect();
-            let _ = self.vector_index.add_batch(&embeddings, &file.path, &chunk_indices, false);
-
-            // Add document-level embedding (average of chunks).
-            if let Some(doc_embedding) = crate::embedding::Embedder::average_embeddings(&embeddings)
-            {
-                let _ = self.vector_index.add(&doc_embedding, &file.path, None, true);
+            if chunk_buffer.len() >= 64 {
+                self.flush_chunk_buffer(&chunk_buffer)?;
+                chunk_buffer.clear();
             }
 
             total_chunks += chunks.len();
         }
 
+        // Flush any remaining buffered chunks
+        if !chunk_buffer.is_empty() {
+            self.flush_chunk_buffer(&chunk_buffer)?;
+            chunk_buffer.clear();
+        }
+
         // 5. Update model version metadata.
         let model_version = embedder.model_name().version_string().to_string();
-        self.vector_index.set_model_version(&model_version);
-        self.vector_index.clear_stale();
+        if let Some(ref mut vi) = self.vector_index {
+            vi.set_model_version(&model_version);
+            vi.clear_stale();
+        }
 
         // 6. Store model version in persistence for audit trail.
         self.store.set_config("embedding_model", &model_version)?;
@@ -909,20 +1170,31 @@ fn walk_dir_recursive(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            // Skip hidden directories (e.g., .index, .templates, .git).
+            // Skip hidden directories and common build/dependency artifacts
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || name == "dist"
+                    || name == "build"
+                    || name == "venv"
+                    || name == ".venv"
+                {
                     continue;
                 }
             }
             walk_dir_recursive(root, &path, results)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = path.strip_prefix(root).map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            })?;
-            // Normalize path separators to forward slashes.
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            results.push((rel_str, path.clone()));
+        } else {
+            let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
+            let is_code = crate::parser::code::is_code_file(&path);
+            if is_md || is_code {
+                let rel = path.strip_prefix(root).map_err(|e| {
+                    Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                })?;
+                // Normalize path separators to forward slashes.
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                results.push((rel_str, path.clone()));
+            }
         }
     }
     Ok(())
@@ -935,6 +1207,7 @@ fn walk_dir_recursive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ctxvault_common::types::CodeSymbolType;
     use tempfile::TempDir;
 
     /// Create a minimal corpus config pointing at the given path.
@@ -943,6 +1216,7 @@ mod tests {
             name: "test".to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: ctxvault_common::config::CorpusMode::ReadWrite,
+            index_mode: ctxvault_common::config::IndexMode::Full,
             chunking: ctxvault_common::config::ChunkingConfig {
                 min_chunk_tokens: 1, // very low for tests
                 ..Default::default()
@@ -965,6 +1239,28 @@ mod tests {
             },
             templates_dir: ".templates".to_string(),
         }
+    }
+
+    #[test]
+    fn test_fast_mode_skips_vectors_and_embedder() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        fs::write(corpus_dir.join("file1.md"), "# File 1\nSome test markdown content").unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = ctxvault_common::config::IndexMode::Fast;
+
+        let index_dir = tmp.path().join("index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+        assert!(engine.is_fast_mode());
+        assert!(engine.vector_index().is_none());
+        assert_eq!(engine.ensure_embedder().unwrap(), false);
+
+        let files = engine.full_reindex_paginated(10, false).unwrap();
+        assert_eq!(files, 1);
+        assert!(engine.vector_index().is_none());
+        assert_eq!(engine.store().list_files().unwrap().len(), 1);
     }
 
     #[test]
@@ -1143,10 +1439,10 @@ mod tests {
             "entries": [{
                 "id": 0,
                 "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 384]
+                "vector": vec![0.1f32; 768]
             }],
             "next_id": 1,
-            "dimensions": 384,
+            "dimensions": 768,
             "max_nb_connection": 16,
             "ef_construction": 200,
             "model_version": "some-other-model-v99"
@@ -1175,10 +1471,10 @@ mod tests {
             "entries": [{
                 "id": 0,
                 "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 384]
+                "vector": vec![0.1f32; 768]
             }],
             "next_id": 1,
-            "dimensions": 384,
+            "dimensions": 768,
             "max_nb_connection": 16,
             "ef_construction": 200
         });
@@ -1283,5 +1579,119 @@ mod tests {
 
         let files = resumed_engine.store().list_files().unwrap();
         assert_eq!(files.len(), 15);
+    }
+
+    #[test]
+    fn test_polyglot_codebase_indexing_and_cross_modal_search() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(corpus_dir.join("docs/adr")).unwrap();
+        fs::create_dir_all(corpus_dir.join("src")).unwrap();
+        fs::create_dir_all(corpus_dir.join("scripts")).unwrap();
+        let index_dir = tmp.path().join("index");
+
+        // 1. Write markdown ADR
+        let adr_content = r#"---
+title: ADR-0001 Hybrid Search
+tags: [search, rrf, architecture]
+---
+# ADR-0001: Reciprocal Rank Fusion Search
+
+We implement 4-way RRF hybrid search combining BM25, embeddings, and graph traversal.
+"#;
+        fs::write(corpus_dir.join("docs/adr/0001-hybrid-search.md"), adr_content).unwrap();
+
+        // 2. Write Rust file
+        let rust_code = r#"
+/// Search engine implementation
+pub struct Engine;
+
+impl Engine {
+    /// Execute hybrid search across all modalities
+    pub fn search_hybrid(&self, query: &str) -> Vec<String> {
+        let results = execute_rrf(query);
+        results
+    }
+}
+
+pub fn execute_rrf(q: &str) -> Vec<String> {
+    vec![q.to_string()]
+}
+"#;
+        fs::write(corpus_dir.join("src/search.rs"), rust_code).unwrap();
+
+        // 3. Write TypeScript file
+        let ts_code = r#"
+export interface UserProfile {
+    id: string;
+    email: string;
+}
+
+export class UserService {
+    /** Fetch user by ID */
+    async getUser(id: string): Promise<UserProfile> {
+        return { id, email: "user@example.com" };
+    }
+}
+"#;
+        fs::write(corpus_dir.join("src/user.ts"), ts_code).unwrap();
+
+        // 4. Write Python script
+        let py_code = r#"
+class DataIngest:
+    """Batch data ingestion pipeline."""
+    def run_pipeline(self, batch):
+        return len(batch)
+"#;
+        fs::write(corpus_dir.join("scripts/process.py"), py_code).unwrap();
+
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        // Perform full reindex
+        let count = engine.full_reindex().unwrap();
+        assert_eq!(count, 4, "Should index 1 markdown file + 3 polyglot code files");
+
+        // Verify BM25 search across modalities
+        let adr_hits = engine.bm25().search("Reciprocal Rank Fusion", 5).unwrap();
+        assert!(!adr_hits.is_empty());
+        assert_eq!(adr_hits[0].path, "docs/adr/0001-hybrid-search.md");
+
+        let rust_hits = engine.bm25().search("search_hybrid modalities", 5).unwrap();
+        assert!(!rust_hits.is_empty());
+        assert_eq!(rust_hits[0].path, "src/search.rs");
+
+        let ts_hits = engine.bm25().search("UserProfile getUser", 5).unwrap();
+        assert!(!ts_hits.is_empty());
+        assert_eq!(ts_hits[0].path, "src/user.ts");
+
+        // Verify SQLite code_symbols catalog
+        let rust_symbols = engine.store().get_code_symbols_for_file("src/search.rs").unwrap();
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "Engine" && s.symbol_type == CodeSymbolType::Struct));
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "search_hybrid" && s.symbol_type == CodeSymbolType::Function));
+        assert!(rust_symbols
+            .iter()
+            .any(|s| s.name == "execute_rrf" && s.symbol_type == CodeSymbolType::Function));
+
+        let ts_symbols = engine.store().get_code_symbols_for_file("src/user.ts").unwrap();
+        assert!(ts_symbols
+            .iter()
+            .any(|s| s.name == "UserService" && s.symbol_type == CodeSymbolType::Class));
+        assert!(ts_symbols
+            .iter()
+            .any(|s| s.name == "getUser" && s.symbol_type == CodeSymbolType::Method));
+
+        // Verify graph edges (defines and calls)
+        let edges = engine.graph().get_all_edges();
+        assert!(edges.iter().any(|e| e.edge_type == "defines"
+            && e.source == "src/search.rs"
+            && e.target == "Engine"));
+        assert!(edges.iter().any(|e| e.edge_type == "calls"
+            && e.source == "Engine > search_hybrid"
+            && e.target == "execute_rrf"));
     }
 }

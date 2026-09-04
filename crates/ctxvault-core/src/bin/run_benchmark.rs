@@ -120,12 +120,15 @@ fn main() {
     println!(" CTXVAULT RETRIEVAL QUALITY BENCHMARK RUNNER");
     println!("============================================================");
 
-    let corpus_dir = PathBuf::from(r"c:\dev\semantic\corpus");
+    let corpus_dir = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"c:\dev\ctx\ctxcorpus\anthropic"));
     let config_path = corpus_dir.join("corpus.toml");
     let index_dir = corpus_dir.join(".index");
-    let queries_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\queries.json");
-    let results_out_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\results_v2.json");
-    let report_out_path = PathBuf::from(r"c:\dev\semantic\corpus\bench\report_v2.md");
+    let queries_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\queries.json");
+    let results_out_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\results_v2.json");
+    let report_out_path = PathBuf::from(r"c:\dev\ctx\ctxcorpus\bench\report_v2.md");
 
     // Clean stale lock files
     let lock1 = index_dir.join("tantivy").join(".tantivy-meta.lock");
@@ -156,7 +159,9 @@ fn main() {
     let graph_bin = index_dir.join("graph.bin");
     engine.graph().save(&graph_bin).expect("Save graph");
     let vector_json = index_dir.join("vectors.json");
-    engine.vector_index().save(&vector_json).expect("Save vectors");
+    if let Some(vi) = engine.vector_index() {
+        vi.save(&vector_json).expect("Save vectors");
+    }
 
     // Graph Stats
     let stats = engine.graph().stats();
@@ -179,19 +184,23 @@ fn main() {
 
     let embedder = engine.embedder_ref().expect("Embedder reference");
 
+    let code_paths = engine.code_paths_set();
+    let modality = ctxvault_common::types::Modality::Both;
     for q in &queries {
         // 1. BM25 Search
-        let bm25_res = search::search_bm25(engine.bm25(), &q.query, 10).unwrap_or_default();
+        let bm25_res =
+            search::search_bm25(engine.bm25(), &q.query, 10, modality).unwrap_or_default();
         let (bm25_top5, bm25_recall, bm25_mrr, bm25_ndcg) =
             compute_metrics(&bm25_res, &q.expected_relevant);
 
         // 2. Semantic Search (Precise direct chunk)
         let sem_res = search::search_semantic_dual(
-            engine.vector_index(),
+            engine.vector_index().expect("Vector index"),
             &embedder,
             &q.query,
             10,
             ctxvault_common::types::SearchDepth::Precise,
+            modality,
         )
         .unwrap_or_default();
         let (semantic_top5, sem_recall, sem_mrr, sem_ndcg) =
@@ -204,7 +213,7 @@ fn main() {
         let hyb_res = if is_multihop {
             search::search_multihop(
                 engine.bm25(),
-                engine.vector_index(),
+                engine.vector_index().expect("Vector index"),
                 engine.graph(),
                 Some(&*embedder),
                 &q.query,
@@ -212,12 +221,14 @@ fn main() {
                 10,
                 2,
                 None,
+                modality,
+                &code_paths,
             )
             .unwrap_or_default()
         } else {
             search::search_hybrid_full(
                 engine.bm25(),
-                engine.vector_index(),
+                engine.vector_index().expect("Vector index"),
                 engine.graph(),
                 &q.query,
                 query_embedding.as_deref(),
@@ -225,6 +236,8 @@ fn main() {
                 2,
                 None,
                 Some(EdgeClass::Semantic),
+                modality,
+                &code_paths,
             )
             .unwrap_or_default()
         };

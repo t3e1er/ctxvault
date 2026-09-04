@@ -19,7 +19,10 @@ fn main() {
         eprintln!("{bt}");
     }));
 
-    let corpus_path = PathBuf::from(r"c:\dev\semantic\corpus");
+    let corpus_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"c:\dev\ctx\ctxcorpus\anthropic"));
     let config_path = corpus_path.join("corpus.toml");
 
     eprintln!("Loading config from {:?}", config_path);
@@ -49,9 +52,10 @@ fn main() {
 
     // Now call search_multihop.
     eprintln!("Calling search_multihop...");
+    let code_paths = engine.code_paths_set();
     match search::search_multihop(
         engine.bm25(),
-        engine.vector_index(),
+        engine.vector_index().expect("vector index"),
         engine.graph(),
         engine.embedder_ref().as_deref(),
         query,
@@ -59,6 +63,8 @@ fn main() {
         10,
         2,
         None,
+        ctxvault_common::types::Modality::Both,
+        &code_paths,
     ) {
         Ok(results) => {
             eprintln!("SUCCESS: {} results", results.len());

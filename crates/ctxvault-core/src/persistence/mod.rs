@@ -189,6 +189,22 @@ CREATE TABLE IF NOT EXISTS indexing_state (
     updated_at INTEGER NOT NULL DEFAULT 0,
     error_message TEXT
 );
+
+CREATE TABLE IF NOT EXISTS code_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    scope_path TEXT NOT NULL,
+    symbol_type TEXT NOT NULL,
+    language TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    docstring TEXT,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(file_path);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -547,6 +563,201 @@ impl Store {
             .execute("DELETE FROM indexing_state WHERE corpus_id = ?1", params![corpus_id])
             .map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Code Symbols
+    // ------------------------------------------------------------------
+
+    /// Save code symbols extracted from a file. Replaces any existing symbols for the file.
+    pub fn save_code_symbols(
+        &self,
+        file_path: &str,
+        symbols: &[ctxvault_common::types::CodeSymbol],
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(|e| Error::Database(e.to_string()))?;
+
+        // Delete existing symbols for this file
+        tx.execute("DELETE FROM code_symbols WHERE file_path = ?1", params![file_path])
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            for sym in symbols {
+                let type_str = serde_json::to_string(&sym.symbol_type)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string();
+                stmt.execute(params![
+                    sym.file_path,
+                    sym.name,
+                    sym.scope_path,
+                    type_str,
+                    sym.language,
+                    sym.signature,
+                    sym.docstring,
+                    sym.start_line as i64,
+                    sym.end_line as i64,
+                ])
+                .map_err(|e| Error::Database(e.to_string()))?;
+            }
+        }
+
+        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve all code symbols defined in a given file.
+    pub fn get_code_symbols_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE file_path = ?1 ORDER BY start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![file_path], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Find code symbols matching a name pattern.
+    pub fn find_symbols_by_name(
+        &self,
+        name_pattern: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE name LIKE ?1 OR scope_path LIKE ?1 ORDER BY name",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let search_pattern = format!("%{name_pattern}%");
+        let rows = stmt
+            .query_map(params![search_pattern], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Find code symbols whose fully qualified `scope_path` matches exactly.
+    ///
+    /// Unlike [`Store::find_symbols_by_name`] (which does a fuzzy `LIKE`), this
+    /// performs an exact `scope_path = ?1` lookup so that cross-corpus resolution
+    /// can detect ambiguity by counting exact matches.
+    pub fn find_symbols_by_qualified_name(
+        &self,
+        scope_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE scope_path = ?1 ORDER BY file_path, start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![scope_path], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Retrieve all code symbols in the entire store.
+    pub fn get_all_code_symbols(&self) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols ORDER BY file_path, start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: ctxvault_common::types::CodeSymbolType =
+                    serde_json::from_str(&format!("\"{type_str}\""))
+                        .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                Ok(ctxvault_common::types::CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: row.get(5)?,
+                    docstring: row.get(6)?,
+                    start_line: row.get::<_, i64>(7)? as usize,
+                    end_line: row.get::<_, i64>(8)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
     }
 }
 

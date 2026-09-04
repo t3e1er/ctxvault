@@ -47,6 +47,16 @@ try {
     Copy-Item -Path $SourceExe.FullName -Destination "$InstallDir\ctxvault.exe" -Force
     # Optional alias copy
     Copy-Item -Path $SourceExe.FullName -Destination "$InstallDir\ctxv.exe" -Force -ErrorAction SilentlyContinue
+
+    # Install the bundled embedding model as a sidecar next to the binary so the
+    # embedder resolves it at <exe_dir>\models\<model>\ (no separate download).
+    $SourceModels = Join-Path $SourceExe.Directory.FullName "models"
+    if (Test-Path $SourceModels) {
+        Write-Host "[*] Installing bundled embedding model (sidecar)..." -ForegroundColor Cyan
+        $DestModels = Join-Path $InstallDir "models"
+        if (Test-Path $DestModels) { Remove-Item -Recurse -Force $DestModels }
+        Copy-Item -Recurse -Path $SourceModels -Destination $DestModels -Force
+    }
     
     Write-Host ""
     Write-Host "[+] Successfully installed 'ctxvault.exe' to $InstallDir\ctxvault.exe" -ForegroundColor Green

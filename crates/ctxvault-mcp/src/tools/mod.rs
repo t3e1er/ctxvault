@@ -50,6 +50,86 @@ impl ToolInfo {
     }
 }
 
+/// Tool exposure profile: gates which tools `tools/list` advertises to keep the
+/// listing footprint small for narrow agent roles.
+///
+/// The sets are nested: `Scout` ⊂ `Analysis` ⊂ `All`. Profiles only gate what the
+/// listing advertises — a tool called directly still executes regardless of profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProfile {
+    /// Minimal retrieve/navigate set for lightweight scout agents.
+    Scout,
+    /// Scout plus read-only graph/validation/analysis/code-intel tools.
+    Analysis,
+    /// Every registered tool, including mutating/admin tools.
+    All,
+}
+
+/// Tools exposed under the `scout` profile (minimal retrieve/navigate set).
+const SCOUT_TOOLS: [&str; 9] = [
+    "search",
+    "search_related",
+    "get_snippet",
+    "read_note",
+    "read_code_file",
+    "read_multiple",
+    "list_notes",
+    "get_frontmatter",
+    "status",
+];
+
+/// Read-only tools added by the `analysis` profile on top of `scout`.
+const ANALYSIS_ONLY_TOOLS: [&str; 21] = [
+    "backlinks",
+    "forwardlinks",
+    "graph_path",
+    "graph_stats",
+    "graph_subgraph",
+    "graph_communities",
+    "list_edge_types",
+    "traverse_lineage",
+    "get_symbol_definition",
+    "find_callers",
+    "get_architecture",
+    "validate_note",
+    "validate_corpus",
+    "list_templates",
+    "validate_taxonomy",
+    "analyze_density",
+    "find_semantic_gaps",
+    "suggest_splits",
+    "coverage_report",
+    "check_index_coverage",
+    "corpus_list",
+];
+
+impl ToolProfile {
+    /// Parse a profile from its lowercase name, defaulting to [`ToolProfile::All`]
+    /// for unknown values.
+    pub fn from_str_name(name: &str) -> Self {
+        match name {
+            "scout" => ToolProfile::Scout,
+            "analysis" => ToolProfile::Analysis,
+            _ => ToolProfile::All,
+        }
+    }
+
+    /// Whether `tools/list` under this profile should advertise `tool_name`.
+    ///
+    /// `All` admits every registered tool (so newly added tools appear without a
+    /// list edit). `Analysis` admits the scout set plus the read-only analysis
+    /// additions. `Scout` admits only the scout set.
+    pub fn includes(&self, tool_name: &str) -> bool {
+        match self {
+            ToolProfile::All => true,
+            ToolProfile::Analysis => {
+                SCOUT_TOOLS.contains(&tool_name) || ANALYSIS_ONLY_TOOLS.contains(&tool_name)
+            }
+            ToolProfile::Scout => SCOUT_TOOLS.contains(&tool_name),
+        }
+    }
+}
+
 /// Registry of all available MCP tools.
 pub struct ToolRegistry {
     tools: HashMap<String, ToolInfo>,
@@ -98,12 +178,58 @@ impl ToolRegistry {
         });
     }
 
+    /// Read tools that are corpus-scoped or manager-level and therefore must NOT
+    /// accept the fan-out `corpus`/`corpora` discrimination args.
+    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 2] = ["status", "corpus_list"];
+
+    /// Inject the optional `corpus` and `corpora` discrimination properties into
+    /// the JSON input schema of every read tool that supports fan-out.
+    ///
+    /// `corpus` targets a single corpus; `corpora` fans out across several corpora
+    /// (an array of names, or the string `"all"`) with RRF-merged, corpus-tagged
+    /// results. Manager-level / corpus-scoped read tools are skipped.
+    fn inject_corpus_args(&mut self) {
+        let corpus_prop = serde_json::json!({
+            "type": "string",
+            "description": "Target a single corpus by name. Omit to use the default corpus."
+        });
+        let corpora_prop = serde_json::json!({
+            "description": "Search across multiple corpora: an array of corpus names, or the string \"all\". Results are RRF-merged and each hit is tagged with its source corpus.",
+            "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string", "enum": ["all"] }
+            ]
+        });
+
+        for tool in self.tools.values_mut() {
+            let manager_level = Self::NON_DISCRIMINATED_READ_TOOLS.contains(&tool.name.as_str());
+            let Some(props) =
+                tool.input_schema.get_mut("properties").and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+
+            match tool.handler {
+                // Read tools (except manager-level ones) get single `corpus` + fan-out `corpora`.
+                ToolHandler::ReadOnly(_) if !manager_level => {
+                    let _ = props.insert("corpus".to_string(), corpus_prop.clone());
+                    let _ = props.insert("corpora".to_string(), corpora_prop.clone());
+                }
+                // Write tools get only single `corpus` — they never fan out.
+                ToolHandler::ReadWrite(_) => {
+                    let _ = props.insert("corpus".to_string(), corpus_prop.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Register all available tools.
     pub fn register_all(&mut self) {
         // Read tools
         self.register_read(
             "read_note",
-            "Read a note's full content and frontmatter metadata.",
+            "Tier 3 (last resort): full-file read of a markdown note's content and frontmatter. Prefer search → get_snippet first; only read the whole note when you truly need full document context.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -112,6 +238,57 @@ impl ToolRegistry {
                 "required": ["path"]
             }),
             handle_read_note,
+        );
+
+        self.register_read(
+            "get_snippet",
+            "Tier 2 fetch: retrieve exactly one code symbol's source (by qualified_name) or one doc chunk (by path+chunk_index), bounded by max_lines. Call this for the specific handles a search returned — do NOT read whole files unless necessary.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path — for a DOC chunk fetch (with chunk_index) or a code FILE hint" },
+                    "chunk_index": { "type": "integer", "description": "With path, fetch that specific doc chunk (zero-based)" },
+                    "qualified_name": { "type": "string", "description": "Code symbol scope_path (exact) or name (fuzzy) to fetch one symbol's source" },
+                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 500)" },
+                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code callers/callees as handles, or adjacent doc chunks (default false)" }
+                },
+                "required": []
+            }),
+            handle_get_snippet,
+        );
+
+        self.register_read(
+            "read_code_file",
+            "Tier 3 (last resort): read a whole source file (or a line range). Prefer search → get_snippet first.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path to the source file within the corpus" },
+                    "start_line": { "type": "integer", "description": "Optional 1-based start line to bound the read" },
+                    "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive) to bound the read" },
+                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 1000)" }
+                },
+                "required": ["path"]
+            }),
+            handle_read_code_file,
+        );
+
+        self.register_read(
+            "read_multiple",
+            "Batch Tier-3 read of multiple files in one call (token-efficient). For markdown returns parsed note; for source returns raw content. Prefer search + get_snippet first.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Relative paths to files within the corpus"
+                    },
+                    "max_lines_per_file": { "type": "integer", "description": "Optional hard cap on returned lines per file" }
+                },
+                "required": ["paths"]
+            }),
+            handle_read_multiple,
         );
 
         self.register_read(
@@ -143,98 +320,41 @@ impl ToolRegistry {
 
         // Search tools
         self.register_read(
-            "search_bm25",
-            "Full-text BM25 keyword search across all indexed notes.",
+            "search",
+            "Tier 1 retrieval: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. One search tool with a `mode` param: bm25 (exact identifiers/tokens), semantic (dense vector, natural-language intent), hybrid (default; BM25 + vector + graph RRF fusion), graph (typed graph traversal from query matches), explain (hybrid with a per-result BM25/vector/graph score breakdown).",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" }
-                },
-                "required": ["query"]
-            }),
-            handle_search_bm25,
-        );
-
-        self.register_read(
-            "search_semantic",
-            "Vector similarity search using embedding cosine distance. Supports dual-level retrieval via depth parameter.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Natural language search query" },
+                    "mode": { "type": "string", "enum": ["bm25", "semantic", "hybrid", "graph", "explain"], "description": "Retrieval mode (default: hybrid). bm25 = keyword; semantic = dense vector; hybrid = 3-way RRF fusion; graph = typed traversal; explain = hybrid + score breakdown." },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Retrieval depth: precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" }
+                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Semantic mode only: retrieval depth — precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
+                    "graph_depth": { "type": "number", "description": "hybrid/graph/explain modes: max graph traversal depth (default 2 for hybrid/explain, 3 for graph)" },
+                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "hybrid/graph/explain modes: filter graph traversal by edge types" },
+                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "hybrid/graph/explain modes: filter graph traversal by edge class (default: semantic for hybrid/explain, structural for graph)" },
+                    "decompose": { "type": "boolean", "description": "hybrid mode only: enable query decomposition for multi-hop queries (default: false)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["query"]
             }),
-            handle_search_semantic,
-        );
-
-        self.register_read(
-            "search_hybrid",
-            "BM25 + graph-boosted hybrid search combining keyword relevance with graph proximity.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "graph_depth": { "type": "number", "description": "Max graph traversal depth for boosting (default 2)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph boost traversal by edge class (default: semantic)" },
-                    "decompose": { "type": "boolean", "description": "Enable query decomposition for multi-hop queries (default: false)" }
-                },
-                "required": ["query"]
-            }),
-            handle_search_hybrid,
-        );
-
-        self.register_read(
-            "search_graph",
-            "Typed graph traversal search: finds nodes reachable from query matches via graph edges.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query to find seed nodes" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "max_depth": { "type": "number", "description": "Maximum traversal depth (default 3)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class (default: structural)" }
-                },
-                "required": ["query"]
-            }),
-            handle_search_graph,
+            handle_search,
         );
 
         self.register_read(
             "search_related",
-            "Find related documents via graph-based Personalized PageRank approximation.",
+            "Tier 1: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. Find related documents via graph-based Personalized PageRank approximation.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "seeds": { "type": "array", "items": { "type": "string" }, "description": "Seed document paths to find related notes for" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" }
+                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
                 },
                 "required": ["seeds"]
             }),
             handle_search_related,
-        );
-
-        self.register_read(
-            "search_explain",
-            "Returns full scoring breakdown for a query: BM25, vector, and graph components with rank and RRF contribution per result.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "graph_depth": { "type": "number", "description": "Max graph traversal depth (default 2)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph traversal by edge class" }
-                },
-                "required": ["query"]
-            }),
-            handle_search_explain,
         );
 
         // Graph tools
@@ -311,11 +431,12 @@ impl ToolRegistry {
 
         self.register_read(
             "graph_communities",
-            "Detect communities in the knowledge graph using the Louvain modularity algorithm. Returns community assignments with modularity scores.",
+            "Detect communities in the knowledge graph. Defaults to Leiden (Louvain partition refined so every community is internally connected); pass algorithm='louvain' for the raw modularity partition. Returns community assignments with modularity scores.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
+                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" },
+                    "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" }
                 },
                 "required": []
             }),
@@ -536,6 +657,23 @@ impl ToolRegistry {
             handle_coverage_report,
         );
 
+        self.register_read(
+            "check_index_coverage",
+            "Report index coverage + parse status for the given paths or path prefixes: which are indexed, chunk/symbol counts, and parse gaps (indexed but empty).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Relative paths or path prefixes/scopes to check for index coverage"
+                    }
+                },
+                "required": ["paths"]
+            }),
+            handle_check_index_coverage,
+        );
+
         // System tools
         self.register_read(
             "corpus_list",
@@ -565,7 +703,8 @@ impl ToolRegistry {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" }
+                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" },
+                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" }
                 },
                 "required": []
             }),
@@ -579,7 +718,8 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "batch_size": { "type": "number", "description": "Batch size for intermediate checkpoints (default 50)" },
-                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" }
+                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" },
+                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" }
                 },
                 "required": []
             }),
@@ -587,37 +727,75 @@ impl ToolRegistry {
         );
 
         self.register_read(
-            "get_status",
-            "Get corpus statistics, indexing status, document counts, and configuration.",
+            "status",
+            "Corpus + indexing status in one tool via `scope`: corpus = per-corpus statistics, document counts, and configuration; indexing = current indexing progress, throughput, and estimated time remaining; all (default) = both combined. When no specific corpus is targeted the multi-corpus overview (all configured corpora) is included.",
             serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; all (default) = both combined." },
+                    "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." }
+                },
                 "required": []
             }),
-            handle_get_status_single,
+            handle_status,
+        );
+
+        // Code Intelligence & Architecture Tools
+        self.register_read(
+            "get_symbol_definition",
+            "Find code symbol definition (function, method, struct, class, trait, interface) with exact source lines, docstrings, and incoming caller count.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Symbol name to look up" },
+                    "file_path": { "type": "string", "description": "Optional file path to disambiguate symbols with the same name" }
+                },
+                "required": ["name"]
+            }),
+            handle_get_symbol_definition,
         );
 
         self.register_read(
-            "get_corpus_stats",
-            "Get corpus statistics, indexing status, document counts, and configuration (alias for get_status).",
+            "find_callers",
+            "Find all inbound call sites and callers for a given code symbol or method across polyglot source files.",
             serde_json::json!({
                 "type": "object",
-                "properties": {},
-                "required": []
+                "properties": {
+                    "symbol_name": { "type": "string", "description": "Symbol name to find callers for" }
+                },
+                "required": ["symbol_name"]
             }),
-            handle_get_status_single,
+            handle_find_callers,
         );
 
         self.register_read(
-            "get_indexing_status",
-            "Get current indexing progress, throughput statistics, and estimated time remaining.",
+            "get_architecture",
+            "Get high-level architectural component overview via Louvain community clustering across the cross-modal knowledge graph.",
             serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "resolution": { "type": "number", "description": "Community detection resolution parameter (default 1.0)" }
+                },
                 "required": []
             }),
-            handle_get_indexing_status,
+            handle_get_architecture,
         );
+
+        self.register_write(
+            "detect_changes",
+            "Detect modified files and calculate their impact radius (impacted symbols and upstream callers).",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "since": { "type": "string", "description": "Optional revision/reference" }
+                },
+                "required": []
+            }),
+            handle_detect_changes,
+        );
+
+        // Inject corpus/corpora discrimination args into tool schemas.
+        self.inject_corpus_args();
     }
 
     /// Check if a tool is read-only.
@@ -663,7 +841,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Execute a tool by name with given arguments (backward compatible wrapper around execute_write).
+    /// Execute a tool by name with given arguments (convenience wrapper around `execute_write`).
     pub fn execute(&self, name: &str, engine: &mut Engine, args: Value) -> Result<Value> {
         self.execute_write(name, engine, args)
     }
@@ -682,21 +860,48 @@ impl Default for ToolRegistry {
 use ctxvault_core::corpus_manager::CorpusManager;
 
 /// Multi-corpus tool registry: wraps a `CorpusManager` and routes tool calls
-/// to the correct engine based on an optional `corpus` parameter in tool arguments.
+/// to the correct engine(s) based on the `corpus` / `corpora` arguments.
 ///
-/// When `corpus` is provided, routes to that specific corpus engine.
-/// When omitted, routes to the default corpus (backward compatible).
+/// - `corpus = "name"` targets a single corpus engine.
+/// - `corpora = ["a", "b"]` or `corpora = "all"` fans out across several corpora;
+///   search-style results are RRF-merged and each hit is tagged with its source
+///   corpus.
+/// - Omitting both resolves to the default corpus. This is an ergonomic default,
+///   not a legacy code path.
 pub struct MultiCorpusToolRegistry {
     registry: ToolRegistry,
+    profile: ToolProfile,
+}
+
+/// The resolved fan-out target for a read tool call.
+enum CorpusTarget {
+    /// Exactly one corpus (explicit `corpus` or the default).
+    Single(String),
+    /// Two or more corpora to fan out across (deduplicated, order preserved).
+    Multi(Vec<String>),
 }
 
 impl MultiCorpusToolRegistry {
-    /// Create a new multi-corpus registry with all tools registered.
+    /// Create a new multi-corpus registry with all tools registered and the
+    /// [`ToolProfile::All`] exposure profile.
     pub fn new() -> Self {
+        Self::with_profile(ToolProfile::All)
+    }
+
+    /// Create a new multi-corpus registry exposing tools under `profile`.
+    ///
+    /// The profile only gates what [`Self::list`] advertises; every registered
+    /// tool remains executable regardless of profile.
+    pub fn with_profile(profile: ToolProfile) -> Self {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        Self { registry }
+        Self { registry, profile }
+    }
+
+    /// The active tool exposure profile.
+    pub fn profile(&self) -> ToolProfile {
+        self.profile
     }
 
     /// Check if a tool is read-only.
@@ -704,41 +909,119 @@ impl MultiCorpusToolRegistry {
         self.registry.is_read_only(name)
     }
 
-    /// List all registered tools (for MCP `tools/list`).
+    /// List the tools advertised under the active profile (for MCP `tools/list`).
     pub fn list(&self) -> Vec<&ToolInfo> {
+        self.registry.list().into_iter().filter(|t| self.profile.includes(&t.name)).collect()
+    }
+
+    /// List every registered tool regardless of profile (for internal use).
+    pub fn list_all(&self) -> Vec<&ToolInfo> {
         self.registry.list()
     }
 
-    /// Execute a read-only tool call, routing to the correct corpus engine concurrently.
+    /// Execute a read-only tool call, routing to one corpus or fanning out across
+    /// several with RRF-merged, corpus-tagged results.
     pub fn execute_read(&self, name: &str, manager: &CorpusManager, args: Value) -> Result<Value> {
-        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
-        if name == "get_status" || name == "get_corpus_stats" {
+        // `status` without an explicit `corpus` returns the manager-level overview
+        // (all corpora). With a `corpus` it routes to that engine's status below.
+        if name == "status" && !has_corpus_arg(&args) {
             return handle_get_status(manager);
         }
 
-        // Extract and remove the `corpus` param from arguments.
-        let (corpus_name, clean_args) = extract_corpus_param(args);
+        // Parse both discrimination args out of the call, resolving the target set.
+        let (target, clean_args) = resolve_corpus_target(args, manager)?;
 
-        // Resolve the engine immutably.
-        let engine = manager.resolve_engine(corpus_name.as_deref())?;
+        match target {
+            CorpusTarget::Single(corpus_name) => {
+                let engine = manager.get_engine(&corpus_name)?;
+                let output = self.registry.execute_read(name, engine, clean_args)?;
+                Ok(tag_search_output(output, &corpus_name))
+            }
+            CorpusTarget::Multi(names) => self.fan_out_read(name, manager, &names, clean_args),
+        }
+    }
 
-        // Execute the read-only tool.
-        self.registry.execute_read(name, engine, clean_args)
+    /// Fan out a read tool across multiple corpora and merge the results.
+    ///
+    /// Search-style outputs (JSON arrays of `SearchResult`) are RRF-merged via
+    /// [`search::rrf_fuse_cross_corpus`] and returned as one tagged array. Other
+    /// (non-array) outputs are returned as a JSON object keyed by corpus name.
+    fn fan_out_read(
+        &self,
+        name: &str,
+        manager: &CorpusManager,
+        names: &[String],
+        clean_args: Value,
+    ) -> Result<Value> {
+        let limit =
+            clean_args.get("limit").and_then(Value::as_u64).map(|n| n as usize).unwrap_or(10);
+
+        let mut per_corpus: Vec<(String, Value)> = Vec::new();
+        let mut last_err: Option<Error> = None;
+
+        for corpus_name in names {
+            let engine = match manager.get_engine(corpus_name) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(corpus = %corpus_name, error = %e, "fan-out: engine resolve failed");
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+            match self.registry.execute_read(name, engine, clean_args.clone()) {
+                Ok(v) => per_corpus.push((corpus_name.clone(), v)),
+                Err(e) => {
+                    tracing::warn!(corpus = %corpus_name, error = %e, "fan-out: tool call failed");
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if per_corpus.is_empty() {
+            return Err(last_err.unwrap_or_else(|| {
+                Error::NotFound("no corpora available for fan-out".to_string())
+            }));
+        }
+
+        // If every successful output is a JSON array, treat as search-style and RRF-merge.
+        let all_arrays = per_corpus.iter().all(|(_, v)| v.is_array());
+        if all_arrays {
+            let mut tagged_lists: Vec<(String, Vec<ctxvault_common::types::SearchResult>)> =
+                Vec::with_capacity(per_corpus.len());
+            for (corpus_name, value) in per_corpus {
+                let results: Vec<ctxvault_common::types::SearchResult> =
+                    serde_json::from_value(value).map_err(|e| {
+                        Error::Config(format!("invalid search result array: {}", e))
+                    })?;
+                tagged_lists.push((corpus_name, results));
+            }
+            let merged = search::rrf_fuse_cross_corpus(&tagged_lists, limit);
+            return serde_json::to_value(merged)
+                .map_err(|e| Error::Config(format!("serialize merged results: {}", e)));
+        }
+
+        // Otherwise: return an object keyed by corpus name → raw output.
+        let obj: serde_json::Map<String, Value> = per_corpus.into_iter().collect();
+        Ok(Value::Object(obj))
     }
 
     /// Execute a tool call with exclusive access to the CorpusManager.
+    ///
+    /// Write tools always resolve a SINGLE corpus (explicit `corpus` or the default)
+    /// and never fan out. Omitting `corpus` selects the default corpus as an
+    /// ergonomic default.
     pub fn execute_write(
         &self,
         name: &str,
         manager: &mut CorpusManager,
         args: Value,
     ) -> Result<Value> {
-        // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
-        if name == "get_status" || name == "get_corpus_stats" {
+        // `status` without an explicit `corpus` returns the manager-level overview.
+        if name == "status" && !has_corpus_arg(&args) {
             return handle_get_status(manager);
         }
 
-        // Extract and remove the `corpus` param from arguments.
+        // Extract and remove the `corpus` param from arguments (writes never fan out).
         let (corpus_name, clean_args) = extract_corpus_param(args);
 
         // Resolve the engine mutably.
@@ -765,8 +1048,14 @@ impl Default for MultiCorpusToolRegistry {
     }
 }
 
-/// Extract the optional `corpus` field from tool arguments, returning
-/// the corpus name and the arguments with `corpus` removed.
+/// Whether the tool arguments explicitly target a single `corpus` by name.
+fn has_corpus_arg(args: &Value) -> bool {
+    args.get("corpus").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+}
+
+/// Extract the optional single `corpus` field from tool arguments, returning
+/// the corpus name and the arguments with `corpus` removed. Used by write tools,
+/// which never fan out.
 fn extract_corpus_param(args: Value) -> (Option<String>, Value) {
     match args {
         Value::Object(mut map) => {
@@ -774,6 +1063,117 @@ fn extract_corpus_param(args: Value) -> (Option<String>, Value) {
             (corpus, Value::Object(map))
         }
         other => (None, other),
+    }
+}
+
+/// Parse both `corpus` and `corpora` out of read-tool arguments and resolve the
+/// target corpus set, returning it alongside the arguments with BOTH keys removed.
+///
+/// Resolution precedence:
+/// - `corpora == "all"` → every corpus (sorted for determinism);
+/// - `corpora` as a non-empty array → those names (each validated to exist);
+/// - `corpus` set → that single corpus;
+/// - neither → the default corpus (single).
+fn resolve_corpus_target(args: Value, manager: &CorpusManager) -> Result<(CorpusTarget, Value)> {
+    let Value::Object(mut map) = args else {
+        // Non-object args cannot carry discrimination — fall back to default corpus.
+        let default = manager
+            .default_corpus_name()
+            .ok_or_else(|| Error::NotFound("no default corpus configured".to_string()))?
+            .to_string();
+        return Ok((CorpusTarget::Single(default), args));
+    };
+
+    let corpus = map.remove("corpus").and_then(|v| v.as_str().map(|s| s.to_string()));
+    let corpora = map.remove("corpora");
+    let clean_args = Value::Object(map);
+
+    let target = match corpora {
+        Some(Value::String(s)) if s == "all" => {
+            let mut names: Vec<String> =
+                manager.corpus_names().into_iter().map(|s| s.to_string()).collect();
+            names.sort();
+            multi_or_single(names)?
+        }
+        Some(Value::Array(items)) => {
+            let mut names: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let n = item
+                    .as_str()
+                    .ok_or_else(|| Error::Config("corpora array must contain strings".to_string()))?
+                    .to_string();
+                if !manager.has_corpus(&n) {
+                    return Err(Error::NotFound(format!("corpus not found: {}", n)));
+                }
+                names.push(n);
+            }
+            if names.is_empty() {
+                // Empty array behaves like "omitted": resolve default.
+                single_default(corpus, manager)?
+            } else {
+                multi_or_single(names)?
+            }
+        }
+        Some(Value::String(s)) => {
+            return Err(Error::Config(format!(
+                "invalid corpora value '{}': expected an array of names or \"all\"",
+                s
+            )));
+        }
+        Some(_) => {
+            return Err(Error::Config(
+                "invalid corpora value: expected an array of names or \"all\"".to_string(),
+            ));
+        }
+        None => single_default(corpus, manager)?,
+    };
+
+    Ok((target, clean_args))
+}
+
+/// Resolve the single-corpus target from an explicit `corpus` or the default.
+fn single_default(corpus: Option<String>, manager: &CorpusManager) -> Result<CorpusTarget> {
+    match corpus {
+        Some(name) => {
+            if !manager.has_corpus(&name) {
+                return Err(Error::NotFound(format!("corpus not found: {}", name)));
+            }
+            Ok(CorpusTarget::Single(name))
+        }
+        None => {
+            let default = manager
+                .default_corpus_name()
+                .ok_or_else(|| Error::NotFound("no default corpus configured".to_string()))?
+                .to_string();
+            Ok(CorpusTarget::Single(default))
+        }
+    }
+}
+
+/// Collapse a resolved name list into `Single` (one, deduped) or `Multi` (many).
+fn multi_or_single(mut names: Vec<String>) -> Result<CorpusTarget> {
+    names.dedup();
+    match names.len() {
+        0 => Err(Error::NotFound("no corpora resolved for fan-out".to_string())),
+        1 => Ok(CorpusTarget::Single(names.into_iter().next().unwrap())),
+        _ => Ok(CorpusTarget::Multi(names)),
+    }
+}
+
+/// Tag a single-corpus read output: if it is a JSON array of `SearchResult`,
+/// stamp each hit with the source corpus; otherwise return it unchanged.
+fn tag_search_output(output: Value, corpus_name: &str) -> Value {
+    if !output.is_array() {
+        return output;
+    }
+    match serde_json::from_value::<Vec<ctxvault_common::types::SearchResult>>(output.clone()) {
+        Ok(results) => {
+            let tagged: Vec<ctxvault_common::types::SearchResult> =
+                results.into_iter().map(|r| r.with_corpus(Some(corpus_name.to_string()))).collect();
+            serde_json::to_value(tagged).unwrap_or(output)
+        }
+        // A non-SearchResult array (e.g. search_explain) is returned as-is.
+        Err(_) => output,
     }
 }
 
@@ -814,6 +1214,17 @@ struct ReadNoteParams {
 }
 
 #[derive(Deserialize)]
+struct ReadMultipleParams {
+    paths: Vec<String>,
+    max_lines_per_file: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct CheckIndexCoverageParams {
+    paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct ListNotesParams {
     limit: Option<usize>,
     offset: Option<usize>,
@@ -825,50 +1236,49 @@ struct GetFrontmatterParams {
 }
 
 #[derive(Deserialize)]
-struct SearchBm25Params {
-    query: String,
-    limit: Option<usize>,
+struct GetSnippetParams {
+    path: Option<String>,
+    chunk_index: Option<usize>,
+    qualified_name: Option<String>,
+    max_lines: Option<usize>,
+    #[serde(default)]
+    include_neighbors: bool,
 }
 
 #[derive(Deserialize)]
-struct SearchSemanticParams {
+struct ReadCodeFileParams {
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    max_lines: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SearchParams {
     query: String,
+    #[serde(default)]
+    mode: Option<String>,
     limit: Option<usize>,
     depth: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct SearchHybridParams {
-    query: String,
-    limit: Option<usize>,
     graph_depth: Option<usize>,
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
     decompose: Option<bool>,
-}
-
-#[derive(Deserialize)]
-struct SearchGraphParams {
-    query: String,
-    limit: Option<usize>,
-    max_depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
+    modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SearchRelatedParams {
     seeds: Vec<String>,
     limit: Option<usize>,
+    modality: Option<String>,
+    detail: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct SearchExplainParams {
-    query: String,
-    limit: Option<usize>,
-    graph_depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
+struct StatusParams {
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -902,6 +1312,9 @@ struct GraphSubgraphParams {
 #[derive(Deserialize)]
 struct GraphCommunitiesParams {
     include_density: Option<bool>,
+    /// Community detection algorithm: `leiden` (default, connectivity-refined)
+    /// or `louvain` (raw modularity partition).
+    algorithm: Option<String>,
 }
 
 // Write tool params
@@ -999,12 +1412,14 @@ struct CoverageReportParams {
 #[derive(Deserialize)]
 struct SyncCorpusParams {
     batch_size: Option<usize>,
+    fast: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct ReindexCorpusParams {
     batch_size: Option<usize>,
     resume: Option<bool>,
+    fast: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,6 +1477,400 @@ fn handle_read_note(engine: &Engine, args: Value) -> Result<Value> {
     serde_json::to_value(response).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
+/// Detect a source language from a file extension. Returns `"text"` when unknown.
+fn language_from_path(path: &str) -> &'static str {
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("rs") => "rust",
+        Some("ts") | Some("tsx") => "typescript",
+        Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript",
+        Some("py") => "python",
+        Some("go") => "go",
+        Some("java") => "java",
+        Some("c") | Some("h") => "c",
+        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") | Some("hh") => "cpp",
+        Some("md") | Some("markdown") => "markdown",
+        _ => "text",
+    }
+}
+
+/// Bound a body of source lines to `max_lines`, joining with newlines and
+/// reporting whether truncation occurred.
+fn cap_lines(lines: &[&str], max_lines: usize) -> (String, bool) {
+    if lines.len() > max_lines {
+        (lines[..max_lines].join("\n"), true)
+    } else {
+        (lines.join("\n"), false)
+    }
+}
+
+/// Build a bare handle (no body) for a code symbol: scope_path + file + line range.
+fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
+    serde_json::json!({
+        "scope_path": sym.scope_path,
+        "name": sym.name,
+        "file_path": sym.file_path,
+        "start_line": sym.start_line,
+        "end_line": sym.end_line,
+        "language": sym.language,
+        "symbol_type": sym.symbol_type,
+    })
+}
+
+/// Tier 2 fetch: return exactly one code symbol's source or one doc chunk,
+/// bounded by `max_lines`, with optional neighbor expansion.
+fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
+    let params: GetSnippetParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let max_lines = params.max_lines.unwrap_or(500).max(1);
+    let corpus_root = Path::new(&engine.config().path);
+
+    if let Some(qualified_name) = params.qualified_name.as_deref() {
+        return fetch_code_symbol(
+            engine,
+            corpus_root,
+            qualified_name,
+            max_lines,
+            params.include_neighbors,
+        );
+    }
+
+    if let Some(path) = params.path.as_deref() {
+        if let Some(chunk_index) = params.chunk_index {
+            return fetch_doc_chunk(engine, path, chunk_index, max_lines, params.include_neighbors);
+        }
+        return Err(Error::Config(format!(
+            "get_snippet needs a chunk_index for a doc fetch on '{path}'. \
+             For a whole file use Tier 3: read_note (docs) or read_code_file (code).",
+        )));
+    }
+
+    Err(Error::Config(
+        "get_snippet requires either `qualified_name` (code) or `path`+`chunk_index` (doc)."
+            .to_string(),
+    ))
+}
+
+/// Fetch a single code symbol's bounded source by qualified name (or fuzzy name),
+/// optionally attaching caller/callee handles.
+fn fetch_code_symbol(
+    engine: &Engine,
+    corpus_root: &Path,
+    qualified_name: &str,
+    max_lines: usize,
+    include_neighbors: bool,
+) -> Result<Value> {
+    let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
+    if matches.is_empty() {
+        matches = engine.store().find_symbols_by_name(qualified_name)?;
+    }
+
+    match matches.len() {
+        0 => Err(Error::NotFound(format!("no code symbol matches '{qualified_name}'"))),
+        1 => {
+            let sym = &matches[0];
+            let full_path = corpus_root.join(&sym.file_path);
+            let content = fs::read_to_string(&full_path)
+                .map_err(|e| Error::NotFound(format!("cannot read {}: {}", sym.file_path, e)))?;
+            let file_lines: Vec<&str> = content.lines().collect();
+
+            let (source, truncated) = if sym.start_line > 0 && sym.start_line <= file_lines.len() {
+                let start_idx = sym.start_line - 1;
+                let end_idx = sym.end_line.min(file_lines.len());
+                cap_lines(&file_lines[start_idx..end_idx], max_lines)
+            } else {
+                (String::new(), false)
+            };
+
+            let mut out = serde_json::json!({
+                "kind": "code_symbol",
+                "path": sym.file_path,
+                "scope_path": sym.scope_path,
+                "name": sym.name,
+                "language": sym.language,
+                "symbol_type": sym.symbol_type,
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+                "signature": sym.signature,
+                "docstring": sym.docstring,
+                "source": source,
+                "truncated": truncated,
+            });
+
+            if include_neighbors {
+                let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+                let edges = engine.graph().get_all_edges();
+                let matches_sym =
+                    |candidate: &str| candidate == sym.scope_path || candidate == sym.name;
+
+                // Callers: "calls" edges whose TARGET is this symbol → source is a caller.
+                let callers: Vec<Value> = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.target))
+                    .filter_map(|e| {
+                        all_symbols
+                            .iter()
+                            .find(|s| s.scope_path == e.source || s.name == e.source)
+                            .map(code_symbol_handle)
+                    })
+                    .collect();
+
+                // Callees: "calls" edges whose SOURCE is this symbol → target is a callee.
+                let callees: Vec<Value> = edges
+                    .iter()
+                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.source))
+                    .filter_map(|e| {
+                        all_symbols
+                            .iter()
+                            .find(|s| s.scope_path == e.target || s.name == e.target)
+                            .map(code_symbol_handle)
+                    })
+                    .collect();
+
+                out["callers"] = Value::Array(callers);
+                out["callees"] = Value::Array(callees);
+            }
+
+            Ok(out)
+        }
+        _ => {
+            let candidates: Vec<Value> = matches.iter().map(code_symbol_handle).collect();
+            Ok(serde_json::json!({
+                "kind": "ambiguous",
+                "note": format!(
+                    "'{qualified_name}' is ambiguous ({} matches); disambiguate with an exact scope_path.",
+                    candidates.len()
+                ),
+                "candidates": candidates,
+            }))
+        }
+    }
+}
+
+/// Fetch a single doc chunk's bounded text, optionally with adjacent chunks.
+fn fetch_doc_chunk(
+    engine: &Engine,
+    path: &str,
+    chunk_index: usize,
+    max_lines: usize,
+    include_neighbors: bool,
+) -> Result<Value> {
+    let chunks = engine.store().get_chunks_for_file(path)?;
+    if chunks.is_empty() {
+        return Err(Error::NotFound(format!("no indexed chunks for '{path}'")));
+    }
+
+    let chunk = chunks
+        .iter()
+        .find(|c| c.chunk_index == chunk_index)
+        .ok_or_else(|| Error::NotFound(format!("chunk {chunk_index} not found for '{path}'")))?;
+
+    let text_lines: Vec<&str> = chunk.text.lines().collect();
+    let (text, truncated) = cap_lines(&text_lines, max_lines);
+
+    let mut out = serde_json::json!({
+        "kind": "doc_chunk",
+        "path": path,
+        "chunk_index": chunk.chunk_index,
+        "start_byte": chunk.start_byte,
+        "end_byte": chunk.end_byte,
+        "text": text,
+        "truncated": truncated,
+    });
+
+    if include_neighbors {
+        let neighbor_cap = (max_lines / 2).max(1);
+        let neighbor = |target: usize| -> Option<Value> {
+            chunks.iter().find(|c| c.chunk_index == target).map(|c| {
+                let nlines: Vec<&str> = c.text.lines().collect();
+                let (ntext, ntrunc) = cap_lines(&nlines, neighbor_cap);
+                serde_json::json!({
+                    "chunk_index": c.chunk_index,
+                    "start_byte": c.start_byte,
+                    "end_byte": c.end_byte,
+                    "text": ntext,
+                    "truncated": ntrunc,
+                })
+            })
+        };
+
+        out["previous"] = chunk_index.checked_sub(1).and_then(neighbor).unwrap_or(Value::Null);
+        out["next"] = neighbor(chunk_index + 1).unwrap_or(Value::Null);
+    }
+
+    Ok(out)
+}
+
+/// Tier 3 fetch: read a whole source file (or a bounded line range) as raw text.
+fn handle_read_code_file(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ReadCodeFileParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let corpus_root = Path::new(&engine.config().path);
+    let full_path = corpus_root.join(&params.path);
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
+
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_line_count = all_lines.len();
+    let max_lines = params.max_lines.unwrap_or(1000).max(1);
+
+    // Resolve an optional 1-based inclusive line window.
+    let start_idx =
+        params.start_line.map(|s| s.saturating_sub(1).min(total_line_count)).unwrap_or(0);
+    let end_idx =
+        params.end_line.map(|e| e.min(total_line_count)).unwrap_or(total_line_count).max(start_idx);
+
+    let windowed = &all_lines[start_idx..end_idx];
+    let (body, truncated) = cap_lines(windowed, max_lines);
+
+    Ok(serde_json::json!({
+        "path": params.path,
+        "language": language_from_path(&params.path),
+        "total_line_count": total_line_count,
+        "start_line": start_idx + 1,
+        "end_line": start_idx + windowed.len().min(max_lines),
+        "content": body,
+        "truncated": truncated,
+    }))
+}
+
+/// Batch Tier-3 read of multiple files in one call.
+///
+/// For markdown files each result mirrors [`handle_read_note`]'s shape
+/// (`path`, `title`, `frontmatter`, `content`, `content_hash`); for source
+/// files it returns raw `content` (like `read_code_file`). Per-path failures
+/// become an entry with an `error` field rather than aborting the whole call.
+fn handle_read_multiple(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ReadMultipleParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let corpus_root = PathBuf::from(&engine.config().path);
+    let results: Vec<Value> = params
+        .paths
+        .iter()
+        .map(|path| read_one_file(&corpus_root, path, params.max_lines_per_file))
+        .collect();
+
+    Ok(serde_json::json!({
+        "count": results.len(),
+        "results": results,
+    }))
+}
+
+/// Read a single file for [`handle_read_multiple`], returning either the
+/// file payload or an `{ "path", "error" }` entry on failure.
+fn read_one_file(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Value {
+    match read_one_file_inner(corpus_root, path, max_lines) {
+        Ok(value) => value,
+        Err(e) => serde_json::json!({ "path": path, "error": e.to_string() }),
+    }
+}
+
+/// Fallible core of [`read_one_file`].
+fn read_one_file_inner(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Result<Value> {
+    let full_path = corpus_root.join(path);
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
+
+    let is_markdown = matches!(language_from_path(path), "markdown");
+
+    if is_markdown {
+        let doc = ctxvault_core::parser::parse_document(Path::new(path), &content)?;
+        let body = match max_lines {
+            Some(cap) => {
+                let lines: Vec<&str> = doc.content.lines().collect();
+                cap_lines(&lines, cap.max(1)).0
+            }
+            None => doc.content,
+        };
+        Ok(serde_json::json!({
+            "path": path,
+            "kind": "note",
+            "title": doc.title,
+            "frontmatter": doc.frontmatter,
+            "content": body,
+            "content_hash": doc.content_hash,
+        }))
+    } else {
+        let all_lines: Vec<&str> = content.lines().collect();
+        let total_line_count = all_lines.len();
+        let (body, truncated) = match max_lines {
+            Some(cap) => cap_lines(&all_lines, cap.max(1)),
+            None => (content, false),
+        };
+        Ok(serde_json::json!({
+            "path": path,
+            "kind": "code",
+            "language": language_from_path(path),
+            "total_line_count": total_line_count,
+            "content": body,
+            "truncated": truncated,
+        }))
+    }
+}
+
+/// Report index coverage + parse status for the given paths or path prefixes.
+///
+/// For each requested path or prefix, consults the catalog to report whether
+/// any file record matches (`indexed`), the chunk and symbol counts, and
+/// whether it parsed (indexed but zero chunks signals a parse gap).
+fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
+    let params: CheckIndexCoverageParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let all_files = engine.store().list_files()?;
+
+    let mut reports = Vec::with_capacity(params.paths.len());
+    let mut covered = 0usize;
+
+    for scope in &params.paths {
+        // A scope matches a file record either exactly or as a path prefix.
+        let matched: Vec<&str> = all_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .filter(|p| *p == scope || p.starts_with(scope.as_str()))
+            .collect();
+
+        let indexed = !matched.is_empty();
+        let mut chunk_count = 0usize;
+        let mut symbol_count = 0usize;
+        for file_path in &matched {
+            chunk_count += engine.store().get_chunks_for_file(file_path).map(|c| c.len())?;
+            symbol_count += engine.store().get_code_symbols_for_file(file_path).map(|s| s.len())?;
+        }
+
+        // Parsed means the scope produced content: indexed but zero chunks and
+        // zero symbols is a parse gap.
+        let parsed = indexed && (chunk_count > 0 || symbol_count > 0);
+        if indexed {
+            covered += 1;
+        }
+
+        let mut matched_files: Vec<String> = matched.iter().map(|p| p.to_string()).collect();
+        matched_files.sort();
+
+        reports.push(serde_json::json!({
+            "path": scope,
+            "indexed": indexed,
+            "parsed": parsed,
+            "chunk_count": chunk_count,
+            "symbol_count": symbol_count,
+            "matched_files": matched_files,
+        }));
+    }
+
+    let total = params.paths.len();
+    Ok(serde_json::json!({
+        "reports": reports,
+        "summary": {
+            "total": total,
+            "covered": covered,
+            "uncovered": total - covered,
+        },
+    }))
+}
+
 /// List all indexed notes with metadata.
 fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListNotesParams = serde_json::from_value(args)
@@ -1106,130 +1915,229 @@ fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
 }
 
 /// Full-text BM25 keyword search.
-fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchBm25Params = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let mut results = search::search_bm25(engine.bm25(), &params.query, limit)?;
-    search::enrich_results_with_lineage(&mut results, engine.graph());
-
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+/// Apply Tier-1 progressive-disclosure verbosity to a set of search results.
+///
+/// `detail == "ids"` strips the `snippet` from every result, leaving bare
+/// handles (path/qualified-name + line range + metadata carried by
+/// `entity_kind`/`language`/`chunk_index`). Any other value (including the
+/// omitted default) keeps the existing short snippet. Full bodies are never
+/// emitted here — callers fetch source via `get_snippet`.
+fn apply_detail(
+    mut results: Vec<ctxvault_common::types::SearchResult>,
+    detail: Option<&str>,
+) -> Vec<ctxvault_common::types::SearchResult> {
+    if detail == Some("ids") {
+        for r in &mut results {
+            r.snippet = None;
+        }
+    }
+    results
 }
 
-/// Semantic vector search using embedding similarity.
-fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchSemanticParams = serde_json::from_value(args)
+/// Consolidated search tool: dispatches to a retrieval mode selected by `mode`
+/// (default `hybrid`). Modes: `bm25`, `semantic`, `hybrid`, `graph`, `explain`.
+///
+/// Every mode honors `modality` (docs|code|both) and `detail` (ids|default) via
+/// [`apply_detail`]. `explain` returns the score-breakdown shape
+/// ([`search::search_explain`]) rather than a plain result array.
+fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
+    let params: SearchParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
+    let mode = params.mode.as_deref().unwrap_or("hybrid");
     let limit = params.limit.unwrap_or(10);
-    let depth = params
-        .depth
+    let modality = params
+        .modality
         .as_deref()
-        .and_then(ctxvault_common::types::SearchDepth::from_str_name)
+        .and_then(ctxvault_common::types::Modality::from_str_name)
         .unwrap_or_default();
 
-    // Ensure the embedder is initialized.
-    let _ = engine.ensure_embedder()?;
-
-    let embedder = match engine.embedder_ref() {
-        Some(e) => e,
-        None => {
-            return Err(Error::Index(
-                "embedder not available — cannot perform semantic search".to_string(),
-            ));
+    match mode {
+        "bm25" => {
+            let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
+            search::enrich_results_with_lineage(&mut results, engine.graph());
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
         }
-    };
+        "semantic" => {
+            if engine.is_fast_mode() || engine.vector_index().is_none() {
+                return Err(Error::Index(
+                    "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+                ));
+            }
+            let depth = params
+                .depth
+                .as_deref()
+                .and_then(ctxvault_common::types::SearchDepth::from_str_name)
+                .unwrap_or_default();
 
-    let mut results = search::search_semantic_dual(
-        engine.vector_index(),
-        &embedder,
-        &params.query,
-        limit,
-        depth,
-    )?;
-    search::enrich_results_with_lineage(&mut results, engine.graph());
+            // Ensure the embedder is initialized.
+            let _ = engine.ensure_embedder()?;
+            let embedder = match engine.embedder_ref() {
+                Some(e) => e,
+                None => {
+                    return Err(Error::Index(
+                        "embedder not available — cannot perform semantic search".to_string(),
+                    ));
+                }
+            };
+            let vector_index = engine.vector_index().unwrap();
 
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
+            let mut results = search::search_semantic_dual(
+                vector_index,
+                &embedder,
+                &params.query,
+                limit,
+                depth,
+                modality,
+            )?;
+            search::enrich_results_with_lineage(&mut results, engine.graph());
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "hybrid" => {
+            let graph_depth = params.graph_depth.unwrap_or(2);
+            let edge_type_filter = params.edge_types;
+            let code_paths = engine.code_paths_set();
 
-/// BM25 + vector + graph hybrid search (true 3-signal fusion via RRF).
-fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchHybridParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+            // Default to Semantic class filter for hybrid search graph boost.
+            let edge_class_filter = match params.edge_class.as_deref() {
+                Some(s) => EdgeClass::from_str_name(s),
+                None => Some(EdgeClass::Semantic),
+            };
 
-    let limit = params.limit.unwrap_or(10);
-    let graph_depth = params.graph_depth.unwrap_or(2);
-    let edge_type_filter = params.edge_types;
+            // Try to get a query embedding for full 3-signal hybrid.
+            // If the embedder is unavailable, fall back to BM25+graph only.
+            let embedder_opt = engine.embedder_ref();
+            let query_embedding =
+                embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
-    // Default to Semantic class filter for hybrid search graph boost.
-    let edge_class_filter = match params.edge_class.as_deref() {
-        Some(s) => EdgeClass::from_str_name(s),
-        None => Some(EdgeClass::Semantic),
-    };
+            let results_raw = if let Some(vector_index) = engine.vector_index() {
+                if params.decompose == Some(true) {
+                    // Multi-hop query decomposition mode.
+                    search::search_multihop(
+                        engine.bm25(),
+                        vector_index,
+                        engine.graph(),
+                        embedder_opt.as_deref(),
+                        &params.query,
+                        query_embedding.as_deref(),
+                        limit,
+                        graph_depth,
+                        edge_type_filter.as_deref(),
+                        modality,
+                        &code_paths,
+                    )?
+                } else {
+                    search::search_hybrid_full(
+                        engine.bm25(),
+                        vector_index,
+                        engine.graph(),
+                        &params.query,
+                        query_embedding.as_deref(),
+                        limit,
+                        graph_depth,
+                        edge_type_filter.as_deref(),
+                        edge_class_filter,
+                        modality,
+                        &code_paths,
+                    )?
+                }
+            } else {
+                // Fast Mode fallback: BM25 + Graph.
+                search::search_hybrid(
+                    engine.bm25(),
+                    engine.graph(),
+                    &params.query,
+                    limit,
+                    graph_depth,
+                    edge_type_filter.as_deref(),
+                    edge_class_filter,
+                    modality,
+                    &code_paths,
+                )?
+            };
 
-    // Try to get a query embedding for full 3-signal hybrid.
-    // If embedder is not available, fall back to BM25+graph only.
-    let embedder_opt = engine.embedder_ref();
-    let query_embedding =
-        embedder_opt.as_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
+            let results = apply_detail(results_raw, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "graph" => {
+            let max_depth = params.graph_depth.unwrap_or(3);
+            let edge_type_filter = params.edge_types;
+            let code_paths = engine.code_paths_set();
 
-    let results = if params.decompose == Some(true) {
-        // Multi-hop query decomposition mode.
-        search::search_multihop(
-            engine.bm25(),
-            engine.vector_index(),
-            engine.graph(),
-            embedder_opt.as_deref(),
-            &params.query,
-            query_embedding.as_deref(),
-            limit,
-            graph_depth,
-            edge_type_filter.as_deref(),
-        )?
-    } else {
-        search::search_hybrid_full(
-            engine.bm25(),
-            engine.vector_index(),
-            engine.graph(),
-            &params.query,
-            query_embedding.as_deref(),
-            limit,
-            graph_depth,
-            edge_type_filter.as_deref(),
-            edge_class_filter,
-        )?
-    };
+            // Default to Structural class filter for graph traversal search.
+            let edge_class_filter = match params.edge_class.as_deref() {
+                Some(s) => EdgeClass::from_str_name(s),
+                None => Some(EdgeClass::Structural),
+            };
 
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
+            let results = search::search_graph(
+                engine.bm25(),
+                engine.graph(),
+                &params.query,
+                limit,
+                max_depth,
+                edge_type_filter.as_deref(),
+                edge_class_filter,
+                modality,
+                &code_paths,
+            )?;
+            let results = apply_detail(results, params.detail.as_deref());
+            serde_json::to_value(results)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        "explain" => {
+            let graph_depth = params.graph_depth.unwrap_or(2);
+            let edge_type_filter = params.edge_types;
+            let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
+            let code_paths = engine.code_paths_set();
 
-/// Typed graph traversal search.
-fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchGraphParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+            // Try to get a query embedding for full 3-signal explanation.
+            let query_embedding =
+                engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
 
-    let limit = params.limit.unwrap_or(10);
-    let max_depth = params.max_depth.unwrap_or(3);
-    let edge_type_filter = params.edge_types;
+            let dummy_vi;
+            let vector_index = match engine.vector_index() {
+                Some(vi) => vi,
+                None => {
+                    dummy_vi = ctxvault_core::vector_index::VectorIndex::new_default(384);
+                    &dummy_vi
+                }
+            };
 
-    // Default to Structural class filter for graph traversal search.
-    let edge_class_filter = match params.edge_class.as_deref() {
-        Some(s) => EdgeClass::from_str_name(s),
-        None => Some(EdgeClass::Structural),
-    };
+            let mut explanations = search::search_explain(
+                engine.bm25(),
+                vector_index,
+                engine.graph(),
+                &params.query,
+                query_embedding.as_deref(),
+                limit,
+                graph_depth,
+                edge_type_filter.as_deref(),
+                edge_class_filter,
+                modality,
+                &code_paths,
+            )?;
 
-    let results = search::search_graph(
-        engine.bm25(),
-        engine.graph(),
-        &params.query,
-        limit,
-        max_depth,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-    )?;
+            // Tier-1: `detail=ids` strips snippets, leaving bare handles + score breakdown.
+            if params.detail.as_deref() == Some("ids") {
+                for e in &mut explanations {
+                    e.snippet = None;
+                }
+            }
 
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+            serde_json::to_value(explanations)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        other => Err(Error::Config(format!(
+            "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain",
+            other
+        ))),
+    }
 }
 
 /// Find related documents via PPR approximation.
@@ -1238,39 +2146,25 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let limit = params.limit.unwrap_or(10);
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let code_paths = engine.code_paths_set();
 
-    let results = search::search_related(engine.graph(), &params.seeds, limit, 0.85, 20)?;
+    let results = search::search_related(
+        engine.graph(),
+        &params.seeds,
+        limit,
+        0.85,
+        20,
+        modality,
+        &code_paths,
+    )?;
+    let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Full scoring breakdown — returns detailed per-result explanation.
-fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SearchExplainParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let limit = params.limit.unwrap_or(10);
-    let graph_depth = params.graph_depth.unwrap_or(2);
-    let edge_type_filter = params.edge_types;
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-
-    // Try to get a query embedding for full 3-signal explanation.
-    let query_embedding =
-        engine.embedder_ref().and_then(|embedder| embedder.embed_query(&params.query).ok());
-
-    let explanations = search::search_explain(
-        engine.bm25(),
-        engine.vector_index(),
-        engine.graph(),
-        &params.query,
-        query_embedding.as_deref(),
-        limit,
-        graph_depth,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-    )?;
-
-    serde_json::to_value(explanations).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// All notes linking TO a note, grouped by edge type.
@@ -1354,7 +2248,12 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
 
     let include_density = params.include_density.unwrap_or(false);
 
-    let result = engine.graph().detect_communities();
+    // Default to the connectivity-refined Leiden partition; `louvain` selects the
+    // raw modularity partition.
+    let result = match params.algorithm.as_deref() {
+        Some("louvain") => engine.graph().detect_communities(),
+        _ => engine.graph().detect_communities_leiden(),
+    };
 
     if include_density {
         let densities = engine.graph().community_densities();
@@ -1383,7 +2282,7 @@ fn handle_corpus_list(engine: &Engine, _args: Value) -> Result<Value> {
         "mode": format!("{:?}", engine.config().mode),
         "file_count": file_count,
         "embedder_active": engine.embedder_ref().is_some(),
-        "vector_count": engine.vector_index().len(),
+        "vector_count": engine.vector_index().map(|vi| vi.len()).unwrap_or(0),
         "graph_node_count": engine.graph().node_count(),
     }]);
 
@@ -1411,7 +2310,14 @@ fn handle_reembed_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
 /// Delta sync: index new/modified files, remove deleted files in configurable batches.
 fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: SyncCorpusParams =
-        serde_json::from_value(args).unwrap_or(SyncCorpusParams { batch_size: None });
+        serde_json::from_value(args).unwrap_or(SyncCorpusParams { batch_size: None, fast: None });
+    if let Some(fast) = params.fast {
+        engine.config_mut().index_mode = if fast {
+            ctxvault_common::config::IndexMode::Fast
+        } else {
+            ctxvault_common::config::IndexMode::Full
+        };
+    }
     let batch_size = params.batch_size.unwrap_or(50);
     let result = engine.delta_scan_paginated(batch_size)?;
 
@@ -1428,8 +2334,18 @@ fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
 
 /// Full reindex: clear all indices and rebuild from scratch or resume in configurable batches.
 fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: ReindexCorpusParams = serde_json::from_value(args)
-        .unwrap_or(ReindexCorpusParams { batch_size: None, resume: None });
+    let params: ReindexCorpusParams = serde_json::from_value(args).unwrap_or(ReindexCorpusParams {
+        batch_size: None,
+        resume: None,
+        fast: None,
+    });
+    if let Some(fast) = params.fast {
+        engine.config_mut().index_mode = if fast {
+            ctxvault_common::config::IndexMode::Fast
+        } else {
+            ctxvault_common::config::IndexMode::Full
+        };
+    }
     let batch_size = params.batch_size.unwrap_or(50);
     let resume = params.resume.unwrap_or(true);
     let count = engine.full_reindex_paginated(batch_size, resume)?;
@@ -1442,8 +2358,8 @@ fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     }))
 }
 
-/// Single-corpus status handler.
-fn handle_get_status_single(engine: &Engine, _args: Value) -> Result<Value> {
+/// Per-corpus statistics (document counts, mode, chunking, embedding model).
+fn corpus_stats(engine: &Engine) -> Result<Value> {
     let files = engine.store().list_files()?;
     let is_indexed = engine.is_indexed();
     Ok(serde_json::json!({
@@ -1458,10 +2374,30 @@ fn handle_get_status_single(engine: &Engine, _args: Value) -> Result<Value> {
     }))
 }
 
-/// Get detailed indexing status and progress throughput.
-fn handle_get_indexing_status(engine: &Engine, _args: Value) -> Result<Value> {
-    let status = engine.get_indexing_status()?;
-    serde_json::to_value(status).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+/// Consolidated status tool (engine-level): combines per-corpus statistics and
+/// indexing progress, selected by `scope` (`corpus` | `indexing` | `all`,
+/// default `all`).
+fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
+    let params: StatusParams = serde_json::from_value(args).unwrap_or(StatusParams { scope: None });
+    let scope = params.scope.as_deref().unwrap_or("all");
+
+    match scope {
+        "corpus" => corpus_stats(engine),
+        "indexing" => {
+            let status = engine.get_indexing_status()?;
+            serde_json::to_value(status)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+        _ => {
+            let corpus = corpus_stats(engine)?;
+            let indexing = serde_json::to_value(engine.get_indexing_status()?)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
+            Ok(serde_json::json!({
+                "corpus": corpus,
+                "indexing": indexing,
+            }))
+        }
+    }
 }
 
 /// Graph density analysis.
@@ -1477,6 +2413,12 @@ fn handle_analyze_density(engine: &Engine, args: Value) -> Result<Value> {
 
 /// Find semantic gaps between BM25 and vector search.
 fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
+    if engine.is_fast_mode() || engine.vector_index().is_none() {
+        return Err(Error::Index(
+            "Semantic gap analysis is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
+        ));
+    }
+
     let params: FindSemanticGapsParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
@@ -1497,10 +2439,11 @@ fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
         }));
     }
 
+    let vector_index = engine.vector_index().unwrap();
     let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
     let gaps = ctxvault_core::analytics::find_semantic_gaps(
         engine.bm25(),
-        engine.vector_index(),
+        vector_index,
         &query_refs,
         &query_embeddings,
         top_k,
@@ -2223,6 +3166,195 @@ fn handle_validate_taxonomy(engine: &Engine, args: Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Structural Code Tools Handlers
+// ---------------------------------------------------------------------------
+
+fn handle_get_symbol_definition(engine: &Engine, params: Value) -> Result<Value> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| Error::Config("missing required parameter: name".to_string()))?;
+    let file_path_filter = params["file_path"].as_str();
+
+    let symbols = engine.store().find_symbols_by_name(name)?;
+    let filtered: Vec<_> = symbols
+        .into_iter()
+        .filter(|s| {
+            if let Some(fp) = file_path_filter {
+                s.file_path == fp
+            } else {
+                s.name == name || s.scope_path.ends_with(name)
+            }
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    let corpus_root = Path::new(&engine.config().path);
+
+    for sym in &filtered {
+        let full_path = corpus_root.join(&sym.file_path);
+        let snippet = if let Ok(content) = fs::read_to_string(&full_path) {
+            let lines: Vec<&str> = content.lines().collect();
+            if sym.start_line > 0 && sym.start_line <= lines.len() {
+                let start_idx = sym.start_line - 1;
+                let end_idx = sym.end_line.min(lines.len());
+                Some(lines[start_idx..end_idx].join("\n"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let edges = engine.graph().get_all_edges();
+        let callers_count = edges
+            .iter()
+            .filter(|e| {
+                e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
+            })
+            .count();
+
+        results.push(serde_json::json!({
+            "name": sym.name,
+            "scope_path": sym.scope_path,
+            "symbol_type": sym.symbol_type,
+            "language": sym.language,
+            "file_path": sym.file_path,
+            "start_line": sym.start_line,
+            "end_line": sym.end_line,
+            "signature": sym.signature,
+            "docstring": sym.docstring,
+            "snippet": snippet,
+            "incoming_callers_count": callers_count,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "symbol_name": name,
+        "matches_count": results.len(),
+        "definitions": results,
+    }))
+}
+
+fn handle_find_callers(engine: &Engine, params: Value) -> Result<Value> {
+    let symbol_name = params["symbol_name"]
+        .as_str()
+        .ok_or_else(|| Error::Config("missing required parameter: symbol_name".to_string()))?;
+
+    let edges = engine.graph().get_all_edges();
+    let caller_edges: Vec<_> = edges
+        .into_iter()
+        .filter(|e| {
+            e.edge_type == "calls"
+                && (e.target == symbol_name || e.target.ends_with(&format!(" > {}", symbol_name)))
+        })
+        .collect();
+
+    let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+    let mut callers = Vec::new();
+
+    for edge in &caller_edges {
+        let sym = all_symbols.iter().find(|s| s.scope_path == edge.source || s.name == edge.source);
+        callers.push(serde_json::json!({
+            "caller_symbol": edge.source,
+            "target_symbol": edge.target,
+            "file_path": sym.map(|s| s.file_path.clone()),
+            "start_line": sym.map(|s| s.start_line),
+            "signature": sym.map(|s| s.signature.clone()),
+            "docstring": sym.and_then(|s| s.docstring.clone()),
+            "confidence": edge.confidence,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "target_symbol": symbol_name,
+        "callers_count": callers.len(),
+        "callers": callers,
+    }))
+}
+
+fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
+    let result = engine.graph().detect_communities_leiden();
+    let densities = engine.graph().community_densities();
+    let density_map: HashMap<usize, f64> =
+        densities.into_iter().map(|d| (d.community_id, d.density)).collect();
+
+    let mut clusters = Vec::new();
+    let edges = engine.graph().get_all_edges();
+
+    for comm in &result.communities {
+        let comm_id = comm.id;
+        let mut nodes = comm.members.clone();
+        nodes.sort();
+        let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
+
+        let mut node_degree: HashMap<String, usize> = HashMap::new();
+        for edge in &edges {
+            if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
+                *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
+                *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut key_nodes: Vec<_> =
+            nodes.iter().filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg))).collect();
+        key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
+        let top_key_nodes: Vec<String> = key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
+
+        clusters.push(serde_json::json!({
+            "community_id": comm_id,
+            "node_count": nodes.len(),
+            "density": density,
+            "key_nodes": top_key_nodes,
+            "nodes": nodes,
+        }));
+    }
+
+    clusters.sort_by(|a, b| {
+        b["node_count"].as_u64().unwrap_or(0).cmp(&a["node_count"].as_u64().unwrap_or(0))
+    });
+
+    Ok(serde_json::json!({
+        "total_nodes": engine.graph().node_count(),
+        "total_edges": engine.graph().edge_count(),
+        "modularity": result.modularity,
+        "clusters_count": clusters.len(),
+        "clusters": clusters,
+    }))
+}
+
+fn handle_detect_changes(engine: &mut Engine, _params: Value) -> Result<Value> {
+    let delta = engine.delta_scan()?;
+    let edges = engine.graph().get_all_edges();
+
+    let mut impacted_symbols = Vec::new();
+    for path in &delta.modified_files {
+        let symbols = engine.store().get_code_symbols_for_file(path).unwrap_or_default();
+        for sym in symbols {
+            let callers: Vec<String> = edges
+                .iter()
+                .filter(|e| {
+                    e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
+                })
+                .map(|e| e.source.clone())
+                .collect();
+
+            impacted_symbols.push(serde_json::json!({
+                "symbol": sym.scope_path,
+                "file_path": sym.file_path,
+                "symbol_type": sym.symbol_type,
+                "impacted_callers": callers,
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "new_files": delta.new_files,
+        "modified_files": delta.modified_files,
+        "deleted_files": delta.deleted_files,
+        "impacted_symbols": impacted_symbols,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2231,7 +3363,7 @@ mod tests {
     use super::*;
     use ctxvault_common::config::{
         ChunkingConfig, CorpusConfig, CorpusMode, EdgeSource, EdgeTypeConfig, EmbeddingConfig,
-        GraphConfig,
+        GraphConfig, IndexMode,
     };
     use ctxvault_common::types::EdgeProvenance;
     use std::fs;
@@ -2243,6 +3375,7 @@ mod tests {
             name: "test".to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig {
@@ -2279,19 +3412,18 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 37, "Expected 37 tools registered");
+        assert_eq!(tools.len(), 39, "Expected 39 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
             "read_note",
+            "get_snippet",
+            "read_code_file",
+            "read_multiple",
             "list_notes",
             "get_frontmatter",
-            "search_bm25",
-            "search_semantic",
-            "search_hybrid",
-            "search_graph",
+            "search",
             "search_related",
-            "search_explain",
             "backlinks",
             "forwardlinks",
             "graph_path",
@@ -2313,25 +3445,89 @@ mod tests {
             "find_semantic_gaps",
             "suggest_splits",
             "coverage_report",
+            "check_index_coverage",
             "corpus_list",
             "reembed_corpus",
             "sync_corpus",
             "reindex_corpus",
-            "get_status",
-            "get_corpus_stats",
-            "get_indexing_status",
+            "status",
+            "get_symbol_definition",
+            "find_callers",
+            "get_architecture",
+            "detect_changes",
         ];
+
+        assert_eq!(expected.len(), 39, "expected-name list must match the 39-tool count");
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
         }
 
+        // The consolidated tools replace the old per-mode / per-status tools.
+        for gone in [
+            "search_bm25",
+            "search_semantic",
+            "search_hybrid",
+            "search_graph",
+            "search_explain",
+            "get_status",
+            "get_corpus_stats",
+            "get_indexing_status",
+        ] {
+            assert!(registry.get(gone).is_none(), "Tool '{}' must no longer be registered", gone);
+        }
+
         // Verify read-only classification
         assert!(registry.is_read_only("read_note"));
-        assert!(registry.is_read_only("search_bm25"));
-        assert!(registry.is_read_only("get_indexing_status"));
+        assert!(registry.is_read_only("search"));
+        assert!(registry.is_read_only("status"));
+        assert!(registry.is_read_only("get_symbol_definition"));
+        assert!(registry.is_read_only("find_callers"));
+        assert!(registry.is_read_only("get_architecture"));
+        assert!(registry.is_read_only("get_snippet"));
+        assert!(registry.is_read_only("read_code_file"));
+        assert!(registry.is_read_only("read_multiple"));
+        assert!(registry.is_read_only("check_index_coverage"));
+        assert!(!registry.is_read_only("detect_changes"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
+    }
+
+    #[test]
+    fn test_tool_profiles_gate_listing() {
+        let all = MultiCorpusToolRegistry::with_profile(ToolProfile::All);
+        let analysis = MultiCorpusToolRegistry::with_profile(ToolProfile::Analysis);
+        let scout = MultiCorpusToolRegistry::with_profile(ToolProfile::Scout);
+
+        let all_count = all.list().len();
+        let analysis_count = analysis.list().len();
+        let scout_count = scout.list().len();
+
+        // scout ⊂ analysis ⊂ all.
+        assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
+        assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
+        assert_eq!(all_count, 39, "all profile advertises every registered tool");
+        assert_eq!(scout_count, 9, "scout profile advertises the minimal set");
+
+        // scout includes core retrieval/fetch but not writes.
+        let scout_names: HashSet<&str> = scout.list().iter().map(|t| t.name.as_str()).collect();
+        assert!(scout_names.contains("search"));
+        assert!(scout_names.contains("get_snippet"));
+        assert!(scout_names.contains("status"));
+        assert!(!scout_names.contains("create_note"));
+        assert!(!scout_names.contains("backlinks"));
+
+        // Hidden tools still execute (advertise-only filtering): create_note is
+        // registered even though scout does not advertise it.
+        assert!(scout.registry().get("create_note").is_some());
+
+        // analysis adds read-only tools but still hides writes.
+        let analysis_names: HashSet<&str> =
+            analysis.list().iter().map(|t| t.name.as_str()).collect();
+        assert!(analysis_names.contains("backlinks"));
+        assert!(analysis_names.contains("corpus_list"));
+        assert!(!analysis_names.contains("create_note"));
+        assert!(!analysis_names.contains("reindex_corpus"));
     }
 
     #[test]
@@ -2386,9 +3582,9 @@ mod tests {
 
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut engine,
-                serde_json::json!({ "query": "systems programming" }),
+                serde_json::json!({ "query": "systems programming", "mode": "bm25" }),
             )
             .unwrap();
 
@@ -2427,7 +3623,11 @@ mod tests {
 
         // Verify indexed (searchable).
         let search_result = registry
-            .execute("search_bm25", &mut engine, serde_json::json!({ "query": "new note" }))
+            .execute(
+                "search",
+                &mut engine,
+                serde_json::json!({ "query": "new note", "mode": "bm25" }),
+            )
             .unwrap();
         let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
         assert!(!hits.is_empty());
@@ -2599,7 +3799,11 @@ mod tests {
 
         // Should not be found in search.
         let search_result = registry
-            .execute("search_bm25", &mut engine, serde_json::json!({ "query": "Going away" }))
+            .execute(
+                "search",
+                &mut engine,
+                serde_json::json!({ "query": "Going away", "mode": "bm25" }),
+            )
             .unwrap();
         let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
         assert!(hits.is_empty() || hits.iter().all(|h| h["path"] != "delete-me.md"));
@@ -2694,21 +3898,20 @@ mod tests {
     // ─── Multi-Corpus Routing Tests ────────────────────────────────────
 
     #[test]
-    fn test_multi_corpus_registry_has_get_status() {
+    fn test_multi_corpus_registry_has_status() {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 37 tools.
-        assert_eq!(tools.len(), 37, "Expected 37 tools in multi-corpus registry");
-        assert!(registry.registry().get("get_status").is_some(), "get_status should be registered");
+        // Should have 39 tools.
+        assert_eq!(tools.len(), 39, "Expected 39 tools in multi-corpus registry");
         assert!(
-            registry.registry().get("get_corpus_stats").is_some(),
-            "get_corpus_stats should be registered"
+            registry.registry().get("status").is_some(),
+            "consolidated status tool should be registered"
         );
-        assert!(
-            registry.registry().get("get_indexing_status").is_some(),
-            "get_indexing_status should be registered"
-        );
+        // The old status tools/aliases are gone.
+        assert!(registry.registry().get("get_status").is_none());
+        assert!(registry.registry().get("get_corpus_stats").is_none());
+        assert!(registry.registry().get("get_indexing_status").is_none());
     }
 
     #[test]
@@ -2717,12 +3920,12 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -2743,7 +3946,11 @@ mod tests {
 
         // Search without corpus param — should use default (wiki).
         let result = registry
-            .execute("search_bm25", &mut manager, serde_json::json!({ "query": "wiki content" }))
+            .execute(
+                "search",
+                &mut manager,
+                serde_json::json!({ "query": "wiki content", "mode": "bm25" }),
+            )
             .unwrap();
 
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -2759,13 +3966,13 @@ mod tests {
         fs::create_dir_all(&wiki_dir).unwrap();
         fs::create_dir_all(&docs_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
 
         let wiki_config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -2775,6 +3982,7 @@ mod tests {
             name: "docs".to_string(),
             path: docs_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -2805,9 +4013,9 @@ mod tests {
         // Search in wiki corpus explicitly.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "programming", "corpus": "wiki" }),
+                serde_json::json!({ "query": "programming", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -2817,9 +4025,9 @@ mod tests {
         // Search in docs corpus explicitly.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "documentation", "corpus": "docs" }),
+                serde_json::json!({ "query": "documentation", "mode": "bm25", "corpus": "docs" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -2829,9 +4037,9 @@ mod tests {
         // Verify isolation: searching wiki for python returns nothing.
         let result = registry
             .execute(
-                "search_bm25",
+                "search",
                 &mut manager,
-                serde_json::json!({ "query": "python documentation", "corpus": "wiki" }),
+                serde_json::json!({ "query": "python documentation", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
         let results: Vec<Value> = serde_json::from_value(result).unwrap();
@@ -2842,17 +4050,91 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_corpus_fan_out_tags_by_corpus() {
+        let tmp = TempDir::new().unwrap();
+        let wiki_dir = tmp.path().join("wiki");
+        let docs_dir = tmp.path().join("docs");
+        fs::create_dir_all(&wiki_dir).unwrap();
+        fs::create_dir_all(&docs_dir).unwrap();
+
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
+        for (name, dir) in [("wiki", &wiki_dir), ("docs", &docs_dir)] {
+            let config = CorpusConfig {
+                name: name.to_string(),
+                path: dir.to_string_lossy().to_string(),
+                mode: CorpusMode::ReadWrite,
+                index_mode: IndexMode::Full,
+                chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
+                embedding: EmbeddingConfig::default(),
+                graph: GraphConfig { edge_types: Vec::new() },
+                templates_dir: ".templates".to_string(),
+            };
+            manager.add_corpus(config).unwrap();
+        }
+
+        // Both corpora contain a doc mentioning "shared" (BM25-only; no embedder).
+        {
+            let engine = manager.get_engine_mut("wiki").unwrap();
+            let content = "# Wiki\n\nshared knowledge lives here in the wiki.\n";
+            fs::write(wiki_dir.join("shared.md"), content).unwrap();
+            engine.index_file("shared.md", content).unwrap();
+            engine.commit().unwrap();
+        }
+        {
+            let engine = manager.get_engine_mut("docs").unwrap();
+            let content = "# Docs\n\nshared documentation lives here in the docs.\n";
+            fs::write(docs_dir.join("shared.md"), content).unwrap();
+            engine.index_file("shared.md", content).unwrap();
+            engine.commit().unwrap();
+        }
+
+        let registry = MultiCorpusToolRegistry::new();
+
+        // Fan out across both corpora with corpora = "all".
+        let result = registry
+            .execute_read(
+                "search",
+                &manager,
+                serde_json::json!({ "query": "shared", "mode": "bm25", "corpora": "all" }),
+            )
+            .unwrap();
+
+        let results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(result).unwrap();
+        assert_eq!(results.len(), 2, "both corpora should contribute a hit");
+
+        // Same path, distinct corpora → two tagged hits.
+        let corpora: HashSet<String> = results.iter().filter_map(|r| r.corpus.clone()).collect();
+        assert!(corpora.contains("wiki"), "a hit must be tagged 'wiki'");
+        assert!(corpora.contains("docs"), "a hit must be tagged 'docs'");
+        assert!(results.iter().all(|r| r.path == "shared.md"));
+
+        // Single-corpus read via corpus="wiki" also tags its hit.
+        let single = registry
+            .execute_read(
+                "search",
+                &manager,
+                serde_json::json!({ "query": "shared", "mode": "bm25", "corpus": "wiki" }),
+            )
+            .unwrap();
+        let single_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(single).unwrap();
+        assert!(!single_results.is_empty());
+        assert!(single_results.iter().all(|r| r.corpus.as_deref() == Some("wiki")));
+    }
+
+    #[test]
     fn test_multi_corpus_get_status() {
         let tmp = TempDir::new().unwrap();
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -2862,7 +4144,7 @@ mod tests {
 
         let registry = MultiCorpusToolRegistry::new();
 
-        let result = registry.execute("get_status", &mut manager, serde_json::json!({})).unwrap();
+        let result = registry.execute("status", &mut manager, serde_json::json!({})).unwrap();
 
         assert_eq!(result["corpus_count"], 1);
         assert_eq!(result["default_corpus"], "wiki");
@@ -2877,12 +4159,12 @@ mod tests {
         let wiki_dir = tmp.path().join("wiki");
         fs::create_dir_all(&wiki_dir).unwrap();
 
-        let mut manager =
-            ctxvault_core::corpus_manager::CorpusManager::new(&tmp.path().join("indices"));
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
         let config = CorpusConfig {
             name: "wiki".to_string(),
             path: wiki_dir.to_string_lossy().to_string(),
             mode: CorpusMode::ReadWrite,
+            index_mode: IndexMode::Full,
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
@@ -2894,9 +4176,9 @@ mod tests {
 
         // Non-existent corpus should error.
         let result = registry.execute(
-            "search_bm25",
+            "search",
             &mut manager,
-            serde_json::json!({ "query": "test", "corpus": "nonexistent" }),
+            serde_json::json!({ "query": "test", "mode": "bm25", "corpus": "nonexistent" }),
         );
         assert!(result.is_err());
     }
@@ -3082,5 +4364,399 @@ mod tests {
         assert_eq!(result["valid"], false);
         assert!(result["broken_links_count"].as_u64().unwrap() >= 1);
         assert!(result["circular_dependencies_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn test_code_intelligence_mcp_tools() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        // Write polyglot code files
+        let rust_code = r#"
+pub struct QueryParser;
+
+impl QueryParser {
+    pub fn parse_query(&self, raw: &str) -> Vec<String> {
+        tokenize(raw)
+    }
+}
+
+pub fn tokenize(input: &str) -> Vec<String> {
+    vec![input.to_string()]
+}
+"#;
+        fs::write(corpus_dir.join("parser.rs"), rust_code).unwrap();
+        engine.index_file("parser.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Test get_symbol_definition
+        let def_res = registry
+            .execute_read(
+                "get_symbol_definition",
+                &engine,
+                serde_json::json!({ "name": "parse_query" }),
+            )
+            .unwrap();
+
+        assert_eq!(def_res["matches_count"], 1);
+        let def = &def_res["definitions"][0];
+        assert_eq!(def["name"], "parse_query");
+        assert_eq!(def["file_path"], "parser.rs");
+        assert!(def["snippet"].as_str().unwrap().contains("tokenize(raw)"));
+
+        // 2. Test find_callers
+        let callers_res = registry
+            .execute_read("find_callers", &engine, serde_json::json!({ "symbol_name": "tokenize" }))
+            .unwrap();
+
+        assert_eq!(callers_res["callers_count"], 1);
+        assert_eq!(callers_res["callers"][0]["caller_symbol"], "QueryParser > parse_query");
+
+        // 3. Test get_architecture
+        let arch_res =
+            registry.execute_read("get_architecture", &engine, serde_json::json!({})).unwrap();
+
+        assert!(arch_res["total_nodes"].as_u64().unwrap() >= 1);
+        assert!(arch_res["clusters_count"].as_u64().unwrap() >= 1);
+
+        // 4. Test detect_changes
+        let change_res =
+            registry.execute("detect_changes", &mut engine, serde_json::json!({})).unwrap();
+
+        assert_eq!(change_res["new_files"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_read_multiple_tool() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let md = "# Design Note\n\nSome markdown content here.\n";
+        fs::write(corpus_dir.join("design.md"), md).unwrap();
+        engine.index_file("design.md", md).unwrap();
+
+        let rust = "pub fn helper() -> u32 { 42 }\n";
+        fs::write(corpus_dir.join("lib.rs"), rust).unwrap();
+        engine.index_file("lib.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Two existing files + one missing -> 3 entries, one carrying an error.
+        let res = registry
+            .execute_read(
+                "read_multiple",
+                &engine,
+                serde_json::json!({ "paths": ["design.md", "lib.rs", "nope.md"] }),
+            )
+            .unwrap();
+
+        assert_eq!(res["count"], 3);
+        let results = res["results"].as_array().unwrap();
+
+        let note = results.iter().find(|r| r["path"] == "design.md").unwrap();
+        assert_eq!(note["kind"], "note");
+        assert_eq!(note["title"], "Design Note");
+        assert!(note["content"].as_str().unwrap().contains("markdown content"));
+        assert!(note.get("error").is_none());
+
+        let code = results.iter().find(|r| r["path"] == "lib.rs").unwrap();
+        assert_eq!(code["kind"], "code");
+        assert_eq!(code["language"], "rust");
+        assert!(code["content"].as_str().unwrap().contains("helper"));
+
+        let missing = results.iter().find(|r| r["path"] == "nope.md").unwrap();
+        assert!(missing.get("error").is_some(), "missing path must carry an error entry");
+    }
+
+    #[test]
+    fn test_check_index_coverage_tool() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        let rust = r#"
+pub fn indexed_fn() -> u32 {
+    7
+}
+"#;
+        fs::write(corpus_dir.join("covered.rs"), rust).unwrap();
+        engine.index_file("covered.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        let res = registry
+            .execute_read(
+                "check_index_coverage",
+                &engine,
+                serde_json::json!({ "paths": ["covered.rs", "does_not_exist.rs"] }),
+            )
+            .unwrap();
+
+        let reports = res["reports"].as_array().unwrap();
+        assert_eq!(reports.len(), 2);
+
+        let covered = reports.iter().find(|r| r["path"] == "covered.rs").unwrap();
+        assert_eq!(covered["indexed"], true);
+        assert!(covered["chunk_count"].as_u64().unwrap() > 0);
+        assert_eq!(covered["parsed"], true);
+
+        let bogus = reports.iter().find(|r| r["path"] == "does_not_exist.rs").unwrap();
+        assert_eq!(bogus["indexed"], false);
+        assert_eq!(bogus["parsed"], false);
+
+        assert_eq!(res["summary"]["total"], 2);
+        assert_eq!(res["summary"]["covered"], 1);
+        assert_eq!(res["summary"]["uncovered"], 1);
+    }
+
+    #[test]
+    fn test_fast_mode_mcp_tools() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("fast_corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        fs::write(
+            corpus_dir.join("guide.md"),
+            "# Architecture Guide\nFast mode provides instant BM25 and graph search without vector models.\n",
+        )
+        .unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = IndexMode::Fast;
+
+        let index_dir = tmp.path().join(".index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+        let files_indexed = engine.full_reindex().unwrap();
+        assert_eq!(files_indexed, 1);
+        assert!(engine.is_fast_mode());
+        assert!(engine.vector_index().is_none());
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Semantic search must fail with the exact fast mode error message
+        let sem_err = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "architecture guide", "mode": "semantic" }),
+            )
+            .unwrap_err();
+        assert!(
+            sem_err.to_string().contains(
+                "Semantic search is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search."
+            ),
+            "Unexpected error: {sem_err}"
+        );
+
+        // 2. Hybrid search must cleanly fall back to BM25+Graph
+        let hyb_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "architecture", "mode": "hybrid" }),
+            )
+            .unwrap();
+        let hyb_array = hyb_res.as_array().unwrap();
+        assert_eq!(hyb_array.len(), 1);
+        assert_eq!(hyb_array[0]["path"], "guide.md");
+
+        // 3. Find semantic gaps must fail in fast mode
+        let gaps_err = registry
+            .execute_read(
+                "find_semantic_gaps",
+                &engine,
+                serde_json::json!({ "queries": ["architecture"] }),
+            )
+            .unwrap_err();
+        assert!(gaps_err.to_string().contains("unavailable in fast mode"));
+
+        // 4. Sync corpus with fast: true maintains fast mode
+        let sync_res = registry
+            .execute("sync_corpus", &mut engine, serde_json::json!({ "fast": true }))
+            .unwrap();
+        assert_eq!(sync_res["status"], "complete");
+        assert!(engine.is_fast_mode());
+    }
+
+    // ─── Progressive Disclosure Tests (Tier 1 → 2 → 3) ─────────────────
+
+    #[test]
+    fn test_progressive_disclosure_handle_fetch_full() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+
+        // A markdown note with two headings → two chunks.
+        let md = "# Alpha Section\n\nAlpha talks about retrieval and ranking.\n\n\
+                  # Beta Section\n\nBeta talks about graph traversal and edges.\n";
+        fs::write(corpus_dir.join("notes.md"), md).unwrap();
+        engine.index_file("notes.md", md).unwrap();
+
+        // A Rust file with a caller/callee pair.
+        let rust = r#"
+pub struct Router;
+
+impl Router {
+    pub fn dispatch(&self, q: &str) -> Vec<String> {
+        normalize(q)
+    }
+}
+
+pub fn normalize(input: &str) -> Vec<String> {
+    vec![input.to_lowercase()]
+}
+"#;
+        fs::write(corpus_dir.join("router.rs"), rust).unwrap();
+        engine.index_file("router.rs", rust).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Tier 1: a search with detail="ids" returns handles with snippet == None.
+        let ids_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "retrieval ranking", "mode": "bm25", "detail": "ids" }),
+            )
+            .unwrap();
+        let ids_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(ids_res).unwrap();
+        assert!(!ids_results.is_empty(), "detail=ids should still return handles");
+        assert!(
+            ids_results.iter().all(|r| r.snippet.is_none()),
+            "detail=ids must strip snippets (bare handles only)"
+        );
+
+        // Default detail keeps a short snippet.
+        let default_res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "retrieval ranking", "mode": "bm25" }),
+            )
+            .unwrap();
+        let default_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(default_res).unwrap();
+        assert!(default_results.iter().any(|r| r.snippet.is_some()), "default keeps a snippet");
+
+        // Tier 2 (doc): fetch exactly one chunk by path + chunk_index, bounded.
+        let chunk_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "path": "notes.md", "chunk_index": 0, "max_lines": 100 }),
+            )
+            .unwrap();
+        assert_eq!(chunk_res["kind"], "doc_chunk");
+        assert_eq!(chunk_res["chunk_index"], 0);
+        assert!(chunk_res["text"].as_str().unwrap().contains("Alpha"));
+
+        // Tier 2 (doc) neighbor expansion: adjacent chunk is returned.
+        let chunk_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({
+                    "path": "notes.md",
+                    "chunk_index": 0,
+                    "include_neighbors": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(chunk_nb["previous"], Value::Null, "chunk 0 has no previous");
+        assert!(chunk_nb["next"].is_object(), "chunk 0 should have a next neighbor");
+        assert!(chunk_nb["next"]["text"].as_str().unwrap().contains("Beta"));
+
+        // Tier 2 (code): fetch one symbol's source by qualified_name.
+        let sym_res = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Router > dispatch" }),
+            )
+            .unwrap();
+        assert_eq!(sym_res["kind"], "code_symbol");
+        assert_eq!(sym_res["path"], "router.rs");
+        assert!(sym_res["source"].as_str().unwrap().contains("normalize(q)"));
+        assert!(sym_res["start_line"].as_u64().unwrap() >= 1);
+        assert!(
+            sym_res["end_line"].as_u64().unwrap() >= sym_res["start_line"].as_u64().unwrap(),
+            "line range must be well-formed"
+        );
+
+        // Tier 2 (code) neighbor expansion: callees include the called symbol.
+        let sym_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({
+                    "qualified_name": "Router > dispatch",
+                    "include_neighbors": true
+                }),
+            )
+            .unwrap();
+        let callees = sym_nb["callees"].as_array().unwrap();
+        assert!(
+            callees.iter().any(|c| c["name"] == "normalize" || c["scope_path"] == "normalize"),
+            "dispatch should list normalize as a callee handle"
+        );
+        // Callees are HANDLES only — no body field.
+        assert!(
+            callees.iter().all(|c| c.get("source").is_none()),
+            "neighbors are handles, not bodies"
+        );
+
+        // Callers of normalize should include dispatch.
+        let normalize_nb = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "normalize", "include_neighbors": true }),
+            )
+            .unwrap();
+        let callers = normalize_nb["callers"].as_array().unwrap();
+        assert!(
+            callers.iter().any(|c| c["scope_path"] == "Router > dispatch"),
+            "normalize should list Router > dispatch as a caller handle"
+        );
+
+        // Tier 2 bounding: max_lines truncates the body.
+        let capped = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "qualified_name": "Router > dispatch", "max_lines": 1 }),
+            )
+            .unwrap();
+        assert_eq!(capped["truncated"], true, "max_lines=1 must truncate a multi-line symbol");
+        assert_eq!(capped["source"].as_str().unwrap().lines().count(), 1);
+
+        // Tier 3 (code): read the whole file raw.
+        let file_res = registry
+            .execute_read("read_code_file", &engine, serde_json::json!({ "path": "router.rs" }))
+            .unwrap();
+        assert_eq!(file_res["language"], "rust");
+        assert!(file_res["content"].as_str().unwrap().contains("pub struct Router;"));
+        assert!(file_res["content"].as_str().unwrap().contains("pub fn normalize"));
+        assert!(file_res["total_line_count"].as_u64().unwrap() >= 5);
+
+        // A bare path (no chunk_index / qualified_name) is redirected to Tier 3.
+        let hint = registry.execute_read(
+            "get_snippet",
+            &engine,
+            serde_json::json!({ "path": "router.rs" }),
+        );
+        assert!(hint.is_err(), "bare path must hint toward Tier 3");
     }
 }

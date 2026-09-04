@@ -50,6 +50,25 @@ irm https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.ps1 | iex
 cargo install --locked --path crates/ctxvault-cli
 ```
 
+### Embedding model (sidecar)
+
+Semantic/vector search uses a local ONNX embedding model
+([`jinaai/jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code),
+Apache-2.0). The release archives **bundle it as a sidecar** next to the binary
+(`<binary-dir>/models/jina-embeddings-v2-base-code/`), and `install.sh` /
+`install.ps1` place it automatically — no separate download.
+
+For source builds (or to run the test suite), fetch it once — the on-disk layout
+mirrors the Hugging Face repo 1:1:
+```bash
+just fetch-model                      # downloads into ./models
+export CTX_MODELS_DIR="$(pwd)/models" # point ctxvault (and cargo test) at it
+```
+The embedder resolves the model from `CTX_MODELS_DIR`, then a `models/` sidecar next
+to the binary, then `../models/` (for `cargo test`). Without it, BM25 + graph search
+still work (and `--fast` mode skips embeddings entirely); only vector/semantic search
+needs the model.
+
 ---
 
 ## MCP Client Configuration
@@ -89,7 +108,17 @@ Host `ctxvault` as a shared daemon so multiple IDEs, team members on LAN, or san
 ```bash
 # Bind to localhost (local multi-agent) or 0.0.0.0 (LAN hackathon / team sharing)
 ctxvault --mode server --bind 0.0.0.0:9090 --corpus /path/to/vault --sync
+
+# Serve multiple corpora from one process; name them and pick a tool profile.
+# --corpus accepts `name=path` or a bare `path`; --profile is scout|analysis|all (default all).
+ctxvault --mode server --bind 0.0.0.0:9090 \
+  --corpus vault=/path/to/wiki --corpus code=/path/to/repo \
+  --default-corpus vault --profile analysis --sync
 ```
+
+Read tools then take an optional `corpus` (single root) or `corpora` (`["vault","code"]`
+or `"all"`, fan-out + RRF-merge with per-hit corpus tagging). Search tools also take
+`modality` (`docs`|`code`|`both`) and `detail` (`ids`|`default`).
 
 #### Direct Remote Client (Antigravity / Remote SSE-capable IDEs)
 ```json
@@ -120,7 +149,7 @@ For IDEs and containerized agents that only support local stdio processes, run `
 
 #### CLI / Scripted Client Mode
 ```bash
-ctxvault --mode client --server http://<HOST_IP>:9090 --call search_hybrid --query "architecture"
+ctxvault --mode client --server http://<HOST_IP>:9090 --call search --query "architecture" --args '{"mode":"hybrid"}'
 ```
 
 ---

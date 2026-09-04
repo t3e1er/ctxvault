@@ -9,14 +9,12 @@ use tracing::debug;
 
 use ctxvault_common::{Error, Result};
 use ctxvault_core::corpus_manager::CorpusManager;
-use ctxvault_core::engine::Engine;
 
 use crate::client::transport::McpTransport;
 use crate::client::HttpMcpTransport;
-use crate::tools::{MultiCorpusToolRegistry, ToolRegistry};
+use crate::tools::MultiCorpusToolRegistry;
 use crate::transport::dispatch::{
-    dispatch, dispatch_multi, format_rpc_response, make_error_response, JsonRpcRequest,
-    JsonRpcResponse,
+    dispatch_multi, format_rpc_response, make_error_response, JsonRpcRequest, JsonRpcResponse,
 };
 
 /// Run the MCP stdio proxy transport loop.
@@ -105,55 +103,6 @@ pub async fn run_stdio_proxy(server_url: &str) -> Result<()> {
         } else {
             // Notification
             let _ = transport.send_notification(&request.method, request.params).await;
-        }
-    }
-
-    Ok(())
-}
-
-/// Run the MCP stdio transport loop for a single-corpus engine.
-///
-/// Reads newline-delimited JSON-RPC messages from stdin, dispatches them to the
-/// appropriate MCP handler, and writes responses to stdout. Returns when stdin
-/// reaches EOF (client disconnected).
-pub async fn run_stdio(engine: &mut Engine, registry: &ToolRegistry) -> Result<()> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let mut stdout = stdout;
-
-    let mut line = String::new();
-
-    loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line).await.map_err(Error::Io)?;
-
-        if bytes_read == 0 {
-            debug!("stdin closed, shutting down stdio transport");
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
-            Ok(req) => req,
-            Err(e) => {
-                let resp = make_error_response(Value::Null, -32700, &format!("Parse error: {e}"));
-                write_response(&mut stdout, &resp).await?;
-                continue;
-            }
-        };
-
-        debug!(method = %request.method, "received request on stdio");
-
-        let response = dispatch(&request, engine, registry);
-
-        if let Some(id) = request.id.clone() {
-            let rpc_response = format_rpc_response(id, response);
-            write_response(&mut stdout, &rpc_response).await?;
         }
     }
 

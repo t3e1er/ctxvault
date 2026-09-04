@@ -1,4 +1,4 @@
-﻿//! Analytics tools: density analysis, semantic gap detection, split suggestions, coverage reports.
+//! Analytics tools: density analysis, semantic gap detection, split suggestions, coverage reports.
 //!
 //! These tools provide insights into corpus quality, index coverage, and opportunities
 //! for improving retrieval performance.
@@ -163,8 +163,9 @@ pub fn find_semantic_gaps(
         let bm25_paths: std::collections::HashSet<String> =
             bm25_results.iter().map(|r| r.path.clone()).collect();
 
-        // Get vector results.
-        let vector_results = vector_index.search(embedding, top_k, false)?;
+        // Get vector results (analytics spans both modalities).
+        let vector_results =
+            vector_index.search(embedding, top_k, false, ctxvault_common::types::Modality::Both)?;
         let vector_paths: std::collections::HashSet<String> =
             vector_results.iter().map(|r| r.doc_path.clone()).collect();
 
@@ -424,20 +425,13 @@ mod tests {
         let mut vi = VectorIndex::new(4, 100, 200, 16);
 
         // BM25 has doc A, vector has doc B.
-        let chunks = vec![Chunk {
-            doc_path: "A".to_string(),
-            chunk_index: 0,
-            text: "alpha beta gamma".to_string(),
-            start_byte: 0,
-            end_byte: 16,
-            heading_chain: None,
-        }];
+        let chunks = vec![Chunk::new("A", 0, "alpha beta gamma", 0, 16)];
         bm25.add_document("A", Some("Alpha"), &[], &chunks).unwrap();
         bm25.commit().unwrap();
 
         // Add B to vector index only.
         let vec_b: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0];
-        vi.add(&vec_b, "B", Some(0), false).unwrap();
+        vi.add(&vec_b, "B", Some(0), false, "docs").unwrap();
 
         let query_emb = vec![1.0, 0.0, 0.0, 0.0];
         let gaps = find_semantic_gaps(&bm25, &vi, &["alpha"], &[query_emb], 5).unwrap();
@@ -455,22 +449,8 @@ mod tests {
 
         let mut bm25 = BM25Index::open_in_memory().unwrap();
 
-        let chunks_a = vec![Chunk {
-            doc_path: "A".to_string(),
-            chunk_index: 0,
-            text: "rust systems programming".to_string(),
-            start_byte: 0,
-            end_byte: 24,
-            heading_chain: None,
-        }];
-        let chunks_b = vec![Chunk {
-            doc_path: "B".to_string(),
-            chunk_index: 0,
-            text: "python data science".to_string(),
-            start_byte: 0,
-            end_byte: 19,
-            heading_chain: None,
-        }];
+        let chunks_a = vec![Chunk::new("A", 0, "rust systems programming", 0, 24)];
+        let chunks_b = vec![Chunk::new("B", 0, "python data science", 0, 19)];
         bm25.add_document("A", Some("Rust"), &[], &chunks_a).unwrap();
         bm25.add_document("B", Some("Python"), &[], &chunks_b).unwrap();
         bm25.commit().unwrap();

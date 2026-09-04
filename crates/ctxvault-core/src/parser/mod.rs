@@ -1,6 +1,7 @@
-﻿//! Markdown parsing: frontmatter extraction, wikilink detection, chunking.
+//! Markdown parsing: frontmatter extraction, wikilink detection, chunking.
 
 pub mod chunker;
+pub mod code;
 pub mod frontmatter;
 pub mod markdown;
 pub mod wikilink;

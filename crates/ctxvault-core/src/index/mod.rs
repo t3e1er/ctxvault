@@ -1,18 +1,20 @@
 //! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
 
+pub mod pipeline;
+
 use std::path::Path;
 
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     doc,
-    query::QueryParser,
-    schema::{Field, Schema, Value, STORED, STRING, TEXT},
+    query::{BooleanQuery, Occur, QueryParser, TermQuery},
+    schema::{Field, IndexRecordOption, Schema, Value, STORED, STRING, TEXT},
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
 use ctxvault_common::{
-    types::{Chunk, ScoreBreakdown, SearchResult},
+    types::{Chunk, EntityKind, Modality, ScoreBreakdown, SearchResult},
     Error, Result,
 };
 
@@ -30,6 +32,7 @@ pub struct BM25Index {
     field_title: Field,
     field_body: Field,
     field_tags: Field,
+    field_modality: Field,
 }
 
 /// Scan the Tantivy index directory for stale lockfiles (`.tantivy-*.lock`)
@@ -70,15 +73,17 @@ pub fn heal_stale_lockfiles(index_path: &Path) {
 
 impl BM25Index {
     /// Build the shared schema used by all BM25Index instances.
-    fn build_schema() -> (Schema, Field, Field, Field, Field, Field) {
+    fn build_schema() -> (Schema, Field, Field, Field, Field, Field, Field) {
         let mut builder = Schema::builder();
         let field_path = builder.add_text_field("path", STRING | STORED);
         let field_chunk_index = builder.add_text_field("chunk_index", STORED);
         let field_title = builder.add_text_field("title", TEXT | STORED);
         let field_body = builder.add_text_field("body", TEXT | STORED);
         let field_tags = builder.add_text_field("tags", TEXT | STORED);
+        // Coarse modality tag ("code"/"docs") for exact-match filtering.
+        let field_modality = builder.add_text_field("modality", STRING | STORED);
         let schema = builder.build();
-        (schema, field_path, field_chunk_index, field_title, field_body, field_tags)
+        (schema, field_path, field_chunk_index, field_title, field_body, field_tags, field_modality)
     }
 
     /// Open or create a Tantivy index at the given directory.
@@ -88,8 +93,15 @@ impl BM25Index {
         // Clean up any stale lockfiles from previously killed processes.
         heal_stale_lockfiles(index_path);
 
-        let (schema, field_path, field_chunk_index, field_title, field_body, field_tags) =
-            Self::build_schema();
+        let (
+            schema,
+            field_path,
+            field_chunk_index,
+            field_title,
+            field_body,
+            field_tags,
+            field_modality,
+        ) = Self::build_schema();
 
         let dir = MmapDirectory::open(index_path).map_err(|e| Error::Index(e.to_string()))?;
 
@@ -99,7 +111,7 @@ impl BM25Index {
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
 
@@ -114,20 +126,28 @@ impl BM25Index {
             field_title,
             field_body,
             field_tags,
+            field_modality,
         })
     }
 
     /// Create an in-memory index (for testing).
     pub fn open_in_memory() -> Result<Self> {
-        let (schema, field_path, field_chunk_index, field_title, field_body, field_tags) =
-            Self::build_schema();
+        let (
+            schema,
+            field_path,
+            field_chunk_index,
+            field_title,
+            field_body,
+            field_tags,
+            field_modality,
+        ) = Self::build_schema();
 
         let index = Index::create_in_ram(schema.clone());
 
         // Don't acquire writer at open — only needed for mutations.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e: tantivy::TantivyError| Error::Index(e.to_string()))?;
 
@@ -142,6 +162,7 @@ impl BM25Index {
             field_title,
             field_body,
             field_tags,
+            field_modality,
         })
     }
 
@@ -197,16 +218,21 @@ impl BM25Index {
         let field_title = self.field_title;
         let field_body = self.field_body;
         let field_tags = self.field_tags;
+        let field_modality = self.field_modality;
 
         let writer = self.ensure_writer()?;
 
         for chunk in chunks {
+            // Coarse modality tag: "code" for any code entity, "docs" otherwise.
+            let modality_tag =
+                chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
             let tantivy_doc = doc!(
                 field_path => doc_path,
                 field_chunk_index => chunk.chunk_index.to_string(),
                 field_title => title_text,
                 field_body => chunk.text.as_str(),
                 field_tags => tags_text.as_str(),
+                field_modality => modality_tag,
             );
             let _ = writer.add_document(tantivy_doc).map_err(|e| Error::Index(e.to_string()))?;
         }
@@ -230,15 +256,29 @@ impl BM25Index {
         if let Some(ref mut writer) = self.writer {
             let _ = writer.commit().map_err(|e| Error::Index(e.to_string()))?;
         }
-        // Release writer to drop the exclusive file lock.
-        self.release_writer();
         Ok(())
     }
 
-    /// Search the BM25 index with a text query.
+    /// Search the BM25 index with a text query (no modality restriction).
     ///
-    /// Returns ranked results with scores and snippets.
+    /// Thin wrapper over [`BM25Index::search_with_modality`] with
+    /// [`Modality::Both`]. Returns ranked results with scores and snippets.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        self.search_with_modality(query, limit, Modality::Both)
+    }
+
+    /// Search the BM25 index, restricting results to the requested [`Modality`].
+    ///
+    /// When `modality == Both`, this parses and runs the user query unchanged.
+    /// Otherwise it wraps the parsed query in a boolean AND with an exact-match
+    /// term query on the indexed `modality` field ("code" / "docs"), so only
+    /// chunks tagged with the requested modality are returned.
+    pub fn search_with_modality(
+        &self,
+        query: &str,
+        limit: usize,
+        modality: Modality,
+    ) -> Result<Vec<SearchResult>> {
         // Reload the reader to pick up latest commits.
         self.reader.reload().map_err(|e| Error::Index(e.to_string()))?;
 
@@ -250,9 +290,27 @@ impl BM25Index {
         let parsed_query =
             query_parser.parse_query(query).map_err(|e| Error::Index(e.to_string()))?;
 
-        let top_docs = searcher
-            .search(&parsed_query, &TopDocs::with_limit(limit).order_by_score())
-            .map_err(|e| Error::Index(e.to_string()))?;
+        let tag = match modality {
+            Modality::Both => None,
+            Modality::Docs => Some("docs"),
+            Modality::Code => Some("code"),
+        };
+
+        let top_docs = if let Some(tag) = tag {
+            let term = Term::from_field_text(self.field_modality, tag);
+            let term_query = TermQuery::new(term, IndexRecordOption::Basic);
+            let boolean = BooleanQuery::new(vec![
+                (Occur::Must, parsed_query),
+                (Occur::Must, Box::new(term_query)),
+            ]);
+            searcher
+                .search(&boolean, &TopDocs::with_limit(limit).order_by_score())
+                .map_err(|e| Error::Index(e.to_string()))?
+        } else {
+            searcher
+                .search(&parsed_query, &TopDocs::with_limit(limit).order_by_score())
+                .map_err(|e| Error::Index(e.to_string()))?
+        };
 
         let mut results = Vec::with_capacity(top_docs.len());
 
@@ -290,19 +348,17 @@ impl BM25Index {
 
             let score_f64 = score as f64;
 
-            results.push(SearchResult {
-                path,
-                score: score_f64,
-                snippet,
-                chunk_index: Some(chunk_index),
-                score_components: Some(ScoreBreakdown {
-                    bm25: score_f64,
-                    vector: 0.0,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            });
+            results.push(
+                SearchResult::new(path, score_f64)
+                    .with_snippet(snippet)
+                    .with_chunk_index(Some(chunk_index))
+                    .with_score_components(ScoreBreakdown {
+                        bm25: score_f64,
+                        vector: 0.0,
+                        graph_boost: 0.0,
+                        graph_hops: None,
+                    }),
+            );
         }
 
         Ok(results)
@@ -316,14 +372,7 @@ mod tests {
 
     /// Helper to create a simple chunk.
     fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
-        Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: index,
-            text: text.to_string(),
-            start_byte: 0,
-            end_byte: text.len(),
-            heading_chain: None,
-        }
+        Chunk::new(doc_path, index, text, 0, text.len())
     }
 
     #[test]
@@ -494,6 +543,53 @@ mod tests {
                 "Results should be in descending score order"
             );
         }
+    }
+
+    #[test]
+    fn test_search_with_modality_filters() {
+        let mut index = BM25Index::open_in_memory().unwrap();
+
+        // A documentation chunk (default entity_kind = Documentation).
+        let doc_chunk = make_chunk(
+            "notes/guide.md",
+            0,
+            "The retrieval engine performs hybrid search over the corpus",
+        );
+        // A code chunk (entity_kind = CodeChunk via with_code_metadata).
+        let code_chunk = Chunk::new(
+            "src/engine.rs",
+            0,
+            "fn search_hybrid() performs hybrid retrieval over the corpus",
+            0,
+            60,
+        )
+        .with_code_metadata("rust", "crate::engine", 1, 3);
+
+        index.add_document("notes/guide.md", Some("Guide"), &[], &[doc_chunk]).unwrap();
+        index.add_document("src/engine.rs", Some("engine.rs"), &[], &[code_chunk]).unwrap();
+        index.commit().unwrap();
+
+        // Code modality returns only the code chunk.
+        let code_results =
+            index.search_with_modality("hybrid retrieval corpus", 10, Modality::Code).unwrap();
+        assert!(!code_results.is_empty(), "expected code results");
+        assert!(code_results.iter().all(|r| r.path == "src/engine.rs"));
+
+        // Docs modality returns only the doc chunk.
+        let doc_results =
+            index.search_with_modality("hybrid search corpus", 10, Modality::Docs).unwrap();
+        assert!(!doc_results.is_empty(), "expected doc results");
+        assert!(doc_results.iter().all(|r| r.path == "notes/guide.md"));
+
+        // Both returns both.
+        let both_results = index.search_with_modality("hybrid corpus", 10, Modality::Both).unwrap();
+        let paths: Vec<&str> = both_results.iter().map(|r| r.path.as_str()).collect();
+        assert!(paths.contains(&"notes/guide.md"));
+        assert!(paths.contains(&"src/engine.rs"));
+
+        // Default `search` is equivalent to Modality::Both.
+        let default_results = index.search("hybrid corpus", 10).unwrap();
+        assert_eq!(default_results.len(), both_results.len());
     }
 
     #[test]

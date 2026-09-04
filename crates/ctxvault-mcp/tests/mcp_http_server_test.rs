@@ -11,19 +11,38 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use ctxvault_common::config::{
-    ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig,
+    ChunkingConfig, CorpusConfig, CorpusMode, EmbeddingConfig, GraphConfig, IndexMode,
 };
-use ctxvault_core::engine::Engine;
+use ctxvault_core::corpus_manager::CorpusManager;
 use ctxvault_mcp::client::McpClient;
-use ctxvault_mcp::tools::ToolRegistry;
-use ctxvault_mcp::transport::http::SingleCorpusServerState;
+use ctxvault_mcp::tools::MultiCorpusToolRegistry;
+use ctxvault_mcp::transport::http::MultiCorpusServerState;
+
+/// Build a single-corpus manager rooted at `corpus_path` and index its files.
+fn build_manager(name: &str, corpus_path: &std::path::Path) -> CorpusManager {
+    let config = CorpusConfig {
+        name: name.to_string(),
+        path: corpus_path.to_string_lossy().to_string(),
+        mode: CorpusMode::ReadWrite,
+        index_mode: IndexMode::Full,
+        chunking: ChunkingConfig::default(),
+        embedding: EmbeddingConfig::default(),
+        graph: GraphConfig::default(),
+        templates_dir: ".templates".to_string(),
+    };
+
+    let mut manager = CorpusManager::new();
+    manager.add_corpus(config).expect("add corpus");
+    let engine = manager.default_engine_mut().expect("default engine");
+    let _ = engine.full_reindex().expect("reindex");
+    manager
+}
 
 #[tokio::test]
 async fn test_mcp_http_server_and_client_e2e() {
     // 1. Create temporary corpus directory
     let temp_dir = TempDir::new().expect("create temp dir");
     let corpus_path = temp_dir.path().to_path_buf();
-    let index_dir = corpus_path.join(".index");
 
     // Write sample notes
     let doc1_path = corpus_path.join("architecture.md");
@@ -40,34 +59,23 @@ async fn test_mcp_http_server_and_client_e2e() {
     )
     .expect("write doc2");
 
-    // 2. Initialize Engine and index notes
-    let config = CorpusConfig {
-        name: "test-corpus".to_string(),
-        path: corpus_path.to_string_lossy().to_string(),
-        mode: CorpusMode::ReadWrite,
-        chunking: ChunkingConfig::default(),
-        embedding: EmbeddingConfig::default(),
-        graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
-    };
+    // 2. Initialize CorpusManager and index notes
+    let manager = build_manager("test-corpus", &corpus_path);
+    {
+        let engine = manager.default_engine().expect("default engine");
+        let direct_bm25 = engine.bm25().search("architecture", 5).expect("direct bm25");
+        println!("direct_bm25 count: {}, items: {:?}", direct_bm25.len(), direct_bm25);
+    }
 
-    let mut engine = Engine::open(config, &index_dir).expect("open engine");
-    let count = engine.full_reindex().expect("reindex");
-    assert_eq!(count, 2);
-
-    let direct_bm25 = engine.bm25().search("architecture", 5).expect("direct bm25");
-    println!("direct_bm25 count: {}, items: {:?}", direct_bm25.len(), direct_bm25);
-
-    let mut registry = ToolRegistry::new();
-    registry.register_all();
+    let registry = MultiCorpusToolRegistry::new();
 
     // 3. Bind ephemeral TCP listener on port 0
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral port");
     let local_addr = listener.local_addr().expect("local addr");
 
     // 4. Start HTTP Server in background
-    let state = SingleCorpusServerState {
-        engine: Arc::new(RwLock::new(engine)),
+    let state = MultiCorpusServerState {
+        manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
     };
 
@@ -132,13 +140,16 @@ async fn test_mcp_http_server_and_client_e2e() {
 }
 
 async fn handle_jsonrpc_test(
-    axum::extract::State(state): axum::extract::State<SingleCorpusServerState>,
+    axum::extract::State(state): axum::extract::State<MultiCorpusServerState>,
     axum::Json(req): axum::Json<ctxvault_mcp::transport::JsonRpcRequest>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let mut engine = state.engine.write().await;
-    let res =
-        ctxvault_mcp::transport::dispatch::dispatch_write(&req, &mut *engine, &state.registry);
+    let mut manager = state.manager.write().await;
+    let res = ctxvault_mcp::transport::dispatch::dispatch_multi_write(
+        &req,
+        &mut manager,
+        &state.registry,
+    );
     if let Some(id) = req.id {
         let rpc_res = ctxvault_mcp::transport::dispatch::format_rpc_response(id, res);
         axum::Json(rpc_res).into_response()
@@ -148,16 +159,16 @@ async fn handle_jsonrpc_test(
 }
 
 async fn handle_health_test(
-    axum::extract::State(state): axum::extract::State<SingleCorpusServerState>,
+    axum::extract::State(state): axum::extract::State<MultiCorpusServerState>,
 ) -> axum::Json<serde_json::Value> {
-    let (is_indexed, status) = match state.engine.try_read() {
-        Ok(engine) => (engine.is_indexed(), "healthy"),
-        Err(_) => (true, "busy"),
+    let (corpora_count, status) = match state.manager.try_read() {
+        Ok(manager) => (manager.corpus_names().len(), "healthy"),
+        Err(_) => (0, "busy"),
     };
     axum::Json(serde_json::json!({
         "status": status,
         "server": "ctxvault",
-        "indexed": is_indexed
+        "corpora_count": corpora_count
     }))
 }
 
@@ -165,35 +176,21 @@ async fn handle_health_test(
 async fn test_mcp_http_server_sse_and_proxy() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let corpus_path = temp_dir.path().to_path_buf();
-    let index_dir = corpus_path.join(".index");
 
     let doc_path = corpus_path.join("proxy_test.md");
     fs::write(&doc_path, "---\ntitle: Proxy Test\n---\n# Proxy Mode Works\n").unwrap();
 
-    let config = CorpusConfig {
-        name: "proxy-corpus".to_string(),
-        path: corpus_path.to_string_lossy().to_string(),
-        mode: CorpusMode::ReadWrite,
-        chunking: ChunkingConfig::default(),
-        embedding: EmbeddingConfig::default(),
-        graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
-    };
+    let manager = build_manager("proxy-corpus", &corpus_path);
+    let registry = MultiCorpusToolRegistry::new();
 
-    let mut engine = Engine::open(config, &index_dir).expect("open engine");
-    let _ = engine.full_reindex().expect("reindex");
-
-    let mut registry = ToolRegistry::new();
-    registry.register_all();
-
-    // Bind server on ephemeral port using production run_http_server
+    // Bind server on ephemeral port using the multi-corpus dispatch path.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind port");
     let local_addr = listener.local_addr().expect("local addr");
     let server_url = format!("http://{local_addr}");
 
     let _server_handle = tokio::spawn(async move {
-        let state = SingleCorpusServerState {
-            engine: Arc::new(RwLock::new(engine)),
+        let state = MultiCorpusServerState {
+            manager: Arc::new(RwLock::new(manager)),
             registry: Arc::new(registry),
         };
         let app = Router::new()
@@ -242,7 +239,6 @@ async fn test_mcp_http_server_sse_and_proxy() {
 async fn test_concurrent_reads_and_health_during_write() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let corpus_path = temp_dir.path().to_path_buf();
-    let index_dir = corpus_path.join(".index");
 
     for i in 0..10 {
         fs::write(
@@ -252,31 +248,18 @@ async fn test_concurrent_reads_and_health_during_write() {
         .unwrap();
     }
 
-    let config = CorpusConfig {
-        name: "concurrent-corpus".to_string(),
-        path: corpus_path.to_string_lossy().to_string(),
-        mode: CorpusMode::ReadWrite,
-        chunking: ChunkingConfig::default(),
-        embedding: EmbeddingConfig::default(),
-        graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
-    };
+    let manager = build_manager("concurrent-corpus", &corpus_path);
+    let registry = MultiCorpusToolRegistry::new();
 
-    let mut engine = Engine::open(config, &index_dir).expect("open engine");
-    let _ = engine.full_reindex().expect("reindex");
-
-    let mut registry = ToolRegistry::new();
-    registry.register_all();
-
-    let state = SingleCorpusServerState {
-        engine: Arc::new(RwLock::new(engine)),
+    let state = MultiCorpusServerState {
+        manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
     };
 
     // 1. Simulate active write lock in a background task
-    let engine_lock = state.engine.clone();
+    let manager_lock = state.manager.clone();
     let write_hold = tokio::spawn(async move {
-        let _write_guard = engine_lock.write().await;
+        let _write_guard = manager_lock.write().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     });
 
@@ -284,21 +267,21 @@ async fn test_concurrent_reads_and_health_during_write() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     // 2. Non-blocking health check should immediately succeed with "busy" status
-    let (is_indexed, status) = match state.engine.try_read() {
-        Ok(e) => (e.is_indexed(), "healthy"),
-        Err(_) => (true, "busy"),
+    let (corpora_count, status) = match state.manager.try_read() {
+        Ok(mgr) => (mgr.corpus_names().len(), "healthy"),
+        Err(_) => (0, "busy"),
     };
     assert_eq!(status, "busy");
-    assert!(is_indexed);
+    assert_eq!(corpora_count, 0);
 
     // Wait for write lock to release
     write_hold.await.unwrap();
 
     // 3. Health check after write lock released
-    let (is_indexed_post, status_post) = match state.engine.try_read() {
-        Ok(e) => (e.is_indexed(), "healthy"),
-        Err(_) => (true, "busy"),
+    let (corpora_count_post, status_post) = match state.manager.try_read() {
+        Ok(mgr) => (mgr.corpus_names().len(), "healthy"),
+        Err(_) => (0, "busy"),
     };
     assert_eq!(status_post, "healthy");
-    assert!(is_indexed_post);
+    assert_eq!(corpora_count_post, 1);
 }

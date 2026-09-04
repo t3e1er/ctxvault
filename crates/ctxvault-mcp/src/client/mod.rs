@@ -98,56 +98,60 @@ impl<T: McpTransport> McpClient<T> {
     // High-Level Domain Helpers
     // -----------------------------------------------------------------------
 
-    /// Execute a 4-modality hybrid search (BM25 + vector + graph expansion + RRF).
+    /// Execute a 4-modality hybrid search (BM25 + vector + graph expansion + RRF)
+    /// via the consolidated `search` tool (`mode = "hybrid"`).
     pub async fn search_hybrid(
         &self,
         query: &str,
         limit: Option<usize>,
         depth: Option<&str>,
     ) -> Result<Value> {
-        let mut args = serde_json::json!({ "query": query });
+        let mut args = serde_json::json!({ "query": query, "mode": "hybrid" });
         if let Some(l) = limit {
             args["limit"] = l.into();
         }
         if let Some(d) = depth {
             args["depth"] = d.into();
         }
-        self.call_tool("search_hybrid", args).await
+        self.call_tool("search", args).await
     }
 
-    /// Execute a BM25 keyword full-text search.
+    /// Execute a BM25 keyword full-text search via the `search` tool
+    /// (`mode = "bm25"`).
     pub async fn search_bm25(&self, query: &str, limit: Option<usize>) -> Result<Value> {
-        let mut args = serde_json::json!({ "query": query });
+        let mut args = serde_json::json!({ "query": query, "mode": "bm25" });
         if let Some(l) = limit {
             args["limit"] = l.into();
         }
-        self.call_tool("search_bm25", args).await
+        self.call_tool("search", args).await
     }
 
-    /// Execute a dense vector similarity search.
+    /// Execute a dense vector similarity search via the `search` tool
+    /// (`mode = "semantic"`).
     pub async fn search_semantic(
         &self,
         query: &str,
         limit: Option<usize>,
-        score_threshold: Option<f32>,
+        depth: Option<&str>,
     ) -> Result<Value> {
-        let mut args = serde_json::json!({ "query": query });
+        let mut args = serde_json::json!({ "query": query, "mode": "semantic" });
         if let Some(l) = limit {
             args["limit"] = l.into();
         }
-        if let Some(t) = score_threshold {
-            args["score_threshold"] = t.into();
-        }
-        self.call_tool("search_semantic", args).await
-    }
-
-    /// Execute a typed graph expansion search from a concept.
-    pub async fn search_graph(&self, concept: &str, depth: Option<usize>) -> Result<Value> {
-        let mut args = serde_json::json!({ "concept": concept });
         if let Some(d) = depth {
             args["depth"] = d.into();
         }
-        self.call_tool("search_graph", args).await
+        self.call_tool("search", args).await
+    }
+
+    /// Execute a typed graph expansion search via the `search` tool
+    /// (`mode = "graph"`).
+    pub async fn search_graph(&self, query: &str, graph_depth: Option<usize>) -> Result<Value> {
+        let mut args = serde_json::json!({ "query": query, "mode": "graph" });
+        if let Some(d) = graph_depth {
+            args["graph_depth"] = d.into();
+        }
+        self.call_tool("search", args).await
     }
 
     /// Read the complete content and parsed frontmatter of a note.
@@ -220,9 +224,10 @@ impl<T: McpTransport> McpClient<T> {
         self.call_tool("promote_concept", args).await
     }
 
-    /// Retrieve corpus index status and document statistics.
+    /// Retrieve corpus index status and document statistics via the consolidated
+    /// `status` tool (multi-corpus overview when no corpus is targeted).
     pub async fn get_status(&self) -> Result<Value> {
-        self.call_tool("get_status", serde_json::json!({})).await
+        self.call_tool("status", serde_json::json!({})).await
     }
 
     /// Validate a note schema against its declared template.

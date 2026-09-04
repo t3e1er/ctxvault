@@ -6,22 +6,34 @@ use clap::Parser;
 use serde_json::Value;
 
 use ctxvault_common::config::CorpusConfig;
-use ctxvault_core::engine::Engine;
+use ctxvault_core::corpus_manager::CorpusManager;
 use ctxvault_mcp::client::McpClient;
-use ctxvault_mcp::tools::ToolRegistry;
+use ctxvault_mcp::tools::MultiCorpusToolRegistry;
 use ctxvault_mcp::transport;
 
 /// Enterprise semantic MCP server for markdown knowledge bases.
 #[derive(Parser, Debug)]
 #[command(name = "ctxvault", version, about)]
 struct Cli {
-    /// Path(s) to corpus directories.
-    #[arg(long = "corpus", value_name = "PATH")]
+    /// Corpus root(s) to serve, repeatable. Each value is either `name=path` or a
+    /// bare `path` (the name is derived from the directory's file name).
+    #[arg(long = "corpus", value_name = "NAME=PATH|PATH")]
     corpora: Vec<String>,
+
+    /// Name of the corpus to treat as the default. Defaults to the first `--corpus` added.
+    #[arg(long = "default-corpus", value_name = "NAME")]
+    default_corpus: Option<String>,
 
     /// Operating mode.
     #[arg(long, default_value = "local")]
     mode: Mode,
+
+    /// Tool exposure profile controlling which tools `tools/list` advertises:
+    /// scout (minimal retrieve/navigate), analysis (+ read-only graph/analysis/code
+    /// intel), or all (every tool, including writes). Hidden tools still execute if
+    /// called directly.
+    #[arg(long, default_value = "all")]
+    profile: Profile,
 
     /// Bind address for server mode.
     #[arg(long, default_value = "127.0.0.1:9090")]
@@ -60,9 +72,33 @@ struct Cli {
     #[arg(long)]
     no_resume: bool,
 
+    /// Fast Mode: skip dense embedding and vector indexing for instant BM25+Graph indexing.
+    #[arg(long)]
+    fast: bool,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Profile {
+    /// Minimal retrieve/navigate tool set.
+    Scout,
+    /// Scout plus read-only graph/validation/analysis/code-intel tools.
+    Analysis,
+    /// Every registered tool, including mutating/admin tools.
+    All,
+}
+
+impl From<Profile> for ctxvault_mcp::tools::ToolProfile {
+    fn from(p: Profile) -> Self {
+        match p {
+            Profile::Scout => ctxvault_mcp::tools::ToolProfile::Scout,
+            Profile::Analysis => ctxvault_mcp::tools::ToolProfile::Analysis,
+            Profile::All => ctxvault_mcp::tools::ToolProfile::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -145,56 +181,103 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(mode = ?cli.mode, "starting ctxvault engine");
 
     if cli.corpora.is_empty() {
-        anyhow::bail!("at least one --corpus path is required for local/server mode");
+        anyhow::bail!("at least one --corpus root is required for local/server mode");
     }
 
-    let corpus_path = PathBuf::from(&cli.corpora[0]);
-    let config = load_or_default_config(&corpus_path)?;
-    let index_dir = corpus_path.join(".index");
+    // Build the multi-corpus manager. A single `--corpus` is just N=1.
+    let mut manager = CorpusManager::new();
+    let mut corpus_names: Vec<String> = Vec::new();
 
-    let mut engine = Engine::open(config, &index_dir)?;
+    for spec in &cli.corpora {
+        let (name_override, corpus_path) = parse_corpus_spec(spec);
+        let mut config = load_or_default_config(&corpus_path)?;
+        if let Some(name) = name_override {
+            config.name = name;
+        }
+        if cli.fast {
+            config.index_mode = ctxvault_common::config::IndexMode::Fast;
+        }
+        corpus_names.push(config.name.clone());
+        manager.add_corpus(config)?;
+    }
 
+    if let Some(default_name) = &cli.default_corpus {
+        manager.set_default(default_name)?;
+    }
+
+    // Startup indexing applies to every configured corpus.
     if cli.reindex {
-        tracing::info!(
-            batch_size = cli.batch_size,
-            resume = !cli.no_resume,
-            "performing full reindex (paginated)"
-        );
-        let count = engine.full_reindex_paginated(cli.batch_size, !cli.no_resume)?;
-        tracing::info!(count, "reindex complete");
+        for name in &corpus_names {
+            tracing::info!(
+                corpus = %name,
+                batch_size = cli.batch_size,
+                resume = !cli.no_resume,
+                "performing full reindex (paginated)"
+            );
+            let engine = manager.get_engine_mut(name)?;
+            let count = engine.full_reindex_paginated(cli.batch_size, !cli.no_resume)?;
+            tracing::info!(corpus = %name, count, "reindex complete");
+        }
     } else if cli.sync {
-        tracing::info!(batch_size = cli.batch_size, "running delta scan (paginated)");
-        let result = engine.delta_scan_paginated(cli.batch_size)?;
-        tracing::info!(
-            new = result.new_files.len(),
-            modified = result.modified_files.len(),
-            deleted = result.deleted_files.len(),
-            "delta scan complete"
-        );
+        for name in &corpus_names {
+            tracing::info!(corpus = %name, batch_size = cli.batch_size, "running delta scan (paginated)");
+            let engine = manager.get_engine_mut(name)?;
+            let result = engine.delta_scan_paginated(cli.batch_size)?;
+            tracing::info!(
+                corpus = %name,
+                new = result.new_files.len(),
+                modified = result.modified_files.len(),
+                deleted = result.deleted_files.len(),
+                "delta scan complete"
+            );
+        }
     } else {
-        let indexed = engine.is_indexed();
         tracing::info!(
-            indexed,
+            corpora = corpus_names.len(),
             "skipping indexing on startup (use --sync or --reindex, or call sync_corpus/reindex_corpus tools)"
         );
     }
 
-    let mut registry = ToolRegistry::new();
-    registry.register_all();
+    // Cross-corpus symbol linking: only meaningful with more than one corpus.
+    // Runs after startup indexing so freshly indexed symbols are resolvable, and
+    // for corpora not indexed this run, their persisted SQLite symbols still are.
+    if manager.corpus_count() > 1 {
+        match manager.link_cross_corpus_symbols() {
+            Ok(count) => {
+                tracing::info!(cross_corpus_edges = count, "cross-corpus symbol linking complete");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cross-corpus symbol linking failed");
+            }
+        }
+    }
+
+    let registry = MultiCorpusToolRegistry::with_profile(cli.profile.into());
 
     match cli.mode {
         Mode::Local => {
             tracing::info!("starting stdio MCP transport");
-            transport::run_stdio(&mut engine, &registry).await?;
+            transport::run_stdio_multi(&mut manager, &registry).await?;
         }
         Mode::Server => {
             tracing::info!(bind = %cli.bind, "starting localhost HTTP MCP server");
-            transport::run_http_server(&cli.bind, engine, registry).await?;
+            transport::run_http_server_multi(&cli.bind, manager, registry).await?;
         }
         Mode::Client | Mode::Proxy => unreachable!(),
     }
 
     Ok(())
+}
+
+/// Parse a `--corpus` spec of the form `name=path` or a bare `path`.
+///
+/// Returns an optional explicit corpus name and the corpus directory path. When
+/// no name is given, the caller derives it from the directory's file name.
+fn parse_corpus_spec(spec: &str) -> (Option<String>, PathBuf) {
+    match spec.split_once('=') {
+        Some((name, path)) if !name.is_empty() => (Some(name.to_string()), PathBuf::from(path)),
+        _ => (None, PathBuf::from(spec)),
+    }
 }
 
 /// Load `corpus.toml` from the corpus directory, or create a default config.
@@ -211,6 +294,7 @@ fn load_or_default_config(corpus_path: &Path) -> anyhow::Result<CorpusConfig> {
             name: corpus_path.file_name().and_then(|n| n.to_str()).unwrap_or("default").to_string(),
             path: corpus_path.to_string_lossy().to_string(),
             mode: ctxvault_common::config::CorpusMode::ReadWrite,
+            index_mode: ctxvault_common::config::IndexMode::Full,
             chunking: ctxvault_common::config::ChunkingConfig::default(),
             embedding: ctxvault_common::config::EmbeddingConfig::default(),
             graph: ctxvault_common::config::GraphConfig {

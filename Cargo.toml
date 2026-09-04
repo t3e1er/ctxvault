@@ -33,6 +33,9 @@ nursery = { level = "allow", priority = -1 }
 tokio = { version = "1.40", features = ["full"] }
 async-trait = "0.1"
 futures-util = "0.3"
+crossbeam-channel = "0.5"
+sysinfo = "0.39"
+
 
 # MCP protocol
 # rmcp = "0.1"  # uncomment when adding MCP integration
@@ -61,8 +64,9 @@ tantivy = "0.26"
 # Vector search
 hnsw_rs = "0.3"
 
-# Embeddings
-fastembed = "4"
+# Embeddings (Hardware-Accelerated via DirectML / CoreML / CUDA / CPU)
+ort = { version = "2.0.0-rc.13", features = ["copy-dylibs", "download-binaries"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 
 # Knowledge graph
 petgraph = { version = "0.8", features = ["serde-1"] }

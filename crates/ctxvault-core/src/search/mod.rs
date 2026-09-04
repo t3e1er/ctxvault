@@ -1,8 +1,8 @@
-﻿//! Search strategies: BM25, semantic (vector), hybrid, graph, related, multihop.
+//! Search strategies: BM25, semantic (vector), hybrid, graph, related, multihop.
 
 use std::collections::{HashMap, HashSet};
 
-use ctxvault_common::types::{ScoreBreakdown, SearchResult};
+use ctxvault_common::types::{Modality, ScoreBreakdown, SearchResult};
 use ctxvault_common::Result;
 
 use crate::embedding::Embedder;
@@ -10,9 +10,29 @@ use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
 use crate::vector_index::VectorIndex;
 
-/// Simple BM25 keyword search.
-pub fn search_bm25(bm25: &BM25Index, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-    bm25.search(query, limit)
+/// Classify a result path as passing a [`Modality`] filter using the set of
+/// known code node keys.
+///
+/// A path is treated as code if it appears in `code_paths` (scope_paths, code
+/// file paths, and `<corpus>::scope_path` keys derived from the code-symbol
+/// catalog); otherwise it is documentation. [`Modality::Both`] accepts every
+/// path.
+pub fn path_matches_modality(path: &str, modality: Modality, code_paths: &HashSet<String>) -> bool {
+    match modality {
+        Modality::Both => true,
+        Modality::Code => code_paths.contains(path),
+        Modality::Docs => !code_paths.contains(path),
+    }
+}
+
+/// Simple BM25 keyword search, restricted to the requested [`Modality`].
+pub fn search_bm25(
+    bm25: &BM25Index,
+    query: &str,
+    limit: usize,
+    modality: Modality,
+) -> Result<Vec<SearchResult>> {
+    bm25.search_with_modality(query, limit, modality)
 }
 
 /// Semantic vector search using embedding similarity.
@@ -31,28 +51,26 @@ pub fn search_semantic(
     query: &str,
     limit: usize,
     doc_level_only: bool,
+    modality: Modality,
 ) -> Result<Vec<SearchResult>> {
     // 1. Embed the query.
     let query_embedding = embedder.embed_query(query)?;
 
     // 2. Search vector index.
-    let vector_results = vector_index.search(&query_embedding, limit, doc_level_only)?;
+    let vector_results = vector_index.search(&query_embedding, limit, doc_level_only, modality)?;
 
     // 3. Convert to SearchResult.
     let results: Vec<SearchResult> = vector_results
         .into_iter()
-        .map(|vr| SearchResult {
-            path: vr.doc_path,
-            score: vr.score,
-            snippet: None,
-            chunk_index: vr.chunk_index,
-            score_components: Some(ScoreBreakdown {
-                bm25: 0.0,
-                vector: vr.score,
-                graph_boost: 0.0,
-                graph_hops: None,
-            }),
-            lineage: None,
+        .map(|vr| {
+            SearchResult::new(vr.doc_path, vr.score)
+                .with_chunk_index(vr.chunk_index)
+                .with_score_components(ScoreBreakdown {
+                    bm25: 0.0,
+                    vector: vr.score,
+                    graph_boost: 0.0,
+                    graph_hops: None,
+                })
         })
         .collect();
 
@@ -67,23 +85,21 @@ pub fn search_semantic_with_embedding(
     query_embedding: &[f32],
     limit: usize,
     doc_level_only: bool,
+    modality: Modality,
 ) -> Result<Vec<SearchResult>> {
-    let vector_results = vector_index.search(query_embedding, limit, doc_level_only)?;
+    let vector_results = vector_index.search(query_embedding, limit, doc_level_only, modality)?;
 
     let results: Vec<SearchResult> = vector_results
         .into_iter()
-        .map(|vr| SearchResult {
-            path: vr.doc_path,
-            score: vr.score,
-            snippet: None,
-            chunk_index: vr.chunk_index,
-            score_components: Some(ScoreBreakdown {
-                bm25: 0.0,
-                vector: vr.score,
-                graph_boost: 0.0,
-                graph_hops: None,
-            }),
-            lineage: None,
+        .map(|vr| {
+            SearchResult::new(vr.doc_path, vr.score)
+                .with_chunk_index(vr.chunk_index)
+                .with_score_components(ScoreBreakdown {
+                    bm25: 0.0,
+                    vector: vr.score,
+                    graph_boost: 0.0,
+                    graph_hops: None,
+                })
         })
         .collect();
 
@@ -104,6 +120,7 @@ pub fn search_semantic_dual(
     query: &str,
     limit: usize,
     depth: ctxvault_common::types::SearchDepth,
+    modality: Modality,
 ) -> Result<Vec<SearchResult>> {
     use ctxvault_common::types::SearchDepth;
 
@@ -113,18 +130,28 @@ pub fn search_semantic_dual(
     match depth {
         SearchDepth::Precise => {
             // Chunk-level only.
-            search_semantic_with_embedding(vector_index, &query_embedding, limit, false)
+            search_semantic_with_embedding(vector_index, &query_embedding, limit, false, modality)
         }
         SearchDepth::Broad => {
             // Document-level only.
-            search_semantic_with_embedding(vector_index, &query_embedding, limit, true)
+            search_semantic_with_embedding(vector_index, &query_embedding, limit, true, modality)
         }
         SearchDepth::Adaptive => {
             // Both levels, merged with RRF.
-            let chunk_results =
-                search_semantic_with_embedding(vector_index, &query_embedding, limit * 2, false)?;
-            let doc_results =
-                search_semantic_with_embedding(vector_index, &query_embedding, limit * 2, true)?;
+            let chunk_results = search_semantic_with_embedding(
+                vector_index,
+                &query_embedding,
+                limit * 2,
+                false,
+                modality,
+            )?;
+            let doc_results = search_semantic_with_embedding(
+                vector_index,
+                &query_embedding,
+                limit * 2,
+                true,
+                modality,
+            )?;
 
             // RRF fusion of both result sets.
             let fused = rrf_fuse(&[&chunk_results, &doc_results], limit);
@@ -170,17 +197,67 @@ fn rrf_fuse(result_lists: &[&[SearchResult]], limit: usize) -> Vec<SearchResult>
     // Build results sorted by RRF score.
     let mut results: Vec<SearchResult> = rrf_scores
         .into_iter()
-        .map(|(path, (score, snippet, chunk_index, components))| SearchResult {
-            path,
-            score,
-            snippet,
-            chunk_index,
-            score_components: Some(components),
-            lineage: None,
+        .map(|(path, (score, snippet, chunk_index, components))| {
+            SearchResult::new(path, score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(components)
         })
         .collect();
 
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit);
+    results
+}
+
+/// Cross-corpus Reciprocal Rank Fusion: merges per-corpus ranked lists into one
+/// ranking, preserving each result's source-corpus tag and rich fields.
+///
+/// Each input list is `(corpus_name, results)`, already ranked descending. RRF is
+/// applied over each list (K = 60, contribution `1 / (K + rank + 1)`). Results are
+/// keyed by `(corpus, path)` so the same path appearing in two different corpora is
+/// preserved as two distinct hits, each tagged with its origin corpus. The source
+/// result's snippet, chunk index, entity kind, language, lineage, and score
+/// components are carried through. The fused list is sorted by RRF score descending
+/// and truncated to `limit`.
+pub fn rrf_fuse_cross_corpus(
+    tagged_lists: &[(String, Vec<SearchResult>)],
+    limit: usize,
+) -> Vec<SearchResult> {
+    const K: f64 = 60.0;
+
+    // Accumulate fused RRF score per (corpus, path); keep the first-seen rich result.
+    let mut fused: HashMap<(String, String), (f64, SearchResult)> = HashMap::new();
+
+    for (corpus_name, list) in tagged_lists {
+        for (rank, result) in list.iter().enumerate() {
+            let contribution = 1.0 / (K + rank as f64 + 1.0);
+            let key = (corpus_name.clone(), result.path.clone());
+
+            let entry = fused.entry(key).or_insert_with(|| {
+                let tagged = result.clone().with_corpus(Some(corpus_name.clone()));
+                (0.0, tagged)
+            });
+            entry.0 += contribution;
+        }
+    }
+
+    // Apply fused score and collect.
+    let mut results: Vec<SearchResult> = fused
+        .into_values()
+        .map(|(score, mut result)| {
+            result.score = score;
+            result
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.corpus.cmp(&b.corpus))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     results.truncate(limit);
     results
 }
@@ -212,11 +289,13 @@ pub fn search_hybrid(
     graph_depth: usize,
     edge_type_filter: Option<&[String]>,
     edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
     const RRF_K: f64 = 60.0;
 
-    // 1. Get BM25 seeds (over-fetch to allow graph reranking).
-    let bm25_results = bm25.search(query, limit * 3)?;
+    // 1. Get BM25 seeds (over-fetch to allow graph reranking), modality-filtered.
+    let bm25_results = bm25.search_with_modality(query, limit * 3, modality)?;
 
     if bm25_results.is_empty() {
         return Ok(Vec::new());
@@ -282,19 +361,15 @@ pub fn search_hybrid(
 
             let final_score = bm25_rrf + graph_rrf;
 
-            SearchResult {
-                path,
-                score: final_score,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, final_score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: bm25_score,
                     vector: 0.0,
                     graph_boost,
                     graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -310,6 +385,8 @@ pub fn search_hybrid(
             })
             .then_with(|| a.path.cmp(&b.path))
     });
+    // Modality filter: graph-expanded paths may introduce the other modality.
+    results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
     results.truncate(limit);
     enrich_results_with_lineage(&mut results, graph);
 
@@ -338,15 +415,18 @@ pub fn search_hybrid_full(
     graph_depth: usize,
     edge_type_filter: Option<&[String]>,
     edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
+    tracing::debug!("hybrid search: vector results from anchor embeddings, BM25 from full corpus");
     const RRF_K: f64 = 60.0;
 
-    // 1. Get BM25 seeds.
-    let bm25_results = bm25.search(query, limit * 3)?;
+    // 1. Get BM25 seeds (modality-filtered).
+    let bm25_results = bm25.search_with_modality(query, limit * 3, modality)?;
 
-    // 2. Get vector seeds (if embedding available).
+    // 2. Get vector seeds (if embedding available), modality-filtered.
     let vector_results = if let Some(emb) = query_embedding {
-        vector_index.search(emb, limit * 3, false)?
+        vector_index.search(emb, limit * 3, false, modality)?
     } else {
         Vec::new()
     };
@@ -425,19 +505,15 @@ pub fn search_hybrid_full(
     let mut results: Vec<SearchResult> = rrf_map
         .into_iter()
         .map(|(path, (rrf_total, bm25_score, vector_score, snippet, chunk_index, min_hops))| {
-            SearchResult {
-                path,
-                score: rrf_total,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, rrf_total)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: bm25_score,
                     vector: vector_score,
                     graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
                     graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -452,6 +528,8 @@ pub fn search_hybrid_full(
             })
             .then_with(|| a.path.cmp(&b.path))
     });
+    // Modality filter: graph-expanded paths may introduce the other modality.
+    results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
     results.truncate(limit);
     enrich_results_with_lineage(&mut results, graph);
 
@@ -472,17 +550,19 @@ pub fn search_explain(
     graph_depth: usize,
     edge_type_filter: Option<&[String]>,
     edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<ctxvault_common::types::SearchExplanation>> {
     use ctxvault_common::types::{GraphExplanation, SearchExplanation, SignalExplanation};
 
     const RRF_K: f64 = 60.0;
 
-    // 1. Get BM25 results.
-    let bm25_results = bm25.search(query, limit * 3)?;
+    // 1. Get BM25 results (modality-filtered).
+    let bm25_results = bm25.search_with_modality(query, limit * 3, modality)?;
 
-    // 2. Get vector results (if embedding available).
+    // 2. Get vector results (if embedding available), modality-filtered.
     let vector_results = if let Some(emb) = query_embedding {
-        vector_index.search(emb, limit * 3, false)?
+        vector_index.search(emb, limit * 3, false, modality)?
     } else {
         Vec::new()
     };
@@ -594,6 +674,8 @@ pub fn search_explain(
             })
             .then_with(|| a.path.cmp(&b.path))
     });
+    // Modality filter: graph-expanded paths may introduce the other modality.
+    explanations.retain(|e| path_matches_modality(&e.path, modality, code_paths));
     explanations.truncate(limit);
 
     Ok(explanations)
@@ -609,8 +691,11 @@ pub fn search_graph(
     max_depth: usize,
     edge_type_filter: Option<&[String]>,
     edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
-    // 1. Find seed nodes via BM25 (top 5).
+    // 1. Find seed nodes via BM25 (top 5). Seeds themselves are unrestricted so
+    //    traversal can bridge modalities; the final results are modality-filtered.
     let seeds = bm25.search(query, 5)?;
 
     if seeds.is_empty() {
@@ -644,22 +729,18 @@ pub fn search_graph(
     // 3. Build results, sort by score, take top `limit`.
     let mut results: Vec<SearchResult> = score_map
         .into_iter()
-        .map(|(path, (score, min_hops))| SearchResult {
-            path,
-            score,
-            snippet: None,
-            chunk_index: None,
-            score_components: Some(ScoreBreakdown {
+        .map(|(path, (score, min_hops))| {
+            SearchResult::new(path, score).with_score_components(ScoreBreakdown {
                 bm25: 0.0,
                 vector: 0.0,
                 graph_boost: score,
                 graph_hops: Some(min_hops),
-            }),
-            lineage: None,
+            })
         })
         .collect();
 
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
     results.truncate(limit);
     enrich_results_with_lineage(&mut results, graph);
 
@@ -680,6 +761,8 @@ pub fn search_related(
     limit: usize,
     _damping: f64,
     _iterations: usize,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
     if seeds.is_empty() {
         return Ok(Vec::new());
@@ -711,22 +794,18 @@ pub fn search_related(
     // Build results, sort, truncate.
     let mut results: Vec<SearchResult> = score_map
         .into_iter()
-        .map(|(path, (score, min_hops))| SearchResult {
-            path,
-            score,
-            snippet: None,
-            chunk_index: None,
-            score_components: Some(ScoreBreakdown {
+        .map(|(path, (score, min_hops))| {
+            SearchResult::new(path, score).with_score_components(ScoreBreakdown {
                 bm25: 0.0,
                 vector: 0.0,
                 graph_boost: score,
                 graph_hops: Some(min_hops),
-            }),
-            lineage: None,
+            })
         })
         .collect();
 
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
     results.truncate(limit);
     enrich_results_with_lineage(&mut results, graph);
 
@@ -753,6 +832,8 @@ pub fn search_multihop(
     limit: usize,
     graph_depth: usize,
     edge_type_filter: Option<&[String]>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
     use ctxvault_common::config::EdgeClass;
 
@@ -773,6 +854,8 @@ pub fn search_multihop(
             graph_depth,
             edge_type_filter,
             Some(EdgeClass::Semantic),
+            modality,
+            code_paths,
         );
     }
 
@@ -784,22 +867,17 @@ pub fn search_multihop(
         let clean_concept =
             concept.trim_matches(|c: char| c == '?' || c == '.' || c == '!' || c == ',').trim();
 
-        // BM25 search for this sub-concept.
-        let bm25_results = bm25.search(clean_concept, limit * 2)?;
+        // BM25 search for this sub-concept (modality-filtered).
+        let bm25_results = bm25.search_with_modality(clean_concept, limit * 2, modality)?;
 
         // Vector search for this sub-concept if embedder is available.
         let concept_list = if let Some(emb_model) = embedder {
             if let Ok(emb) = emb_model.embed_query(clean_concept) {
-                let vec_res = vector_index.search(&emb, limit * 2, false)?;
+                let vec_res = vector_index.search(&emb, limit * 2, false, modality)?;
                 let vec_search: Vec<SearchResult> = vec_res
                     .into_iter()
-                    .map(|vr| SearchResult {
-                        path: vr.doc_path,
-                        score: vr.score,
-                        snippet: None,
-                        chunk_index: vr.chunk_index,
-                        score_components: None,
-                        lineage: None,
+                    .map(|vr| {
+                        SearchResult::new(vr.doc_path, vr.score).with_chunk_index(vr.chunk_index)
                     })
                     .collect();
                 rrf_fuse(&[&bm25_results, &vec_search], limit * 2)
@@ -816,23 +894,16 @@ pub fn search_multihop(
         all_result_lists.push(concept_list);
     }
 
-    // Also add the full-query BM25 results as another signal.
-    let full_bm25 = bm25.search(query, limit * 2)?;
+    // Also add the full-query BM25 results as another signal (modality-filtered).
+    let full_bm25 = bm25.search_with_modality(query, limit * 2, modality)?;
     all_result_lists.push(full_bm25);
 
     // And full-query vector results if available.
     if let Some(emb) = query_embedding {
-        let vector_results = vector_index.search(emb, limit * 2, false)?;
+        let vector_results = vector_index.search(emb, limit * 2, false, modality)?;
         let vector_as_search: Vec<SearchResult> = vector_results
             .into_iter()
-            .map(|vr| SearchResult {
-                path: vr.doc_path,
-                score: vr.score,
-                snippet: None,
-                chunk_index: vr.chunk_index,
-                score_components: None,
-                lineage: None,
-            })
+            .map(|vr| SearchResult::new(vr.doc_path, vr.score).with_chunk_index(vr.chunk_index))
             .collect();
         all_result_lists.push(vector_as_search);
     }
@@ -881,14 +952,7 @@ pub fn search_multihop(
         sorted_bridges.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let bridge_as_search: Vec<SearchResult> = sorted_bridges
             .into_iter()
-            .map(|(path, score)| SearchResult {
-                path,
-                score,
-                snippet: None,
-                chunk_index: None,
-                score_components: None,
-                lineage: None,
-            })
+            .map(|(path, score)| SearchResult::new(path, score))
             .collect();
         all_result_lists.push(bridge_as_search);
     }
@@ -930,19 +994,15 @@ pub fn search_multihop(
         .into_iter()
         .map(|(path, (score, snippet, chunk_index))| {
             let is_bridge = bridge_docs.contains_key(&path);
-            SearchResult {
-                path,
-                score,
-                snippet,
-                chunk_index,
-                score_components: Some(ScoreBreakdown {
+            SearchResult::new(path, score)
+                .with_snippet(snippet)
+                .with_chunk_index(chunk_index)
+                .with_score_components(ScoreBreakdown {
                     bm25: 0.0,
                     vector: 0.0,
                     graph_boost: if is_bridge { 1.0 } else { 0.0 },
                     graph_hops: None,
-                }),
-                lineage: None,
-            }
+                })
         })
         .collect();
 
@@ -952,6 +1012,8 @@ pub fn search_multihop(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.path.cmp(&b.path))
     });
+    // Modality filter: structural bridge nodes may introduce the other modality.
+    results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
     results.truncate(limit);
     enrich_results_with_lineage(&mut results, graph);
 
@@ -1053,14 +1115,12 @@ mod tests {
 
     /// Helper to create a simple chunk.
     fn make_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
-        Chunk {
-            doc_path: doc_path.to_string(),
-            chunk_index: index,
-            text: text.to_string(),
-            start_byte: 0,
-            end_byte: text.len(),
-            heading_chain: None,
-        }
+        Chunk::new(doc_path, index, text, 0, text.len())
+    }
+
+    /// An empty code-paths classifier set (all paths classify as docs).
+    fn no_code() -> HashSet<String> {
+        HashSet::new()
     }
 
     /// Set up a BM25 index with some test documents.
@@ -1164,7 +1224,7 @@ mod tests {
     fn test_search_bm25() {
         let index = setup_bm25();
 
-        let results = search_bm25(&index, "systems programming", 10).unwrap();
+        let results = search_bm25(&index, "systems programming", 10, Modality::Both).unwrap();
         assert!(!results.is_empty(), "Expected BM25 results for 'systems programming'");
 
         // rust.md is the only doc that mentions "systems programming" heavily.
@@ -1182,8 +1242,18 @@ mod tests {
         let graph = setup_graph();
 
         // Search for "systems programming" — hybrid should boost graph-connected nodes.
-        let results =
-            search_hybrid(&index, &graph, "systems programming", 10, 2, None, None).unwrap();
+        let results = search_hybrid(
+            &index,
+            &graph,
+            "systems programming",
+            10,
+            2,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
         assert!(!results.is_empty());
 
         // rust.md should be top (only doc with BM25 match for "systems programming").
@@ -1210,7 +1280,18 @@ mod tests {
         let graph = setup_graph();
 
         // Search for "Python scripting" — graph search finds nodes reachable from python.md.
-        let results = search_graph(&index, &graph, "Python scripting", 10, 3, None, None).unwrap();
+        let results = search_graph(
+            &index,
+            &graph,
+            "Python scripting",
+            10,
+            3,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
         assert!(!results.is_empty());
 
         // python.md links to ml.md, and ml.md links to rust.md.
@@ -1238,7 +1319,8 @@ mod tests {
 
         // Find notes related to rust.md.
         let seeds = vec!["notes/rust.md".to_string()];
-        let results = search_related(&graph, &seeds, 10, 0.85, 20).unwrap();
+        let results =
+            search_related(&graph, &seeds, 10, 0.85, 20, Modality::Both, &no_code()).unwrap();
         assert!(!results.is_empty());
 
         // rust.md links to async.md and web.md directly (1 hop).
@@ -1260,7 +1342,8 @@ mod tests {
 
         // Multiple seeds: rust.md and python.md.
         let seeds = vec!["notes/rust.md".to_string(), "notes/python.md".to_string()];
-        let results = search_related(&graph, &seeds, 10, 0.85, 20).unwrap();
+        let results =
+            search_related(&graph, &seeds, 10, 0.85, 20, Modality::Both, &no_code()).unwrap();
         assert!(!results.is_empty());
 
         // ml.md is reachable from python.md (1 hop) and from rust.md via longer path.
@@ -1275,13 +1358,100 @@ mod tests {
     }
 
     #[test]
+    fn test_path_matches_modality_classifier() {
+        let mut code_paths = HashSet::new();
+        let _ = code_paths.insert("src/engine.rs".to_string());
+        let _ = code_paths.insert("crate::search::Engine".to_string());
+
+        // Both accepts everything.
+        assert!(path_matches_modality("src/engine.rs", Modality::Both, &code_paths));
+        assert!(path_matches_modality("notes/guide.md", Modality::Both, &code_paths));
+
+        // Code keeps only code-set paths.
+        assert!(path_matches_modality("src/engine.rs", Modality::Code, &code_paths));
+        assert!(path_matches_modality("crate::search::Engine", Modality::Code, &code_paths));
+        assert!(!path_matches_modality("notes/guide.md", Modality::Code, &code_paths));
+
+        // Docs keeps only non-code-set paths.
+        assert!(path_matches_modality("notes/guide.md", Modality::Docs, &code_paths));
+        assert!(!path_matches_modality("src/engine.rs", Modality::Docs, &code_paths));
+    }
+
+    #[test]
+    fn test_search_graph_modality_post_filter() {
+        // Build a small graph: a doc seed linking to one doc node and one code node.
+        let mut graph = KnowledgeGraph::new();
+        graph.add_edge(
+            "notes/design.md",
+            "notes/related.md",
+            "Link",
+            1.0,
+            EdgeProvenance::Wikilink,
+            ctxvault_common::config::EdgeClass::Structural,
+        );
+        graph.add_edge(
+            "notes/design.md",
+            "src/engine.rs",
+            "documents",
+            1.0,
+            EdgeProvenance::DocumentsCode,
+            ctxvault_common::config::EdgeClass::Structural,
+        );
+
+        // Seed matches the design doc via BM25.
+        let mut index = BM25Index::open_in_memory().unwrap();
+        let chunks = vec![make_chunk("notes/design.md", 0, "design document about the engine")];
+        index.add_document("notes/design.md", Some("Design"), &[], &chunks).unwrap();
+        index.commit().unwrap();
+
+        // Classifier: only src/engine.rs is code.
+        let mut code_paths = HashSet::new();
+        let _ = code_paths.insert("src/engine.rs".to_string());
+
+        // Code modality keeps only the code node.
+        let code_results =
+            search_graph(&index, &graph, "design", 10, 3, None, None, Modality::Code, &code_paths)
+                .unwrap();
+        let code_paths_out: Vec<&str> = code_results.iter().map(|r| r.path.as_str()).collect();
+        assert!(code_paths_out.contains(&"src/engine.rs"));
+        assert!(!code_paths_out.contains(&"notes/related.md"));
+
+        // Docs modality keeps only the doc node.
+        let doc_results =
+            search_graph(&index, &graph, "design", 10, 3, None, None, Modality::Docs, &code_paths)
+                .unwrap();
+        let doc_paths_out: Vec<&str> = doc_results.iter().map(|r| r.path.as_str()).collect();
+        assert!(doc_paths_out.contains(&"notes/related.md"));
+        assert!(!doc_paths_out.contains(&"src/engine.rs"));
+
+        // Both keeps everything discovered.
+        let both_results =
+            search_graph(&index, &graph, "design", 10, 3, None, None, Modality::Both, &code_paths)
+                .unwrap();
+        let both_paths_out: Vec<&str> = both_results.iter().map(|r| r.path.as_str()).collect();
+        assert!(both_paths_out.contains(&"src/engine.rs"));
+        assert!(both_paths_out.contains(&"notes/related.md"));
+    }
+
+    #[test]
     fn test_search_hybrid_empty_query() {
         let index = setup_bm25();
         let graph = setup_graph();
 
         // An empty or non-matching query should return empty results gracefully.
         // Note: tantivy may error on empty queries, so we test a non-matching term.
-        let results = search_hybrid(&index, &graph, "xyznonexistent", 10, 2, None, None).unwrap();
+        let results = search_hybrid(
+            &index,
+            &graph,
+            "xyznonexistent",
+            10,
+            2,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
         assert!(results.is_empty());
     }
 
@@ -1307,9 +1477,9 @@ mod tests {
         let v_python = make_vec(43); // very similar to rust
         let v_web = make_vec(200); // different
 
-        vi.add(&v_rust, "notes/rust.md", Some(0), false).unwrap();
-        vi.add(&v_python, "notes/python.md", Some(0), false).unwrap();
-        vi.add(&v_web, "notes/web.md", Some(0), false).unwrap();
+        vi.add(&v_rust, "notes/rust.md", Some(0), false, "docs").unwrap();
+        vi.add(&v_python, "notes/python.md", Some(0), false, "docs").unwrap();
+        vi.add(&v_web, "notes/web.md", Some(0), false, "docs").unwrap();
 
         // Search with the rust vector as query embedding.
         let results = search_hybrid_full(
@@ -1322,6 +1492,8 @@ mod tests {
             2,
             None,
             None,
+            Modality::Both,
+            &no_code(),
         )
         .unwrap();
 
@@ -1352,9 +1524,20 @@ mod tests {
         let vi = VectorIndex::new_default(384); // empty vector index
 
         // Without query embedding, should still work (BM25+graph only).
-        let results =
-            search_hybrid_full(&index, &vi, &graph, "systems programming", None, 10, 2, None, None)
-                .unwrap();
+        let results = search_hybrid_full(
+            &index,
+            &vi,
+            &graph,
+            "systems programming",
+            None,
+            10,
+            2,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
 
         assert!(!results.is_empty());
 
@@ -1372,7 +1555,8 @@ mod tests {
     fn test_search_related_empty_seeds() {
         let graph = setup_graph();
 
-        let results = search_related(&graph, &[], 10, 0.85, 20).unwrap();
+        let results =
+            search_related(&graph, &[], 10, 0.85, 20, Modality::Both, &no_code()).unwrap();
         assert!(results.is_empty());
     }
 
@@ -1384,9 +1568,20 @@ mod tests {
         let graph = setup_graph();
         let vi = VectorIndex::new_default(384); // no vectors, tests BM25+graph explain
 
-        let explanations =
-            search_explain(&index, &vi, &graph, "systems programming", None, 10, 2, None, None)
-                .unwrap();
+        let explanations = search_explain(
+            &index,
+            &vi,
+            &graph,
+            "systems programming",
+            None,
+            10,
+            2,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
 
         assert!(!explanations.is_empty());
 
@@ -1453,7 +1648,18 @@ mod tests {
 
         // With edge filter for "Link" only, should find B and D but not C.
         let filter = vec!["Link".to_string()];
-        let results = search_graph(&index, &graph, "Alpha", 10, 3, Some(&filter), None).unwrap();
+        let results = search_graph(
+            &index,
+            &graph,
+            "Alpha",
+            10,
+            3,
+            Some(&filter),
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
         let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
 
         assert!(paths.contains(&"B"));
@@ -1480,12 +1686,13 @@ mod tests {
         let v_python = make_vec(99);
         let v_java = make_vec(200);
 
-        vi.add(&v_rust, "notes/rust.md", Some(0), false).unwrap();
-        vi.add(&v_python, "notes/python.md", Some(0), false).unwrap();
-        vi.add(&v_java, "notes/java.md", Some(0), false).unwrap();
+        vi.add(&v_rust, "notes/rust.md", Some(0), false, "docs").unwrap();
+        vi.add(&v_python, "notes/python.md", Some(0), false, "docs").unwrap();
+        vi.add(&v_java, "notes/java.md", Some(0), false, "docs").unwrap();
 
         // Search with the rust vector — should find rust.md first.
-        let results = search_semantic_with_embedding(&vi, &v_rust, 3, false).unwrap();
+        let results =
+            search_semantic_with_embedding(&vi, &v_rust, 3, false, Modality::Both).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].path, "notes/rust.md");
         // Should have vector score > 0 in components.
@@ -1503,7 +1710,8 @@ mod tests {
         let vi = VectorIndex::new_default(384);
         let query_vec = vec![0.1_f32; 384];
 
-        let results = search_semantic_with_embedding(&vi, &query_vec, 10, false).unwrap();
+        let results =
+            search_semantic_with_embedding(&vi, &query_vec, 10, false, Modality::Both).unwrap();
         assert!(results.is_empty());
     }
 
@@ -1511,60 +1719,26 @@ mod tests {
     fn test_rrf_fuse_merges_lists() {
         // Test the RRF fusion logic directly.
         let list1 = vec![
-            SearchResult {
-                path: "A".to_string(),
-                score: 0.9,
-                snippet: None,
-                chunk_index: Some(0),
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.9,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
-            SearchResult {
-                path: "B".to_string(),
-                score: 0.7,
-                snippet: None,
-                chunk_index: Some(0),
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.7,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
+            SearchResult::new("A", 0.9).with_chunk_index(Some(0)).with_score_components(
+                ScoreBreakdown { bm25: 0.0, vector: 0.9, graph_boost: 0.0, graph_hops: None },
+            ),
+            SearchResult::new("B", 0.7).with_chunk_index(Some(0)).with_score_components(
+                ScoreBreakdown { bm25: 0.0, vector: 0.7, graph_boost: 0.0, graph_hops: None },
+            ),
         ];
         let list2 = vec![
-            SearchResult {
-                path: "B".to_string(),
-                score: 0.95,
-                snippet: None,
-                chunk_index: None,
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.95,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
-            SearchResult {
-                path: "C".to_string(),
-                score: 0.8,
-                snippet: None,
-                chunk_index: None,
-                score_components: Some(ScoreBreakdown {
-                    bm25: 0.0,
-                    vector: 0.8,
-                    graph_boost: 0.0,
-                    graph_hops: None,
-                }),
-                lineage: None,
-            },
+            SearchResult::new("B", 0.95).with_score_components(ScoreBreakdown {
+                bm25: 0.0,
+                vector: 0.95,
+                graph_boost: 0.0,
+                graph_hops: None,
+            }),
+            SearchResult::new("C", 0.8).with_score_components(ScoreBreakdown {
+                bm25: 0.0,
+                vector: 0.8,
+                graph_boost: 0.0,
+                graph_hops: None,
+            }),
         ];
 
         let fused = rrf_fuse(&[&list1, &list2], 5);
@@ -1602,16 +1776,18 @@ mod tests {
         let v_chunk = make_vec(10);
         let v_doc = make_vec(20);
 
-        vi.add(&v_chunk, "notes/a.md", Some(0), false).unwrap();
-        vi.add(&v_doc, "notes/a.md", None, true).unwrap();
+        vi.add(&v_chunk, "notes/a.md", Some(0), false, "docs").unwrap();
+        vi.add(&v_doc, "notes/a.md", None, true, "docs").unwrap();
 
         // Search with precise (chunk only) — should not return doc-level.
-        let results = search_semantic_with_embedding(&vi, &v_chunk, 10, false).unwrap();
+        let results =
+            search_semantic_with_embedding(&vi, &v_chunk, 10, false, Modality::Both).unwrap();
         // Should find both since doc_level_only=false doesn't exclude chunks
         assert!(!results.is_empty());
 
         // Search with broad (doc only) — should only return doc-level.
-        let results_broad = search_semantic_with_embedding(&vi, &v_doc, 10, true).unwrap();
+        let results_broad =
+            search_semantic_with_embedding(&vi, &v_doc, 10, true, Modality::Both).unwrap();
         for r in &results_broad {
             // All results from doc_level_only=true should not have chunk_index
             assert!(r.chunk_index.is_none(), "broad mode should return doc-level only");
@@ -1673,13 +1849,70 @@ mod tests {
             ctxvault_common::config::EdgeClass::Structural,
         );
 
-        let results =
-            search_hybrid(&index, &graph, "systems programming", 5, 2, None, None).unwrap();
+        let results = search_hybrid(
+            &index,
+            &graph,
+            "systems programming",
+            5,
+            2,
+            None,
+            None,
+            Modality::Both,
+            &no_code(),
+        )
+        .unwrap();
         assert!(!results.is_empty());
 
         let rust_result = results.iter().find(|r| r.path == "notes/rust.md").unwrap();
         assert!(rust_result.lineage.is_some(), "SearchResult for rust.md should have lineage");
         let lineage = rust_result.lineage.as_ref().unwrap();
         assert_eq!(lineage.superseded_by, vec!["notes/async.md"]);
+    }
+
+    #[test]
+    fn test_rrf_fuse_cross_corpus_merges_ranks_and_tags() {
+        // Two per-corpus ranked lists, built by hand (no embedder, no manager).
+        // Corpus "docs": shared.md is rank 1 (strongest), a.md rank 2.
+        // Corpus "code": shared.md is rank 1, b.md rank 2.
+        let docs = vec![
+            SearchResult::new("shared.md", 9.0).with_snippet(Some("docs shared".into())),
+            SearchResult::new("a.md", 8.0),
+        ];
+        let code = vec![
+            SearchResult::new("shared.md", 7.0).with_language("rust").with_chunk_index(Some(3)),
+            SearchResult::new("b.md", 6.0),
+        ];
+
+        let tagged = vec![("docs".to_string(), docs), ("code".to_string(), code)];
+        let fused = rrf_fuse_cross_corpus(&tagged, 10);
+
+        // (b) same path in two corpora stays as two distinct hits.
+        let shared_hits: Vec<&SearchResult> =
+            fused.iter().filter(|r| r.path == "shared.md").collect();
+        assert_eq!(shared_hits.len(), 2, "shared.md must appear once per corpus");
+
+        // (c) every result is tagged with its origin corpus.
+        assert!(fused.iter().all(|r| r.corpus.is_some()), "all hits must be corpus-tagged");
+        let docs_shared =
+            fused.iter().find(|r| r.path == "shared.md" && r.corpus.as_deref() == Some("docs"));
+        let code_shared =
+            fused.iter().find(|r| r.path == "shared.md" && r.corpus.as_deref() == Some("code"));
+        assert!(docs_shared.is_some(), "docs/shared.md must be present and tagged 'docs'");
+        assert!(code_shared.is_some(), "code/shared.md must be present and tagged 'code'");
+
+        // Rich fields are preserved from the source result.
+        assert_eq!(docs_shared.unwrap().snippet.as_deref(), Some("docs shared"));
+        assert_eq!(code_shared.unwrap().language.as_deref(), Some("rust"));
+        assert_eq!(code_shared.unwrap().chunk_index, Some(3));
+
+        // (a) RRF ranks: both shared.md hits are rank-1 in their lists → identical RRF
+        // score, and each strictly beats the rank-2 hit from the same corpus.
+        let a_hit = fused.iter().find(|r| r.path == "a.md").unwrap();
+        assert!(
+            docs_shared.unwrap().score > a_hit.score,
+            "rank-1 shared.md must outrank rank-2 a.md"
+        );
+        // Top result overall is a shared.md hit.
+        assert_eq!(fused[0].path, "shared.md");
     }
 }

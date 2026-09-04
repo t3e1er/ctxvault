@@ -60,8 +60,17 @@ echo "[*] Extracting binary..."
 tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
 
 mkdir -p "$INSTALL_DIR"
-cp "$TMP_DIR/ctxvault-${TAG}-${TARGET}/ctxvault" "$INSTALL_DIR/ctxvault"
+EXTRACTED="$TMP_DIR/ctxvault-${TAG}-${TARGET}"
+cp "$EXTRACTED/ctxvault" "$INSTALL_DIR/ctxvault"
 chmod +x "$INSTALL_DIR/ctxvault"
+
+# Install the bundled embedding model as a sidecar next to the binary so the
+# embedder resolves it at <exe_dir>/models/<model>/ (no separate download).
+if [ -d "$EXTRACTED/models" ]; then
+    echo "[*] Installing bundled embedding model (sidecar)..."
+    rm -rf "$INSTALL_DIR/models"
+    cp -r "$EXTRACTED/models" "$INSTALL_DIR/models"
+fi
 
 # Optional symlink for short shorthand alias `ctxv`
 ln -sf "$INSTALL_DIR/ctxvault" "$INSTALL_DIR/ctxv" 2>/dev/null || true

@@ -41,6 +41,15 @@ jobs:
         with:
           key: releasebuild-validate
 
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ctxvault-model-${{ hashFiles('scripts/fetch-model.sh') }}
+
+      - name: Fetch embedding model (sidecar)
+        run: bash scripts/fetch-model.sh ./models
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -48,6 +57,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Test suite
+        env:
+          CTX_MODELS_DIR: ${{ github.workspace }}/models
         run: cargo test --workspace --all-features --locked
 
       - name: Documentation check
@@ -103,6 +114,19 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
+      # Fetch the embedding model so it can be shipped as a sidecar next to the
+      # binary in each platform archive (<archive>/models/<model>/...). bash is
+      # available on all GitHub runners including Windows (Git Bash).
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ctxvault-model-${{ hashFiles('scripts/fetch-model.sh') }}
+
+      - name: Fetch embedding model (sidecar)
+        shell: bash
+        run: bash scripts/fetch-model.sh ./models
+
       - name: Build release binary
         shell: bash
         run: |
@@ -121,6 +145,8 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$STAGING/"
           cp README.md LICENSE THIRD_PARTY_LICENSES.md "$STAGING/" 2>/dev/null || true
           cp -r examples "$STAGING/" 2>/dev/null || true
+          # Sidecar: ship the embedding model next to the binary (<binary>/models/<model>/...).
+          cp -r models "$STAGING/"
           tar -czvf "$STAGING.tar.gz" "$STAGING"
           echo "ASSET_NAME=$STAGING.tar.gz" >> $GITHUB_ENV
 
@@ -135,6 +161,8 @@ jobs:
           if (Test-Path LICENSE) { Copy-Item LICENSE -Destination $staging }
           if (Test-Path THIRD_PARTY_LICENSES.md) { Copy-Item THIRD_PARTY_LICENSES.md -Destination $staging }
           if (Test-Path examples) { Copy-Item -Recurse examples -Destination $staging }
+          # Sidecar: ship the embedding model next to the binary (<binary>\models\<model>\...).
+          if (Test-Path models) { Copy-Item -Recurse models -Destination $staging }
           Compress-Archive -Path $staging -DestinationPath "$staging.zip" -Force
           echo "ASSET_NAME=$staging.zip" >> $env:GITHUB_ENV
 

@@ -32,5 +32,12 @@ __pycache__/
 # Fastembed model cache
 .fastembed_cache/
 
+# Local models directory
+models/
+
+# Scratch & logs
+scratch/
+*.log
+
 # Kiro settings (user-specific MCP config)
-.kiro/settings/
+.kiro/settings/

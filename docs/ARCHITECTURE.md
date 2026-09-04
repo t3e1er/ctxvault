@@ -361,102 +361,123 @@ Index Coordinator (async task)
 
 ## 7. MCP Tool Surface
 
-### Search Tools (6)
+The registry (`crates/ctxvault-mcp/src/tools/mod.rs`) is the authoritative source; the
+expected-tools test asserts the exact set. All read tools accept an optional `corpus`
+(single root) or `corpora` (`["a","b"]` or `"all"`, fan-out + RRF-merge, corpus-tagged);
+write tools accept a single `corpus`. Search tools accept `modality` (`docs`|`code`|`both`)
+and `detail` (`ids`|`default`).
+
+### Progressive disclosure (three tiers)
+
+Tool descriptions encode the ordering so agents self-enforce it:
+1. **Tier 1 — handles.** `search` returns paths/qualified names + line ranges, never full
+   bodies. `detail=ids` = bare handles for wide sweeps; `default` = a short snippet only.
+2. **Tier 2 — fetch.** `get_snippet` returns exactly one code symbol (by `qualified_name`)
+   or one doc chunk (by `path`+`chunk_index`), bounded by `max_lines`, with optional
+   `include_neighbors` (code callers/callees; adjacent doc chunks).
+3. **Tier 3 — full file.** `read_note` (docs), `read_code_file` (source), `read_multiple`
+   (token-efficient batch), only when whole-file context is truly needed.
+
+### Read / fetch tools
 
 | Tool | Description |
 |------|-------------|
-| `search_semantic` | Vector similarity search with configurable limit and score threshold |
-| `search_bm25` | Full-text BM25 keyword search with frontmatter filters |
-| `search_hybrid` | Seed-then-traverse: BM25 + vector + graph boost via RRF |
-| `search_graph` | Typed BFS/DFS from concept matches, filtered by edge types |
-| `search_related` | PPR from a set of seed documents — "find more like these" |
-| `search_explain` | Returns full scoring breakdown (BM25 component, vector component, graph boost, path) |
-
-### Read Tools (4)
-
-| Tool | Description |
-|------|-------------|
-| `read_note` | Full file content with parsed frontmatter |
-| `read_multiple` | Batch read |
-| `list_notes` | List all notes with metadata (title, template, tags, edge count) |
+| `read_note` | Tier 3: full markdown note content + parsed frontmatter |
+| `read_code_file` | Tier 3: whole source file (or line range), raw |
+| `read_multiple` | Tier 3 batch: many files in one call; per-path errors are entries, not failures |
+| `get_snippet` | Tier 2: one code symbol OR one doc chunk, bounded, optional neighbors |
+| `list_notes` | List indexed notes with metadata |
 | `get_frontmatter` | Parsed frontmatter as structured JSON |
 
-### Write Tools (5)
+### Search tools
+
+| Tool | Description |
+|------|-------------|
+| `search` | One tool, `mode` = `bm25` \| `semantic` \| `hybrid` (default) \| `graph` \| `explain`; honors `modality` + `detail` |
+| `search_related` | PPR from seed documents — "find more like these" |
+
+### Graph tools
+
+| Tool | Description |
+|------|-------------|
+| `backlinks` / `forwardlinks` | Notes linking to / from a note, grouped by edge type (includes resolved cross-corpus links) |
+| `graph_path` | Shortest path between two notes |
+| `graph_stats` | Density, orphans, most-connected, edge type distribution |
+| `graph_subgraph` | N-hop neighborhood around a node |
+| `graph_communities` | `algorithm` = `leiden` (default, connectivity-refined) \| `louvain`; optional per-community density |
+| `list_edge_types` | Registered edge types with class/source/weight/direction + live counts |
+| `traverse_lineage` | Deterministic traversal along a structural edge type (supersedes/implements/depends_on) |
+
+### Write tools
 
 | Tool | Description |
 |------|-------------|
 | `create_note` | Template-aware creation: validates schema, generates frontmatter, creates edges |
-| `update_note` | Modes: overwrite, append, prepend, patch-by-heading. Re-validates. Updates edges. |
+| `update_note` | Modes: overwrite, append, prepend. Re-validates. Updates edges. |
 | `delete_note` | Removes file + all index entries + all edges (requires confirmation) |
-| `move_note` | Moves file, rewrites all inbound wikilinks across corpus, updates graph |
-| `update_frontmatter` | Atomic field set/delete. Re-validates against template. Updates edges if relationship fields changed. |
+| `move_note` | Moves file, rewrites inbound wikilinks across the corpus, updates graph |
+| `promote_concept` | Crystallize source notes into a schema-validated concept note (atomic rollback) |
 
-### Graph Tools (5)
-
-| Tool | Description |
-|------|-------------|
-| `backlinks` | All notes linking TO this note, grouped by edge type |
-| `forwardlinks` | All notes this note links TO, grouped by edge type |
-| `graph_path` | Shortest path between two notes (optionally filtered by edge types) |
-| `graph_stats` | Density, orphans, most-connected, edge type distribution, connected components |
-| `graph_subgraph` | Extract N-hop neighborhood around a node as structured data |
-
-### Template & Validation Tools (4)
+### Template / validation, analytics, code, system
 
 | Tool | Description |
 |------|-------------|
-| `validate_note` | Check single note against its declared template |
-| `validate_corpus` | Batch validation: schema conformance, broken links, orphans, missing required fields |
-| `list_templates` | Available templates with their field schemas |
-| `list_edge_types` | Registered edge types with source/weight/direction |
+| `validate_note` / `validate_corpus` | Template schema conformance |
+| `list_templates` | Available templates + field schemas |
+| `validate_taxonomy` | Broken links, DAG cycles, orphan ADRs, template constraints |
+| `analyze_density` / `find_semantic_gaps` / `suggest_splits` | Graph + retrieval analytics |
+| `coverage_report` | Query-driven retrieval dead zones |
+| `check_index_coverage` | Index/parse coverage for given paths or prefixes |
+| `get_symbol_definition` / `find_callers` | Code symbol lookup + inbound callers (with confidence bands) |
+| `get_architecture` | Architectural overview via Leiden community clustering |
+| `detect_changes` | Modified files + impact radius (mutating) |
+| `status` | `scope` = `corpus` \| `indexing` \| `all` (default); manager-level overview when no corpus targeted |
+| `corpus_list` | List configured corpora with modes + stats |
+| `reindex_corpus` / `sync_corpus` / `reembed_corpus` | Index maintenance (mutating) |
 
-### Analytics Tools (4)
+**Total: 39 tools.** Consolidated from the older per-mode `search_*` / per-status
+`get_*` families to shrink the `tools/list` footprint (scout profile advertises 9).
 
-| Tool | Description |
-|------|-------------|
-| `analyze_density` | Graph density per cluster/tag, identify hubs and orphan clusters |
-| `find_semantic_gaps` | Queries where BM25 and vector disagree — potential embedding blind spots |
-| `suggest_splits` | Chunks with low internal coherence — candidates for better chunking |
-| `coverage_report` | For a set of test queries, which notes are never retrieved — dead zones |
+### Tool profiles (`--profile`)
 
-### System Tools (3)
-
-| Tool | Description |
-|------|-------------|
-| `get_status` | Corpus stats, index state, watcher status, last index time |
-| `reindex` | Force full rebuild of all indices |
-| `corpus_list` | List all configured corpora with their modes and stats |
-
-**Total: 31 tools** (vs semantic-pages' 21)
+`tools/list` exposure is gated by `--profile` (default `all`), nested `scout` ⊂ `analysis`
+⊂ `all`. Profiles gate only what is advertised — a hidden tool called directly still
+executes. `scout` = minimal retrieve/navigate (`search`, `search_related`, `get_snippet`,
+`read_note`, `read_code_file`, `read_multiple`, `list_notes`, `get_frontmatter`, `status`);
+`analysis` adds the read-only graph/validation/analysis/code-intel tools; `all` adds the
+mutating/admin tools.
 
 ---
 
 ## 8. Transport & Deployment
 
+One central process serves N corpus roots via `CorpusManager`. `--corpus` is repeatable and
+accepts `name=path` or a bare `path`; `--default-corpus <name>` and `--profile
+<scout|analysis|all>` are optional.
+
 ### Local Mode (stdio)
 
 ```bash
-semantic-engine --corpus ./wiki --corpus ./docs --mode local
+ctxvault --corpus wiki=./wiki --corpus ./docs --mode local --profile scout
 ```
 
-Standard MCP stdio transport. Agent talks JSON-RPC over stdin/stdout. Single process.
+Standard MCP stdio transport. Agent talks JSON-RPC over stdin/stdout. Single process,
+serving one or many corpora.
 
 ### Server Mode (Streamable HTTP)
 
 ```bash
-semantic-engine --corpus ./wiki --mode server --bind 0.0.0.0:9090 --auth-token $TOKEN
+ctxvault --corpus ./wiki --corpus ./code --mode server --bind 0.0.0.0:9090
 ```
 
-Axum-based HTTP server. Streamable HTTP transport (MCP spec 2025-03-26+). Multiple agents can connect simultaneously. Supports:
-- Bearer token auth
-- CORS for browser-based MCP clients
-- Health endpoint at `/health`
-- OpenTelemetry traces on search latency
+Axum-based HTTP server. Streamable HTTP transport. Multiple agents can connect
+simultaneously. Supports CORS for browser-based MCP clients and a health endpoint at
+`/health`.
 
 ### Proxy Mode (stdio → remote)
 
 ```bash
-semantic-engine --mode proxy --remote https://kb.internal:9090 --token $TOKEN
+ctxvault --mode proxy --server https://kb.internal:9090
 ```
 
 Local process speaks stdio to the agent, forwards JSON-RPC to remote server over HTTP. The agent doesn't know the difference. Use case: team KB hosted centrally, each developer's agent connects through a local proxy.
@@ -525,12 +546,19 @@ Local process speaks stdio to the agent, forwards JSON-RPC to remote server over
 - Health/readiness probes
 - Binary releases for Linux/macOS/Windows
 
-### Future: Ontological Progressive Disclosure
-- Hierarchical embeddings (doc-level summaries → chunk details)
-- Auto-clustering via centroid computation
-- Progressive search with token budget optimization
-- Concept drift velocity tracking
-- Context density scoring for adaptive retrieval depth
+### Phase 5: Multi-Corpus, Cross-Modal & Progressive Disclosure (shipped)
+- Multi-corpus / multi-root from one central MCP via `CorpusManager` (`--corpus name=path`, `--default-corpus`).
+- Corpus discrimination (`corpus`/`corpora`) with cross-corpus fan-out + RRF merge, per-hit corpus tagging.
+- Cross-modal + cross-corpus symbol/edge linking (unique-match only, with confidence bands).
+- Bi-modal search (`modality` = docs|code|both) across BM25, vector, graph, and the fused path.
+- Three-tier progressive disclosure (search handles → `get_snippet` fetch → whole-file read), encoded in tool descriptions.
+- Tool consolidation (`search`/`status`) + profiles (`scout`|`analysis`|`all`) to shrink the `tools/list` footprint.
+- Parity fill-ins: Leiden community refinement, import-resolution confidence bands, `check_index_coverage`, `read_multiple`.
+
+### Future
+- Hierarchical embeddings (doc-level summaries → chunk details) and adaptive token-budget retrieval depth.
+- Concept drift velocity tracking and context density scoring.
+- Per-modality vector sub-indices (currently a post-filter) if retrieval perf demands it.
 
 ---
 
