@@ -98,6 +98,53 @@ impl ToolRegistry {
         });
     }
 
+    /// Read tools that are corpus-scoped or manager-level and therefore must NOT
+    /// accept the fan-out `corpus`/`corpora` discrimination args.
+    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 3] =
+        ["get_status", "get_corpus_stats", "corpus_list"];
+
+    /// Inject the optional `corpus` and `corpora` discrimination properties into
+    /// the JSON input schema of every read tool that supports fan-out.
+    ///
+    /// `corpus` targets a single corpus; `corpora` fans out across several corpora
+    /// (an array of names, or the string `"all"`) with RRF-merged, corpus-tagged
+    /// results. Manager-level / corpus-scoped read tools are skipped.
+    fn inject_corpus_args(&mut self) {
+        let corpus_prop = serde_json::json!({
+            "type": "string",
+            "description": "Target a single corpus by name. Omit to use the default corpus."
+        });
+        let corpora_prop = serde_json::json!({
+            "description": "Search across multiple corpora: an array of corpus names, or the string \"all\". Results are RRF-merged and each hit is tagged with its source corpus.",
+            "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "string", "enum": ["all"] }
+            ]
+        });
+
+        for tool in self.tools.values_mut() {
+            let manager_level = Self::NON_DISCRIMINATED_READ_TOOLS.contains(&tool.name.as_str());
+            let Some(props) =
+                tool.input_schema.get_mut("properties").and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+
+            match tool.handler {
+                // Read tools (except manager-level ones) get single `corpus` + fan-out `corpora`.
+                ToolHandler::ReadOnly(_) if !manager_level => {
+                    let _ = props.insert("corpus".to_string(), corpus_prop.clone());
+                    let _ = props.insert("corpora".to_string(), corpora_prop.clone());
+                }
+                // Write tools get only single `corpus` — they never fan out.
+                ToolHandler::ReadWrite(_) => {
+                    let _ = props.insert("corpus".to_string(), corpus_prop.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Register all available tools.
     pub fn register_all(&mut self) {
         // Read tools
@@ -674,6 +721,9 @@ impl ToolRegistry {
             }),
             handle_detect_changes,
         );
+
+        // Inject corpus/corpora discrimination args into tool schemas.
+        self.inject_corpus_args();
     }
 
     /// Check if a tool is read-only.
@@ -719,7 +769,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Execute a tool by name with given arguments (backward compatible wrapper around execute_write).
+    /// Execute a tool by name with given arguments (convenience wrapper around `execute_write`).
     pub fn execute(&self, name: &str, engine: &mut Engine, args: Value) -> Result<Value> {
         self.execute_write(name, engine, args)
     }
@@ -738,12 +788,24 @@ impl Default for ToolRegistry {
 use ctxvault_core::corpus_manager::CorpusManager;
 
 /// Multi-corpus tool registry: wraps a `CorpusManager` and routes tool calls
-/// to the correct engine based on an optional `corpus` parameter in tool arguments.
+/// to the correct engine(s) based on the `corpus` / `corpora` arguments.
 ///
-/// When `corpus` is provided, routes to that specific corpus engine.
-/// When omitted, routes to the default corpus (backward compatible).
+/// - `corpus = "name"` targets a single corpus engine.
+/// - `corpora = ["a", "b"]` or `corpora = "all"` fans out across several corpora;
+///   search-style results are RRF-merged and each hit is tagged with its source
+///   corpus.
+/// - Omitting both resolves to the default corpus. This is an ergonomic default,
+///   not a legacy code path.
 pub struct MultiCorpusToolRegistry {
     registry: ToolRegistry,
+}
+
+/// The resolved fan-out target for a read tool call.
+enum CorpusTarget {
+    /// Exactly one corpus (explicit `corpus` or the default).
+    Single(String),
+    /// Two or more corpora to fan out across (deduplicated, order preserved).
+    Multi(Vec<String>),
 }
 
 impl MultiCorpusToolRegistry {
@@ -765,24 +827,96 @@ impl MultiCorpusToolRegistry {
         self.registry.list()
     }
 
-    /// Execute a read-only tool call, routing to the correct corpus engine concurrently.
+    /// Execute a read-only tool call, routing to one corpus or fanning out across
+    /// several with RRF-merged, corpus-tagged results.
     pub fn execute_read(&self, name: &str, manager: &CorpusManager, args: Value) -> Result<Value> {
         // Special handling for get_status and get_corpus_stats — needs the whole CorpusManager.
         if name == "get_status" || name == "get_corpus_stats" {
             return handle_get_status(manager);
         }
 
-        // Extract and remove the `corpus` param from arguments.
-        let (corpus_name, clean_args) = extract_corpus_param(args);
+        // Parse both discrimination args out of the call, resolving the target set.
+        let (target, clean_args) = resolve_corpus_target(args, manager)?;
 
-        // Resolve the engine immutably.
-        let engine = manager.resolve_engine(corpus_name.as_deref())?;
+        match target {
+            CorpusTarget::Single(corpus_name) => {
+                let engine = manager.get_engine(&corpus_name)?;
+                let output = self.registry.execute_read(name, engine, clean_args)?;
+                Ok(tag_search_output(output, &corpus_name))
+            }
+            CorpusTarget::Multi(names) => self.fan_out_read(name, manager, &names, clean_args),
+        }
+    }
 
-        // Execute the read-only tool.
-        self.registry.execute_read(name, engine, clean_args)
+    /// Fan out a read tool across multiple corpora and merge the results.
+    ///
+    /// Search-style outputs (JSON arrays of `SearchResult`) are RRF-merged via
+    /// [`search::rrf_fuse_cross_corpus`] and returned as one tagged array. Other
+    /// (non-array) outputs are returned as a JSON object keyed by corpus name.
+    fn fan_out_read(
+        &self,
+        name: &str,
+        manager: &CorpusManager,
+        names: &[String],
+        clean_args: Value,
+    ) -> Result<Value> {
+        let limit =
+            clean_args.get("limit").and_then(Value::as_u64).map(|n| n as usize).unwrap_or(10);
+
+        let mut per_corpus: Vec<(String, Value)> = Vec::new();
+        let mut last_err: Option<Error> = None;
+
+        for corpus_name in names {
+            let engine = match manager.get_engine(corpus_name) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(corpus = %corpus_name, error = %e, "fan-out: engine resolve failed");
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+            match self.registry.execute_read(name, engine, clean_args.clone()) {
+                Ok(v) => per_corpus.push((corpus_name.clone(), v)),
+                Err(e) => {
+                    tracing::warn!(corpus = %corpus_name, error = %e, "fan-out: tool call failed");
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if per_corpus.is_empty() {
+            return Err(last_err.unwrap_or_else(|| {
+                Error::NotFound("no corpora available for fan-out".to_string())
+            }));
+        }
+
+        // If every successful output is a JSON array, treat as search-style and RRF-merge.
+        let all_arrays = per_corpus.iter().all(|(_, v)| v.is_array());
+        if all_arrays {
+            let mut tagged_lists: Vec<(String, Vec<ctxvault_common::types::SearchResult>)> =
+                Vec::with_capacity(per_corpus.len());
+            for (corpus_name, value) in per_corpus {
+                let results: Vec<ctxvault_common::types::SearchResult> =
+                    serde_json::from_value(value).map_err(|e| {
+                        Error::Config(format!("invalid search result array: {}", e))
+                    })?;
+                tagged_lists.push((corpus_name, results));
+            }
+            let merged = search::rrf_fuse_cross_corpus(&tagged_lists, limit);
+            return serde_json::to_value(merged)
+                .map_err(|e| Error::Config(format!("serialize merged results: {}", e)));
+        }
+
+        // Otherwise: return an object keyed by corpus name → raw output.
+        let obj: serde_json::Map<String, Value> = per_corpus.into_iter().collect();
+        Ok(Value::Object(obj))
     }
 
     /// Execute a tool call with exclusive access to the CorpusManager.
+    ///
+    /// Write tools always resolve a SINGLE corpus (explicit `corpus` or the default)
+    /// and never fan out. Omitting `corpus` selects the default corpus as an
+    /// ergonomic default.
     pub fn execute_write(
         &self,
         name: &str,
@@ -794,7 +928,7 @@ impl MultiCorpusToolRegistry {
             return handle_get_status(manager);
         }
 
-        // Extract and remove the `corpus` param from arguments.
+        // Extract and remove the `corpus` param from arguments (writes never fan out).
         let (corpus_name, clean_args) = extract_corpus_param(args);
 
         // Resolve the engine mutably.
@@ -821,8 +955,9 @@ impl Default for MultiCorpusToolRegistry {
     }
 }
 
-/// Extract the optional `corpus` field from tool arguments, returning
-/// the corpus name and the arguments with `corpus` removed.
+/// Extract the optional single `corpus` field from tool arguments, returning
+/// the corpus name and the arguments with `corpus` removed. Used by write tools,
+/// which never fan out.
 fn extract_corpus_param(args: Value) -> (Option<String>, Value) {
     match args {
         Value::Object(mut map) => {
@@ -830,6 +965,117 @@ fn extract_corpus_param(args: Value) -> (Option<String>, Value) {
             (corpus, Value::Object(map))
         }
         other => (None, other),
+    }
+}
+
+/// Parse both `corpus` and `corpora` out of read-tool arguments and resolve the
+/// target corpus set, returning it alongside the arguments with BOTH keys removed.
+///
+/// Resolution precedence:
+/// - `corpora == "all"` → every corpus (sorted for determinism);
+/// - `corpora` as a non-empty array → those names (each validated to exist);
+/// - `corpus` set → that single corpus;
+/// - neither → the default corpus (single).
+fn resolve_corpus_target(args: Value, manager: &CorpusManager) -> Result<(CorpusTarget, Value)> {
+    let Value::Object(mut map) = args else {
+        // Non-object args cannot carry discrimination — fall back to default corpus.
+        let default = manager
+            .default_corpus_name()
+            .ok_or_else(|| Error::NotFound("no default corpus configured".to_string()))?
+            .to_string();
+        return Ok((CorpusTarget::Single(default), args));
+    };
+
+    let corpus = map.remove("corpus").and_then(|v| v.as_str().map(|s| s.to_string()));
+    let corpora = map.remove("corpora");
+    let clean_args = Value::Object(map);
+
+    let target = match corpora {
+        Some(Value::String(s)) if s == "all" => {
+            let mut names: Vec<String> =
+                manager.corpus_names().into_iter().map(|s| s.to_string()).collect();
+            names.sort();
+            multi_or_single(names)?
+        }
+        Some(Value::Array(items)) => {
+            let mut names: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let n = item
+                    .as_str()
+                    .ok_or_else(|| Error::Config("corpora array must contain strings".to_string()))?
+                    .to_string();
+                if !manager.has_corpus(&n) {
+                    return Err(Error::NotFound(format!("corpus not found: {}", n)));
+                }
+                names.push(n);
+            }
+            if names.is_empty() {
+                // Empty array behaves like "omitted": resolve default.
+                single_default(corpus, manager)?
+            } else {
+                multi_or_single(names)?
+            }
+        }
+        Some(Value::String(s)) => {
+            return Err(Error::Config(format!(
+                "invalid corpora value '{}': expected an array of names or \"all\"",
+                s
+            )));
+        }
+        Some(_) => {
+            return Err(Error::Config(
+                "invalid corpora value: expected an array of names or \"all\"".to_string(),
+            ));
+        }
+        None => single_default(corpus, manager)?,
+    };
+
+    Ok((target, clean_args))
+}
+
+/// Resolve the single-corpus target from an explicit `corpus` or the default.
+fn single_default(corpus: Option<String>, manager: &CorpusManager) -> Result<CorpusTarget> {
+    match corpus {
+        Some(name) => {
+            if !manager.has_corpus(&name) {
+                return Err(Error::NotFound(format!("corpus not found: {}", name)));
+            }
+            Ok(CorpusTarget::Single(name))
+        }
+        None => {
+            let default = manager
+                .default_corpus_name()
+                .ok_or_else(|| Error::NotFound("no default corpus configured".to_string()))?
+                .to_string();
+            Ok(CorpusTarget::Single(default))
+        }
+    }
+}
+
+/// Collapse a resolved name list into `Single` (one, deduped) or `Multi` (many).
+fn multi_or_single(mut names: Vec<String>) -> Result<CorpusTarget> {
+    names.dedup();
+    match names.len() {
+        0 => Err(Error::NotFound("no corpora resolved for fan-out".to_string())),
+        1 => Ok(CorpusTarget::Single(names.into_iter().next().unwrap())),
+        _ => Ok(CorpusTarget::Multi(names)),
+    }
+}
+
+/// Tag a single-corpus read output: if it is a JSON array of `SearchResult`,
+/// stamp each hit with the source corpus; otherwise return it unchanged.
+fn tag_search_output(output: Value, corpus_name: &str) -> Value {
+    if !output.is_array() {
+        return output;
+    }
+    match serde_json::from_value::<Vec<ctxvault_common::types::SearchResult>>(output.clone()) {
+        Ok(results) => {
+            let tagged: Vec<ctxvault_common::types::SearchResult> =
+                results.into_iter().map(|r| r.with_corpus(Some(corpus_name.to_string()))).collect();
+            serde_json::to_value(tagged).unwrap_or(output)
+        }
+        // A non-SearchResult array (e.g. search_explain) is returned as-is.
+        Err(_) => output,
     }
 }
 
@@ -3148,6 +3394,80 @@ mod tests {
             results.is_empty() || results.iter().all(|r| r["path"] != "python.md"),
             "Wiki corpus should not contain python.md"
         );
+    }
+
+    #[test]
+    fn test_multi_corpus_fan_out_tags_by_corpus() {
+        let tmp = TempDir::new().unwrap();
+        let wiki_dir = tmp.path().join("wiki");
+        let docs_dir = tmp.path().join("docs");
+        fs::create_dir_all(&wiki_dir).unwrap();
+        fs::create_dir_all(&docs_dir).unwrap();
+
+        let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
+        for (name, dir) in [("wiki", &wiki_dir), ("docs", &docs_dir)] {
+            let config = CorpusConfig {
+                name: name.to_string(),
+                path: dir.to_string_lossy().to_string(),
+                mode: CorpusMode::ReadWrite,
+                index_mode: IndexMode::Full,
+                chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
+                embedding: EmbeddingConfig::default(),
+                graph: GraphConfig { edge_types: Vec::new() },
+                templates_dir: ".templates".to_string(),
+            };
+            manager.add_corpus(config).unwrap();
+        }
+
+        // Both corpora contain a doc mentioning "shared" (BM25-only; no embedder).
+        {
+            let engine = manager.get_engine_mut("wiki").unwrap();
+            let content = "# Wiki\n\nshared knowledge lives here in the wiki.\n";
+            fs::write(wiki_dir.join("shared.md"), content).unwrap();
+            engine.index_file("shared.md", content).unwrap();
+            engine.commit().unwrap();
+        }
+        {
+            let engine = manager.get_engine_mut("docs").unwrap();
+            let content = "# Docs\n\nshared documentation lives here in the docs.\n";
+            fs::write(docs_dir.join("shared.md"), content).unwrap();
+            engine.index_file("shared.md", content).unwrap();
+            engine.commit().unwrap();
+        }
+
+        let registry = MultiCorpusToolRegistry::new();
+
+        // Fan out across both corpora with corpora = "all".
+        let result = registry
+            .execute_read(
+                "search_bm25",
+                &manager,
+                serde_json::json!({ "query": "shared", "corpora": "all" }),
+            )
+            .unwrap();
+
+        let results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(result).unwrap();
+        assert_eq!(results.len(), 2, "both corpora should contribute a hit");
+
+        // Same path, distinct corpora → two tagged hits.
+        let corpora: HashSet<String> = results.iter().filter_map(|r| r.corpus.clone()).collect();
+        assert!(corpora.contains("wiki"), "a hit must be tagged 'wiki'");
+        assert!(corpora.contains("docs"), "a hit must be tagged 'docs'");
+        assert!(results.iter().all(|r| r.path == "shared.md"));
+
+        // Single-corpus read via corpus="wiki" also tags its hit.
+        let single = registry
+            .execute_read(
+                "search_bm25",
+                &manager,
+                serde_json::json!({ "query": "shared", "corpus": "wiki" }),
+            )
+            .unwrap();
+        let single_results: Vec<ctxvault_common::types::SearchResult> =
+            serde_json::from_value(single).unwrap();
+        assert!(!single_results.is_empty());
+        assert!(single_results.iter().all(|r| r.corpus.as_deref() == Some("wiki")));
     }
 
     #[test]

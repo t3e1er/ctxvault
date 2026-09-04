@@ -352,6 +352,12 @@ pub struct SearchResult {
     /// Programming language if this result is from code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Name of the corpus this result originated from.
+    ///
+    /// Populated by the multi-corpus routing layer; `None` for results that
+    /// have not been tagged with a source corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus: Option<String>,
 }
 
 impl SearchResult {
@@ -366,6 +372,7 @@ impl SearchResult {
             lineage: None,
             entity_kind: None,
             language: None,
+            corpus: None,
         }
     }
 
@@ -396,6 +403,12 @@ impl SearchResult {
     /// Set language.
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         self.language = Some(language.into());
+        self
+    }
+
+    /// Set the source corpus tag.
+    pub fn with_corpus(mut self, corpus: Option<String>) -> Self {
+        self.corpus = corpus;
         self
     }
 }

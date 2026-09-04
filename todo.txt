@@ -54,7 +54,7 @@ Verify: just clippy && just check ; manual: start server with 2 roots, hit /heal
 Commit: feat(phase1): wire multi-corpus CorpusManager into CLI (local+server)
 
 ================================================================================
-[ ] PHASE 2 — Corpus discrimination arg + cross-corpus fan-out RRF (Goal 2a)
+[x] PHASE 2 — Corpus discrimination arg + cross-corpus fan-out RRF (Goal 2a)
 --------------------------------------------------------------------------------
 Goal: Agents can target a corpus, or search across all corpora with merged ranking.
 Scope:

@@ -177,6 +177,58 @@ fn rrf_fuse(result_lists: &[&[SearchResult]], limit: usize) -> Vec<SearchResult>
     results
 }
 
+/// Cross-corpus Reciprocal Rank Fusion: merges per-corpus ranked lists into one
+/// ranking, preserving each result's source-corpus tag and rich fields.
+///
+/// Each input list is `(corpus_name, results)`, already ranked descending. RRF is
+/// applied over each list (K = 60, contribution `1 / (K + rank + 1)`). Results are
+/// keyed by `(corpus, path)` so the same path appearing in two different corpora is
+/// preserved as two distinct hits, each tagged with its origin corpus. The source
+/// result's snippet, chunk index, entity kind, language, lineage, and score
+/// components are carried through. The fused list is sorted by RRF score descending
+/// and truncated to `limit`.
+pub fn rrf_fuse_cross_corpus(
+    tagged_lists: &[(String, Vec<SearchResult>)],
+    limit: usize,
+) -> Vec<SearchResult> {
+    const K: f64 = 60.0;
+
+    // Accumulate fused RRF score per (corpus, path); keep the first-seen rich result.
+    let mut fused: HashMap<(String, String), (f64, SearchResult)> = HashMap::new();
+
+    for (corpus_name, list) in tagged_lists {
+        for (rank, result) in list.iter().enumerate() {
+            let contribution = 1.0 / (K + rank as f64 + 1.0);
+            let key = (corpus_name.clone(), result.path.clone());
+
+            let entry = fused.entry(key).or_insert_with(|| {
+                let tagged = result.clone().with_corpus(Some(corpus_name.clone()));
+                (0.0, tagged)
+            });
+            entry.0 += contribution;
+        }
+    }
+
+    // Apply fused score and collect.
+    let mut results: Vec<SearchResult> = fused
+        .into_values()
+        .map(|(score, mut result)| {
+            result.score = score;
+            result
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.corpus.cmp(&b.corpus))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    results.truncate(limit);
+    results
+}
+
 /// Enrich search results with structural lineage metadata from the knowledge graph.
 pub fn enrich_results_with_lineage(results: &mut [SearchResult], graph: &KnowledgeGraph) {
     for result in results.iter_mut() {
@@ -1592,5 +1644,52 @@ mod tests {
         assert!(rust_result.lineage.is_some(), "SearchResult for rust.md should have lineage");
         let lineage = rust_result.lineage.as_ref().unwrap();
         assert_eq!(lineage.superseded_by, vec!["notes/async.md"]);
+    }
+
+    #[test]
+    fn test_rrf_fuse_cross_corpus_merges_ranks_and_tags() {
+        // Two per-corpus ranked lists, built by hand (no embedder, no manager).
+        // Corpus "docs": shared.md is rank 1 (strongest), a.md rank 2.
+        // Corpus "code": shared.md is rank 1, b.md rank 2.
+        let docs = vec![
+            SearchResult::new("shared.md", 9.0).with_snippet(Some("docs shared".into())),
+            SearchResult::new("a.md", 8.0),
+        ];
+        let code = vec![
+            SearchResult::new("shared.md", 7.0).with_language("rust").with_chunk_index(Some(3)),
+            SearchResult::new("b.md", 6.0),
+        ];
+
+        let tagged = vec![("docs".to_string(), docs), ("code".to_string(), code)];
+        let fused = rrf_fuse_cross_corpus(&tagged, 10);
+
+        // (b) same path in two corpora stays as two distinct hits.
+        let shared_hits: Vec<&SearchResult> =
+            fused.iter().filter(|r| r.path == "shared.md").collect();
+        assert_eq!(shared_hits.len(), 2, "shared.md must appear once per corpus");
+
+        // (c) every result is tagged with its origin corpus.
+        assert!(fused.iter().all(|r| r.corpus.is_some()), "all hits must be corpus-tagged");
+        let docs_shared =
+            fused.iter().find(|r| r.path == "shared.md" && r.corpus.as_deref() == Some("docs"));
+        let code_shared =
+            fused.iter().find(|r| r.path == "shared.md" && r.corpus.as_deref() == Some("code"));
+        assert!(docs_shared.is_some(), "docs/shared.md must be present and tagged 'docs'");
+        assert!(code_shared.is_some(), "code/shared.md must be present and tagged 'code'");
+
+        // Rich fields are preserved from the source result.
+        assert_eq!(docs_shared.unwrap().snippet.as_deref(), Some("docs shared"));
+        assert_eq!(code_shared.unwrap().language.as_deref(), Some("rust"));
+        assert_eq!(code_shared.unwrap().chunk_index, Some(3));
+
+        // (a) RRF ranks: both shared.md hits are rank-1 in their lists → identical RRF
+        // score, and each strictly beats the rank-2 hit from the same corpus.
+        let a_hit = fused.iter().find(|r| r.path == "a.md").unwrap();
+        assert!(
+            docs_shared.unwrap().score > a_hit.score,
+            "rank-1 shared.md must outrank rank-2 a.md"
+        );
+        // Top result overall is a shared.md hit.
+        assert_eq!(fused[0].path, "shared.md");
     }
 }
