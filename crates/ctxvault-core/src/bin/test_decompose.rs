@@ -52,6 +52,7 @@ fn main() {
 
     // Now call search_multihop.
     eprintln!("Calling search_multihop...");
+    let code_paths = engine.code_paths_set();
     match search::search_multihop(
         engine.bm25(),
         engine.vector_index().expect("vector index"),
@@ -62,6 +63,8 @@ fn main() {
         10,
         2,
         None,
+        ctxvault_common::types::Modality::Both,
+        &code_paths,
     ) {
         Ok(results) => {
             eprintln!("SUCCESS: {} results", results.len());

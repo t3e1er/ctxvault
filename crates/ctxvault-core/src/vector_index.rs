@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ctxvault_common::{Error, Result};
+use ctxvault_common::{types::Modality, Error, Result};
 use hnsw_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,14 @@ pub struct VectorMeta {
     pub chunk_index: Option<usize>,
     /// Whether this is a document-level embedding (vs chunk-level).
     pub is_doc_level: bool,
+    /// Coarse modality tag ("code" / "docs") for modality-filtered search.
+    #[serde(default = "default_modality")]
+    pub modality: String,
+}
+
+/// Default coarse modality tag ("docs") for round-tripping persisted vectors.
+fn default_modality() -> String {
+    "docs".to_string()
 }
 
 /// A stored vector entry for persistence (metadata + raw vector data).
@@ -68,6 +76,8 @@ pub struct VectorSearchResult {
     pub score: f64,
     /// Whether this came from a document-level embedding.
     pub is_doc_level: bool,
+    /// Coarse modality tag ("code" / "docs") of the matched vector.
+    pub modality: String,
 }
 
 /// Persistence format for the entire vector index.
@@ -183,6 +193,9 @@ impl VectorIndex {
 
     /// Add a single vector to the index.
     ///
+    /// `modality` is the coarse modality tag ("code" / "docs") used for
+    /// modality-filtered search.
+    ///
     /// Returns the internal ID assigned to this vector.
     pub fn add(
         &mut self,
@@ -190,6 +203,7 @@ impl VectorIndex {
         doc_path: &str,
         chunk_index: Option<usize>,
         is_doc_level: bool,
+        modality: &str,
     ) -> Result<usize> {
         if vector.len() != self.dimensions {
             return Err(Error::Index(format!(
@@ -205,7 +219,12 @@ impl VectorIndex {
         // Insert into HNSW. The insert_slice method takes a tuple (&[T], DataId).
         self.hnsw.insert_slice((&vector, id));
 
-        let meta = VectorMeta { doc_path: doc_path.to_string(), chunk_index, is_doc_level };
+        let meta = VectorMeta {
+            doc_path: doc_path.to_string(),
+            chunk_index,
+            is_doc_level,
+            modality: modality.to_string(),
+        };
 
         // Store metadata and vector data.
         let _ = self.meta.insert(id, meta);
@@ -224,6 +243,7 @@ impl VectorIndex {
         doc_path: &str,
         chunk_indices: &[Option<usize>],
         is_doc_level: bool,
+        modality: &str,
     ) -> Result<Vec<usize>> {
         if vectors.len() != chunk_indices.len() {
             return Err(Error::Index(
@@ -234,7 +254,7 @@ impl VectorIndex {
         let mut ids = Vec::with_capacity(vectors.len());
 
         for (vec, &chunk_idx) in vectors.iter().zip(chunk_indices.iter()) {
-            let id = self.add(vec, doc_path, chunk_idx, is_doc_level)?;
+            let id = self.add(vec, doc_path, chunk_idx, is_doc_level, modality)?;
             ids.push(id);
         }
 
@@ -265,6 +285,8 @@ impl VectorIndex {
     /// - `query`: the query embedding vector
     /// - `k`: number of results to return
     /// - `doc_level_only`: if true, only return document-level embeddings
+    /// - `modality`: restrict results to the given modality (post-filter on
+    ///   each vector's coarse modality tag)
     ///
     /// Returns results sorted by descending similarity score.
     pub fn search(
@@ -272,6 +294,7 @@ impl VectorIndex {
         query: &[f32],
         k: usize,
         doc_level_only: bool,
+        modality: Modality,
     ) -> Result<Vec<VectorSearchResult>> {
         if query.len() != self.dimensions {
             return Err(Error::Index(format!(
@@ -302,6 +325,11 @@ impl VectorIndex {
                     return None;
                 }
 
+                // Filter by modality (post-filter on the coarse tag).
+                if !modality.matches_tag(&meta.modality) {
+                    return None;
+                }
+
                 // DistCosine returns 1 - cos(a,b), so similarity = 1 - distance.
                 let similarity = 1.0 - neighbour.distance as f64;
 
@@ -310,6 +338,7 @@ impl VectorIndex {
                     chunk_index: meta.chunk_index,
                     score: similarity,
                     is_doc_level: meta.is_doc_level,
+                    modality: meta.modality.clone(),
                 })
             })
             .collect();
@@ -455,7 +484,7 @@ mod tests {
         let mut index = VectorIndex::new_default(384);
         let vec = make_vector(1, 384);
 
-        let id = index.add(&vec, "notes/test.md", Some(0), false).unwrap();
+        let id = index.add(&vec, "notes/test.md", Some(0), false, "docs").unwrap();
         assert_eq!(id, 0);
         assert_eq!(index.len(), 1);
         assert!(!index.is_empty());
@@ -468,7 +497,8 @@ mod tests {
         let vectors: Vec<Vec<f32>> = (0..5).map(|i| make_vector(i, 384)).collect();
         let chunk_indices: Vec<Option<usize>> = (0..5).map(Some).collect();
 
-        let ids = index.add_batch(&vectors, "notes/multi.md", &chunk_indices, false).unwrap();
+        let ids =
+            index.add_batch(&vectors, "notes/multi.md", &chunk_indices, false, "docs").unwrap();
 
         assert_eq!(ids.len(), 5);
         assert_eq!(index.len(), 5);
@@ -479,7 +509,7 @@ mod tests {
         let mut index = VectorIndex::new_default(384);
         let wrong_vec = make_vector(1, 256); // Wrong dimension.
 
-        let result = index.add(&wrong_vec, "notes/bad.md", Some(0), false);
+        let result = index.add(&wrong_vec, "notes/bad.md", Some(0), false, "docs");
         assert!(result.is_err());
     }
 
@@ -492,12 +522,12 @@ mod tests {
         let similar = make_similar_vector(&base, 1.0);
         let different = make_vector(999, 384);
 
-        index.add(&base, "notes/base.md", Some(0), false).unwrap();
-        index.add(&similar, "notes/similar.md", Some(0), false).unwrap();
-        index.add(&different, "notes/different.md", Some(0), false).unwrap();
+        index.add(&base, "notes/base.md", Some(0), false, "docs").unwrap();
+        index.add(&similar, "notes/similar.md", Some(0), false, "docs").unwrap();
+        index.add(&different, "notes/different.md", Some(0), false, "docs").unwrap();
 
         // Search with the base vector — should find itself and similar.
-        let results = index.search(&base, 3, false).unwrap();
+        let results = index.search(&base, 3, false, Modality::Both).unwrap();
         assert!(!results.is_empty());
 
         // The base vector should be the top result (exact match = highest similarity).
@@ -514,7 +544,7 @@ mod tests {
         let index = VectorIndex::new_default(384);
         let query = make_vector(1, 384);
 
-        let results = index.search(&query, 10, false).unwrap();
+        let results = index.search(&query, 10, false, Modality::Both).unwrap();
         assert!(results.is_empty());
     }
 
@@ -522,10 +552,10 @@ mod tests {
     fn test_search_dimension_mismatch() {
         let mut index = VectorIndex::new_default(384);
         let vec = make_vector(1, 384);
-        index.add(&vec, "notes/a.md", Some(0), false).unwrap();
+        index.add(&vec, "notes/a.md", Some(0), false, "docs").unwrap();
 
         let bad_query = make_vector(1, 256);
-        let result = index.search(&bad_query, 10, false);
+        let result = index.search(&bad_query, 10, false, Modality::Both);
         assert!(result.is_err());
     }
 
@@ -537,9 +567,9 @@ mod tests {
         let v2 = make_vector(2, 384);
         let v3 = make_vector(3, 384);
 
-        index.add(&v1, "notes/keep.md", Some(0), false).unwrap();
-        index.add(&v2, "notes/remove.md", Some(0), false).unwrap();
-        index.add(&v3, "notes/remove.md", Some(1), false).unwrap();
+        index.add(&v1, "notes/keep.md", Some(0), false, "docs").unwrap();
+        index.add(&v2, "notes/remove.md", Some(0), false, "docs").unwrap();
+        index.add(&v3, "notes/remove.md", Some(1), false, "docs").unwrap();
 
         assert_eq!(index.len(), 3);
 
@@ -547,7 +577,7 @@ mod tests {
         assert_eq!(index.len(), 1);
 
         // Search should not return removed documents.
-        let results = index.search(&v2, 10, false).unwrap();
+        let results = index.search(&v2, 10, false, Modality::Both).unwrap();
         for r in &results {
             assert_ne!(r.doc_path, "notes/remove.md");
         }
@@ -561,11 +591,11 @@ mod tests {
         let v2 = make_vector(2, 384);
 
         // Add chunk-level and doc-level vectors.
-        index.add(&v1, "notes/a.md", Some(0), false).unwrap();
-        index.add(&v2, "notes/a.md", None, true).unwrap();
+        index.add(&v1, "notes/a.md", Some(0), false, "docs").unwrap();
+        index.add(&v2, "notes/a.md", None, true, "docs").unwrap();
 
         // Search with doc_level_only = true should only return doc-level.
-        let results = index.search(&v2, 10, true).unwrap();
+        let results = index.search(&v2, 10, true, Modality::Both).unwrap();
         for r in &results {
             assert!(r.is_doc_level);
         }
@@ -582,9 +612,9 @@ mod tests {
         let v2 = make_vector(20, 384);
         let v3 = make_vector(30, 384);
 
-        index.add(&v1, "notes/alpha.md", Some(0), false).unwrap();
-        index.add(&v2, "notes/beta.md", Some(0), false).unwrap();
-        index.add(&v3, "notes/alpha.md", None, true).unwrap();
+        index.add(&v1, "notes/alpha.md", Some(0), false, "docs").unwrap();
+        index.add(&v2, "notes/beta.md", Some(0), false, "docs").unwrap();
+        index.add(&v3, "notes/alpha.md", None, true, "docs").unwrap();
 
         // Save to disk.
         index.save(&index_path).unwrap();
@@ -596,7 +626,7 @@ mod tests {
         assert_eq!(loaded.dimensions(), 384);
 
         // Search should work on loaded index.
-        let results = loaded.search(&v1, 3, false).unwrap();
+        let results = loaded.search(&v1, 3, false, Modality::Both).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].doc_path, "notes/alpha.md");
     }
@@ -610,17 +640,64 @@ mod tests {
         let other = make_vector(20, 384);
 
         // Add 2 chunks for doc A and 1 for doc B
-        index.add(&chunk0, "notes/doc_a.md", Some(0), false).unwrap();
-        index.add(&chunk1, "notes/doc_a.md", Some(1), false).unwrap();
-        index.add(&other, "notes/doc_b.md", Some(0), false).unwrap();
+        index.add(&chunk0, "notes/doc_a.md", Some(0), false, "docs").unwrap();
+        index.add(&chunk1, "notes/doc_a.md", Some(1), false, "docs").unwrap();
+        index.add(&other, "notes/doc_b.md", Some(0), false, "docs").unwrap();
 
-        let results = index.search(&base, 5, false).unwrap();
+        let results = index.search(&base, 5, false, Modality::Both).unwrap();
 
         // doc_a should appear only once (with chunk 1 which is closer)
         let doc_a_results: Vec<_> =
             results.iter().filter(|r| r.doc_path == "notes/doc_a.md").collect();
         assert_eq!(doc_a_results.len(), 1);
         assert_eq!(doc_a_results[0].chunk_index, Some(1));
+    }
+
+    #[test]
+    fn test_modality_filter() {
+        let mut index = VectorIndex::new(384, 100, 200, 16);
+
+        // Two near-identical vectors, one tagged docs, one tagged code.
+        let base = make_vector(7, 384);
+        let doc_vec = make_similar_vector(&base, 0.5);
+        let code_vec = make_similar_vector(&base, 0.6);
+
+        index.add(&doc_vec, "notes/guide.md", Some(0), false, "docs").unwrap();
+        index.add(&code_vec, "src/engine.rs", Some(0), false, "code").unwrap();
+
+        // Code-only returns only the code vector.
+        let code_results = index.search(&base, 10, false, Modality::Code).unwrap();
+        assert!(!code_results.is_empty());
+        assert!(code_results.iter().all(|r| r.modality == "code"));
+        assert!(code_results.iter().all(|r| r.doc_path == "src/engine.rs"));
+
+        // Docs-only returns only the doc vector.
+        let doc_results = index.search(&base, 10, false, Modality::Docs).unwrap();
+        assert!(!doc_results.is_empty());
+        assert!(doc_results.iter().all(|r| r.modality == "docs"));
+        assert!(doc_results.iter().all(|r| r.doc_path == "notes/guide.md"));
+
+        // Both returns both.
+        let both_results = index.search(&base, 10, false, Modality::Both).unwrap();
+        let paths: Vec<&str> = both_results.iter().map(|r| r.doc_path.as_str()).collect();
+        assert!(paths.contains(&"notes/guide.md"));
+        assert!(paths.contains(&"src/engine.rs"));
+    }
+
+    #[test]
+    fn test_modality_survives_save_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("vectors.json");
+
+        let mut index = VectorIndex::new(384, 100, 200, 16);
+        let base = make_vector(9, 384);
+        index.add(&make_similar_vector(&base, 0.4), "src/lib.rs", Some(0), false, "code").unwrap();
+        index.save(&index_path).unwrap();
+
+        let loaded = VectorIndex::load(&index_path).unwrap();
+        let results = loaded.search(&base, 10, false, Modality::Code).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|r| r.modality == "code"));
     }
 
     #[test]
@@ -632,7 +709,7 @@ mod tests {
         assert!(!index.is_dirty());
 
         let v1 = make_vector(1, 384);
-        index.add(&v1, "notes/doc.md", Some(0), false).unwrap();
+        index.add(&v1, "notes/doc.md", Some(0), false, "docs").unwrap();
         assert!(index.is_dirty());
 
         index.save(&index_path).unwrap();

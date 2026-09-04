@@ -430,11 +430,13 @@ impl AsyncEmbeddingPipeline {
 
             let chunk_indices: Vec<Option<usize>> =
                 file_chunks.iter().map(|c| Some(c.chunk_index)).collect();
+            // All chunks for a doc_path share the same file, hence the same modality.
+            let modality = file_chunks[0].modality.as_str();
 
-            vector_index.add_batch(file_embeddings, doc_path, &chunk_indices, false)?;
+            vector_index.add_batch(file_embeddings, doc_path, &chunk_indices, false, modality)?;
 
             if let Some(doc_embedding) = Embedder::average_embeddings(file_embeddings) {
-                vector_index.add(&doc_embedding, doc_path, None, true)?;
+                vector_index.add(&doc_embedding, doc_path, None, true, modality)?;
             }
 
             start = end;
@@ -478,6 +480,7 @@ mod tests {
                         "Document A section {i} describing architecture decisions and rules."
                     ),
                     embed_policy: ChunkEmbedPolicy::Anchor,
+                    modality: "docs".to_string(),
                 })
                 .expect("send should succeed");
         }
@@ -491,6 +494,7 @@ mod tests {
                         "Document B section {i} containing implementation guide and algorithms."
                     ),
                     embed_policy: ChunkEmbedPolicy::Anchor,
+                    modality: "docs".to_string(),
                 })
                 .expect("send should succeed");
         }

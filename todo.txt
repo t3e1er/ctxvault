@@ -91,7 +91,7 @@ Verify: just clippy && just check ; targeted test for cross-corpus symbol resolu
 Commit: feat(phase3): cross-modal + cross-corpus symbol/edge linking
 
 ================================================================================
-[ ] PHASE 4 — Bi-modal search: modality filter docs|code|both (Goal 3)
+[x] PHASE 4 — Bi-modal search: modality filter docs|code|both (Goal 3)
 --------------------------------------------------------------------------------
 Goal: Every search modality can be restricted to docs, code, or both.
 Scope:

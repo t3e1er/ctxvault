@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use ctxvault_common::config::CorpusConfig;
-use ctxvault_common::types::{ChunkEmbedPolicy, Document};
+use ctxvault_common::types::{ChunkEmbedPolicy, Document, EntityKind};
 use ctxvault_common::{Error, Result};
 
 use crate::embedding::Embedder;
@@ -65,6 +65,8 @@ pub struct PendingChunk {
     pub text: String,
     /// Policy determining if this chunk receives a dense vector embedding.
     pub embed_policy: ChunkEmbedPolicy,
+    /// Coarse modality tag ("code" / "docs") carried into the vector index.
+    pub modality: String,
 }
 
 /// Coordinates persistence, full-text index, knowledge graph, and vector index for a corpus.
@@ -305,11 +307,18 @@ impl Engine {
 
                 // Build pending chunks for embedding
                 for c in &res.chunks {
+                    let modality = c
+                        .entity_kind
+                        .as_ref()
+                        .map(EntityKind::modality_tag)
+                        .unwrap_or("docs")
+                        .to_string();
                     pending.push(PendingChunk {
                         doc_path: rel_path.to_string(),
                         chunk_index: c.chunk_index,
                         text: c.text.clone(),
                         embed_policy: c.embed_policy,
+                        modality,
                     });
                 }
 
@@ -382,11 +391,18 @@ impl Engine {
                 } else {
                     c.text.clone()
                 };
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
                 PendingChunk {
                     doc_path: rel_path.to_string(),
                     chunk_index: c.chunk_index,
                     text,
                     embed_policy: c.embed_policy,
+                    modality,
                 }
             })
             .collect();
@@ -462,12 +478,14 @@ impl Engine {
 
             let chunk_indices: Vec<Option<usize>> =
                 file_chunks.iter().map(|c| Some(c.chunk_index)).collect();
+            // All chunks for a doc_path share the same file, hence the same modality.
+            let modality = file_chunks[0].modality.as_str();
 
             if let Some(ref mut vi) = self.vector_index {
-                let _ = vi.add_batch(file_embeddings, doc_path, &chunk_indices, false);
+                let _ = vi.add_batch(file_embeddings, doc_path, &chunk_indices, false, modality);
 
                 if let Some(doc_embedding) = Embedder::average_embeddings(file_embeddings) {
-                    let _ = vi.add(&doc_embedding, doc_path, None, true);
+                    let _ = vi.add(&doc_embedding, doc_path, None, true, modality);
                 }
             }
 
@@ -928,6 +946,26 @@ impl Engine {
         &mut self.graph
     }
 
+    /// Build the set of graph node keys that represent code entities.
+    ///
+    /// Used by the search layer to classify a result path as code vs docs for
+    /// modality filtering. Keys include each code symbol's `scope_path`, its
+    /// defining file path, and the `<corpus>::scope_path` cross-corpus form.
+    /// Returns an empty set on catalog read error (all paths then classify as
+    /// docs, which is the safe default).
+    pub fn code_paths_set(&self) -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        let corpus = &self.config.name;
+        if let Ok(symbols) = self.store.get_all_code_symbols() {
+            for sym in symbols {
+                let _ = set.insert(sym.scope_path.clone());
+                let _ = set.insert(sym.file_path.clone());
+                let _ = set.insert(format!("{}::{}", corpus, sym.scope_path));
+            }
+        }
+        set
+    }
+
     /// Get a reference to the store for metadata queries.
     pub fn store(&self) -> &Store {
         &self.store
@@ -1051,11 +1089,18 @@ impl Engine {
                 } else {
                     c.text.clone()
                 };
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
                 chunk_buffer.push(PendingChunk {
                     doc_path: file.path.clone(),
                     chunk_index: c.chunk_index,
                     text,
                     embed_policy: c.embed_policy,
+                    modality,
                 });
             }
 

@@ -127,7 +127,6 @@ impl KnowledgeGraph {
     /// `Some(_)` for edges resolved to a symbol defined in another corpus. Parallel
     /// edges of the same `edge_type` between the same nodes are de-duplicated
     /// (the existing edge is updated in place), keeping this operation idempotent.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_edge_full(
         &mut self,
         source: &str,

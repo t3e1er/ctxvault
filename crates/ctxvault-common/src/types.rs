@@ -78,6 +78,77 @@ impl Default for EntityKind {
     }
 }
 
+impl EntityKind {
+    /// Whether this entity is source code (anything other than [`EntityKind::Documentation`]).
+    pub fn is_code(&self) -> bool {
+        !matches!(self, EntityKind::Documentation)
+    }
+
+    /// Coarse modality tag for indexing/filtering: `"code"` for any code entity,
+    /// `"docs"` for documentation.
+    pub fn modality_tag(&self) -> &'static str {
+        if self.is_code() {
+            "code"
+        } else {
+            "docs"
+        }
+    }
+}
+
+/// Restricts search results to documentation, code, or both.
+///
+/// Applied consistently across BM25, vector, graph, and the fused hybrid path.
+/// [`Modality::Both`] (the default) returns every entity kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modality {
+    /// Only documentation entities ([`EntityKind::Documentation`]).
+    Docs,
+    /// Only code entities (`CodeFile`, `CodeSymbol`, `CodeChunk`).
+    Code,
+    /// Both documentation and code (no restriction).
+    Both,
+}
+
+impl Default for Modality {
+    fn default() -> Self {
+        Modality::Both
+    }
+}
+
+impl Modality {
+    /// Parse from a string (case-insensitive): `"docs"`, `"code"`, or `"both"`.
+    pub fn from_str_name(s: &str) -> Option<Modality> {
+        match s.to_lowercase().as_str() {
+            "docs" => Some(Modality::Docs),
+            "code" => Some(Modality::Code),
+            "both" => Some(Modality::Both),
+            _ => None,
+        }
+    }
+
+    /// Whether an [`EntityKind`] passes this modality filter.
+    ///
+    /// [`Modality::Both`] matches all kinds; [`Modality::Docs`] matches only
+    /// [`EntityKind::Documentation`]; [`Modality::Code`] matches every code kind.
+    pub fn matches_kind(self, kind: &EntityKind) -> bool {
+        match self {
+            Modality::Both => true,
+            Modality::Docs => !kind.is_code(),
+            Modality::Code => kind.is_code(),
+        }
+    }
+
+    /// Whether a coarse modality tag (`"code"` / `"docs"`) passes this filter.
+    pub fn matches_tag(self, tag: &str) -> bool {
+        match self {
+            Modality::Both => true,
+            Modality::Docs => tag == "docs",
+            Modality::Code => tag == "code",
+        }
+    }
+}
+
 /// The specific classification of a code symbol.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]

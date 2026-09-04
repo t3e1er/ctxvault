@@ -163,8 +163,9 @@ pub fn find_semantic_gaps(
         let bm25_paths: std::collections::HashSet<String> =
             bm25_results.iter().map(|r| r.path.clone()).collect();
 
-        // Get vector results.
-        let vector_results = vector_index.search(embedding, top_k, false)?;
+        // Get vector results (analytics spans both modalities).
+        let vector_results =
+            vector_index.search(embedding, top_k, false, ctxvault_common::types::Modality::Both)?;
         let vector_paths: std::collections::HashSet<String> =
             vector_results.iter().map(|r| r.doc_path.clone()).collect();
 
@@ -430,7 +431,7 @@ mod tests {
 
         // Add B to vector index only.
         let vec_b: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0];
-        vi.add(&vec_b, "B", Some(0), false).unwrap();
+        vi.add(&vec_b, "B", Some(0), false, "docs").unwrap();
 
         let query_emb = vec![1.0, 0.0, 0.0, 0.0];
         let gaps = find_semantic_gaps(&bm25, &vi, &["alpha"], &[query_emb], 5).unwrap();

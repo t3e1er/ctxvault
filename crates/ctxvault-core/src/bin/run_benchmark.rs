@@ -184,9 +184,12 @@ fn main() {
 
     let embedder = engine.embedder_ref().expect("Embedder reference");
 
+    let code_paths = engine.code_paths_set();
+    let modality = ctxvault_common::types::Modality::Both;
     for q in &queries {
         // 1. BM25 Search
-        let bm25_res = search::search_bm25(engine.bm25(), &q.query, 10).unwrap_or_default();
+        let bm25_res =
+            search::search_bm25(engine.bm25(), &q.query, 10, modality).unwrap_or_default();
         let (bm25_top5, bm25_recall, bm25_mrr, bm25_ndcg) =
             compute_metrics(&bm25_res, &q.expected_relevant);
 
@@ -197,6 +200,7 @@ fn main() {
             &q.query,
             10,
             ctxvault_common::types::SearchDepth::Precise,
+            modality,
         )
         .unwrap_or_default();
         let (semantic_top5, sem_recall, sem_mrr, sem_ndcg) =
@@ -217,6 +221,8 @@ fn main() {
                 10,
                 2,
                 None,
+                modality,
+                &code_paths,
             )
             .unwrap_or_default()
         } else {
@@ -230,6 +236,8 @@ fn main() {
                 2,
                 None,
                 Some(EdgeClass::Semantic),
+                modality,
+                &code_paths,
             )
             .unwrap_or_default()
         };

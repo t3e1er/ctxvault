@@ -196,7 +196,8 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" }
+                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["query"]
             }),
@@ -211,7 +212,8 @@ impl ToolRegistry {
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
-                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Retrieval depth: precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" }
+                    "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Retrieval depth: precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["query"]
             }),
@@ -229,7 +231,8 @@ impl ToolRegistry {
                     "graph_depth": { "type": "number", "description": "Max graph traversal depth for boosting (default 2)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
                     "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph boost traversal by edge class (default: semantic)" },
-                    "decompose": { "type": "boolean", "description": "Enable query decomposition for multi-hop queries (default: false)" }
+                    "decompose": { "type": "boolean", "description": "Enable query decomposition for multi-hop queries (default: false)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["query"]
             }),
@@ -246,7 +249,8 @@ impl ToolRegistry {
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
                     "max_depth": { "type": "number", "description": "Maximum traversal depth (default 3)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class (default: structural)" }
+                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class (default: structural)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["query"]
             }),
@@ -260,7 +264,8 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "seeds": { "type": "array", "items": { "type": "string" }, "description": "Seed document paths to find related notes for" },
-                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" }
+                    "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["seeds"]
             }),
@@ -277,7 +282,8 @@ impl ToolRegistry {
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
                     "graph_depth": { "type": "number", "description": "Max graph traversal depth (default 2)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph traversal by edge class" }
+                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter graph traversal by edge class" },
+                    "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." }
                 },
                 "required": ["query"]
             }),
@@ -1130,6 +1136,7 @@ struct GetFrontmatterParams {
 struct SearchBm25Params {
     query: String,
     limit: Option<usize>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1137,6 +1144,7 @@ struct SearchSemanticParams {
     query: String,
     limit: Option<usize>,
     depth: Option<String>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1147,6 +1155,7 @@ struct SearchHybridParams {
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
     decompose: Option<bool>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1156,12 +1165,14 @@ struct SearchGraphParams {
     max_depth: Option<usize>,
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SearchRelatedParams {
     seeds: Vec<String>,
     limit: Option<usize>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1171,6 +1182,7 @@ struct SearchExplainParams {
     graph_depth: Option<usize>,
     edge_types: Option<Vec<String>>,
     edge_class: Option<String>,
+    modality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1415,7 +1427,12 @@ fn handle_search_bm25(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let limit = params.limit.unwrap_or(10);
-    let mut results = search::search_bm25(engine.bm25(), &params.query, limit)?;
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let mut results = search::search_bm25(engine.bm25(), &params.query, limit, modality)?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
@@ -1438,6 +1455,11 @@ fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
         .as_deref()
         .and_then(ctxvault_common::types::SearchDepth::from_str_name)
         .unwrap_or_default();
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
 
     // Ensure the embedder is initialized.
     let _ = engine.ensure_embedder()?;
@@ -1453,8 +1475,14 @@ fn handle_search_semantic(engine: &Engine, args: Value) -> Result<Value> {
 
     let vector_index = engine.vector_index().unwrap();
 
-    let mut results =
-        search::search_semantic_dual(vector_index, &embedder, &params.query, limit, depth)?;
+    let mut results = search::search_semantic_dual(
+        vector_index,
+        &embedder,
+        &params.query,
+        limit,
+        depth,
+        modality,
+    )?;
     search::enrich_results_with_lineage(&mut results, engine.graph());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
@@ -1468,6 +1496,12 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
     let limit = params.limit.unwrap_or(10);
     let graph_depth = params.graph_depth.unwrap_or(2);
     let edge_type_filter = params.edge_types;
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let code_paths = engine.code_paths_set();
 
     // Default to Semantic class filter for hybrid search graph boost.
     let edge_class_filter = match params.edge_class.as_deref() {
@@ -1494,6 +1528,8 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
                 limit,
                 graph_depth,
                 edge_type_filter.as_deref(),
+                modality,
+                &code_paths,
             )?
         } else {
             search::search_hybrid_full(
@@ -1506,6 +1542,8 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
                 graph_depth,
                 edge_type_filter.as_deref(),
                 edge_class_filter,
+                modality,
+                &code_paths,
             )?
         }
     } else {
@@ -1518,6 +1556,8 @@ fn handle_search_hybrid(engine: &Engine, args: Value) -> Result<Value> {
             graph_depth,
             edge_type_filter.as_deref(),
             edge_class_filter,
+            modality,
+            &code_paths,
         )?
     };
 
@@ -1532,6 +1572,12 @@ fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
     let limit = params.limit.unwrap_or(10);
     let max_depth = params.max_depth.unwrap_or(3);
     let edge_type_filter = params.edge_types;
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let code_paths = engine.code_paths_set();
 
     // Default to Structural class filter for graph traversal search.
     let edge_class_filter = match params.edge_class.as_deref() {
@@ -1547,6 +1593,8 @@ fn handle_search_graph(engine: &Engine, args: Value) -> Result<Value> {
         max_depth,
         edge_type_filter.as_deref(),
         edge_class_filter,
+        modality,
+        &code_paths,
     )?;
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
@@ -1558,8 +1606,22 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
     let limit = params.limit.unwrap_or(10);
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let code_paths = engine.code_paths_set();
 
-    let results = search::search_related(engine.graph(), &params.seeds, limit, 0.85, 20)?;
+    let results = search::search_related(
+        engine.graph(),
+        &params.seeds,
+        limit,
+        0.85,
+        20,
+        modality,
+        &code_paths,
+    )?;
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -1573,6 +1635,12 @@ fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
     let graph_depth = params.graph_depth.unwrap_or(2);
     let edge_type_filter = params.edge_types;
     let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
+    let modality = params
+        .modality
+        .as_deref()
+        .and_then(ctxvault_common::types::Modality::from_str_name)
+        .unwrap_or_default();
+    let code_paths = engine.code_paths_set();
 
     // Try to get a query embedding for full 3-signal explanation.
     let query_embedding =
@@ -1597,6 +1665,8 @@ fn handle_search_explain(engine: &Engine, args: Value) -> Result<Value> {
         graph_depth,
         edge_type_filter.as_deref(),
         edge_class_filter,
+        modality,
+        &code_paths,
     )?;
 
     serde_json::to_value(explanations).map_err(|e| Error::Config(format!("serialize error: {}", e)))
