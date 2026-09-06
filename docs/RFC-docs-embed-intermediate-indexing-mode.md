@@ -1,7 +1,7 @@
 ---
 title: "RFC: Intermediate Docs-Only Embedding Indexing Mode (docs-embed)"
 category: "code-architecture"
-status: "proposed"
+status: "accepted"
 tags: ["rfc", "proposal", "indexing", "vector", "bm25", "graph", "performance"]
 related:
   - "[[docs/index]]"
@@ -12,7 +12,7 @@ related:
 
 # RFC: Intermediate Docs-Only Embedding Indexing Mode (`docs-embed`)
 
-**Status**: Proposed / Under Implementation  
+**Status**: Accepted / Implemented  
 **Scope**: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`  
 **Date**: September 2026  
 **Related Documents**: [[docs/code-architecture/decisions/adr-008-anchor-embedding-paradigm]], [[docs/why-hybrid-retrieval]], [[docs/gpu-optimization/quantization-fast-mode]]

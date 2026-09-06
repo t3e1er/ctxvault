@@ -24,6 +24,8 @@ pub struct CorpusInfo {
     pub path: String,
     /// Access mode (read-write or read-only).
     pub mode: String,
+    /// Indexing mode (Full, DocsEmbed, or Fast).
+    pub index_mode: String,
     /// Number of indexed files.
     pub file_count: usize,
     /// Whether the embedder is active for this corpus.
@@ -143,6 +145,7 @@ impl CorpusManager {
                     name: name.clone(),
                     path: engine.config().path.clone(),
                     mode,
+                    index_mode: format!("{:?}", engine.config().index_mode),
                     file_count,
                     embedder_active: engine.embedder_active(),
                     vector_count: engine.vector_count(),
@@ -429,6 +432,7 @@ mod tests {
         let list = manager.list_corpora();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "wiki");
+        assert_eq!(list[0].index_mode, "Full");
         assert_eq!(list[0].file_count, 0);
     }
 

@@ -253,11 +253,18 @@ impl Engine {
                         .map(EntityKind::modality_tag)
                         .unwrap_or("docs")
                         .to_string();
+                    let embed_policy = if self.config.index_mode
+                        == ctxvault_common::config::IndexMode::DocsEmbed
+                    {
+                        ChunkEmbedPolicy::GraphOnly
+                    } else {
+                        c.embed_policy
+                    };
                     pending.push(PendingChunk {
                         doc_path: rel_path.to_string(),
                         chunk_index: c.chunk_index,
                         text: c.text.clone(),
-                        embed_policy: c.embed_policy,
+                        embed_policy,
                         modality,
                     });
                 }
@@ -362,9 +369,16 @@ impl Engine {
             return Ok(());
         }
 
-        // Partition buffer into anchor chunks and graph-only chunks
-        let anchor_chunks: Vec<&PendingChunk> =
-            buffer.iter().filter(|c| c.embed_policy == ChunkEmbedPolicy::Anchor).collect();
+        // Partition buffer into anchor chunks and graph-only chunks.
+        // In DocsEmbed mode, code chunks are excluded from embedding even if marked Anchor.
+        let anchor_chunks: Vec<&PendingChunk> = buffer
+            .iter()
+            .filter(|c| {
+                c.embed_policy == ChunkEmbedPolicy::Anchor
+                    && !(self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed
+                        && c.modality == "code")
+            })
+            .collect();
 
         tracing::debug!(
             total = buffer.len(),
@@ -494,6 +508,7 @@ impl Engine {
         let mut modified_files = Vec::new();
         let mut seen_on_disk = HashMap::new();
         let mut uncommitted_count = 0usize;
+        self.ensure_vector_index();
         let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
 
         for (rel_path, full_path) in &disk_files {
@@ -610,7 +625,8 @@ impl Engine {
         disk_files.sort_by(|a, b| a.0.cmp(&b.0));
         let total_files = disk_files.len();
 
-        // Ensure embedder is available for indexing.
+        // Ensure embedder and vector index are available for indexing.
+        self.ensure_vector_index();
         let _ = self.ensure_embedder();
 
         let mut stored_map: HashMap<String, String> = HashMap::new();
@@ -821,6 +837,45 @@ impl Engine {
     /// Check whether the engine is running in Fast Mode.
     pub fn is_fast_mode(&self) -> bool {
         self.config.index_mode == ctxvault_common::config::IndexMode::Fast
+    }
+
+    /// Check whether the engine is running in DocsEmbed Mode.
+    pub fn is_docs_embed_mode(&self) -> bool {
+        self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed
+    }
+
+    /// Update the index mode dynamically, allocating or dropping the vector index as appropriate.
+    pub fn set_index_mode(&mut self, mode: ctxvault_common::config::IndexMode) {
+        self.config.index_mode = mode;
+        match self.config.index_mode {
+            ctxvault_common::config::IndexMode::Fast => {
+                self.vector_index = None;
+            }
+            ctxvault_common::config::IndexMode::Full
+            | ctxvault_common::config::IndexMode::DocsEmbed => {
+                self.ensure_vector_index();
+            }
+        }
+    }
+
+    /// Ensure the vector index is initialized if running in Full or DocsEmbed mode.
+    pub fn ensure_vector_index(&mut self) {
+        if self.vector_index.is_none()
+            && self.config.index_mode != ctxvault_common::config::IndexMode::Fast
+        {
+            let configured_model_name =
+                crate::embedding::ModelName::from_str_name(&self.config.embedding.model)
+                    .unwrap_or_default();
+            let configured_dimensions = configured_model_name.dimensions();
+            let vector_path = self.index_dir.join("vectors.json");
+            let vi = if vector_path.exists() {
+                VectorIndex::load(&vector_path)
+                    .unwrap_or_else(|_| VectorIndex::new_default(configured_dimensions))
+            } else {
+                VectorIndex::new_default(configured_dimensions)
+            };
+            self.vector_index = Some(vi);
+        }
     }
 
     /// Whether a vector index is present (absent in Fast Mode).
@@ -1103,6 +1158,11 @@ impl Engine {
 
         let corpus_path = std::path::PathBuf::from(&self.config.path);
         for file in &files {
+            let is_code = crate::parser::code::is_code_file(std::path::Path::new(&file.path));
+            if self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed && is_code {
+                continue;
+            }
+
             let full_path = corpus_path.join(&file.path);
             let parsed_chunks: Option<(Vec<ctxvault_common::types::Chunk>, Option<String>)> =
                 std::fs::read_to_string(&full_path).ok().and_then(|content| {
@@ -1324,6 +1384,68 @@ mod tests {
         assert_eq!(files, 1);
         assert!(!engine.has_vector_index());
         assert_eq!(engine.store().list_files().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_docs_embed_mode() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+
+        fs::write(
+            corpus_dir.join("guide.md"),
+            "# Architecture Guide\n\n## Overview\n\nDocsEmbed mode preserves doc vectors while skipping code.\n",
+        )
+        .unwrap();
+
+        fs::write(
+            corpus_dir.join("lib.rs"),
+            "pub struct EngineConfig {\n    pub name: String,\n}\n\npub fn run_engine() {}\n",
+        )
+        .unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+
+        let index_dir = tmp.path().join("index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        assert!(engine.is_docs_embed_mode());
+        assert!(!engine.is_fast_mode());
+        assert!(engine.has_vector_index());
+
+        let files_indexed = engine.full_reindex_paginated(10, false).unwrap();
+        assert_eq!(files_indexed, 2);
+
+        // Verify SQLite store contains both files, chunks, and symbols
+        assert_eq!(engine.store().list_files().unwrap().len(), 2);
+        let code_symbols = engine.store().find_symbols_by_name("EngineConfig").unwrap();
+        assert!(!code_symbols.is_empty());
+
+        // Verify BM25 indexed both files
+        let bm25_doc = engine.bm25.search("Architecture", 10).unwrap();
+        assert!(!bm25_doc.is_empty());
+        let bm25_code = engine.bm25.search("EngineConfig", 10).unwrap();
+        assert!(!bm25_code.is_empty());
+
+        // Verify Graph indexed both
+        assert!(engine.graph().node_count() >= 2);
+
+        // Staged chunk generation: code chunk embed_policy must be coerced to GraphOnly
+        let (code_pending, _) = engine.index_file_staged("src/main.rs", "pub struct Foo;").unwrap();
+        assert!(!code_pending.is_empty());
+        for chunk in &code_pending {
+            assert_eq!(chunk.embed_policy, ctxvault_common::types::ChunkEmbedPolicy::GraphOnly);
+        }
+
+        // Staged chunk generation: doc chunk embed_policy must preserve Anchor
+        let (doc_pending, _) = engine
+            .index_file_staged("readme.md", "# Readme\n\n## Overview\n\nAnchor content.")
+            .unwrap();
+        let has_anchor = doc_pending
+            .iter()
+            .any(|c| c.embed_policy == ctxvault_common::types::ChunkEmbedPolicy::Anchor);
+        assert!(has_anchor);
     }
 
     #[test]

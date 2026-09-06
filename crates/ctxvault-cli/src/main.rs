@@ -76,9 +76,37 @@ struct Cli {
     #[arg(long)]
     fast: bool,
 
+    /// Docs-only embedding mode: compute vector embeddings for markdown docs anchors only, skipping code.
+    #[arg(long = "docs-embed")]
+    docs_embed: bool,
+
+    /// Indexing mode: full, docs-embed, or fast. Overrides --fast and --docs-embed if set.
+    #[arg(long = "index-mode", value_enum)]
+    index_mode: Option<CliIndexMode>,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliIndexMode {
+    /// Full indexing: BM25 + Graph + Embedding across both code and docs.
+    Full,
+    /// Intermediate mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown docs anchors only.
+    DocsEmbed,
+    /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
+    Fast,
+}
+
+impl From<CliIndexMode> for ctxvault_common::config::IndexMode {
+    fn from(m: CliIndexMode) -> Self {
+        match m {
+            CliIndexMode::Full => ctxvault_common::config::IndexMode::Full,
+            CliIndexMode::DocsEmbed => ctxvault_common::config::IndexMode::DocsEmbed,
+            CliIndexMode::Fast => ctxvault_common::config::IndexMode::Fast,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -194,7 +222,11 @@ async fn main() -> anyhow::Result<()> {
         if let Some(name) = name_override {
             config.name = name;
         }
-        if cli.fast {
+        if let Some(mode) = cli.index_mode {
+            config.index_mode = mode.into();
+        } else if cli.docs_embed {
+            config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+        } else if cli.fast {
             config.index_mode = ctxvault_common::config::IndexMode::Fast;
         }
         corpus_names.push(config.name.clone());
