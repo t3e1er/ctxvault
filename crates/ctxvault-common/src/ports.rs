@@ -104,9 +104,10 @@ use std::path::Path;
 use crate::config::{EdgeClass, EdgeTypeConfig};
 use crate::types::{
     BrokenLink, Chunk, ChunkRecord, CircularDependency, CodeSymbol, CommunityDensity,
-    CommunityDetectionResult, Document, Edge, EdgeProvenance, EdgeTypeRecord, FileRecord,
-    GraphStats, IndexingState, LineageAnnotation, LineageNode, Modality, OrphanAdr,
-    ResolutionConfidence, SearchDepth, SearchExplanation, SearchResult, VectorSearchResult,
+    CommunityDetectionResult, Document, Edge, EdgeProvenance, EdgeRecord, EdgeTypeRecord,
+    FileRecord, GraphAffordances, GraphStats, IndexingState, LineageAnnotation, LineageNode,
+    Modality, OrphanAdr, ResolutionConfidence, SearchDepth, SearchExplanation, SearchResult,
+    VectorSearchResult,
 };
 use crate::Result;
 
@@ -172,6 +173,25 @@ pub trait MetadataCatalog {
 
     /// List all registered edge types.
     fn list_edge_types(&self) -> Result<Vec<EdgeTypeRecord>>;
+
+    // ------------------------------------------------------------------
+    // Relational Edges
+    // ------------------------------------------------------------------
+
+    /// Insert a batch of relational edges within a transaction.
+    fn insert_edges(&self, edges: &[EdgeRecord]) -> Result<()>;
+
+    /// Delete all edges where the given path is source or target.
+    fn delete_edges_for_node(&self, path: &str) -> Result<()>;
+
+    /// Retrieve all incident edges (source or target) for a node.
+    fn get_edges_for_node(&self, path: &str) -> Result<Vec<EdgeRecord>>;
+
+    /// Retrieve degree affordance tallies for a node.
+    fn get_degree_counts(&self, node: &str) -> Result<GraphAffordances>;
+
+    /// Remove all edges from the database.
+    fn clear_all_edges(&self) -> Result<()>;
 
     // ------------------------------------------------------------------
     // Corpus config (key/value store)
@@ -542,6 +562,9 @@ pub trait GraphStore {
 
     /// Graph statistics (node/edge counts, orphans, most-connected, distribution).
     fn stats(&self) -> GraphStats;
+
+    /// Compute direct degree affordances for a node (O(deg) lookup).
+    fn compute_affordances(&self, path: &str) -> GraphAffordances;
 
     // ------------------------------------------------------------------
     // Structural lineage & taxonomy

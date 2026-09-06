@@ -1,6 +1,7 @@
 //! Knowledge graph: typed directed edges, traversal, PPR, subgraph extraction.
 
 pub mod code;
+pub mod query;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -256,6 +257,31 @@ impl KnowledgeGraph {
                     provenance: weight_data.provenance.clone(),
                     target_corpus: weight_data.target_corpus.clone(),
                     confidence: weight_data.confidence,
+                });
+            }
+        }
+        edges
+    }
+
+    /// Retrieve all edges as relational EdgeRecords for SQLite persistence.
+    pub fn get_all_edge_records(&self) -> Vec<ctxvault_common::types::EdgeRecord> {
+        let mut edges = Vec::new();
+        for edge in self.graph.edge_references() {
+            let source_idx = edge.source();
+            let target_idx = edge.target();
+            if let (Some(source_node), Some(target_node)) =
+                (self.graph.node_weight(source_idx), self.graph.node_weight(target_idx))
+            {
+                let weight_data = edge.weight();
+                edges.push(ctxvault_common::types::EdgeRecord {
+                    id: None,
+                    source: source_node.path.clone(),
+                    target: target_node.path.clone(),
+                    edge_type: weight_data.edge_type.clone(),
+                    edge_class: weight_data.class.as_str().to_string(),
+                    weight: weight_data.weight,
+                    confidence: 1.0,
+                    metadata: None,
                 });
             }
         }
@@ -851,6 +877,50 @@ impl KnowledgeGraph {
     /// Ensure a node exists (add it if not present). Used for testing.
     pub fn ensure_node(&mut self, path: &str) {
         let _ = self.add_node(path, None);
+    }
+
+    /// Compute graph degree affordances for a node in Petgraph (O(deg) direct lookup).
+    pub fn compute_affordances(&self, path: &str) -> ctxvault_common::types::GraphAffordances {
+        let Some(&idx) = self.node_map.get(path) else {
+            return ctxvault_common::types::GraphAffordances::default();
+        };
+
+        let mut affordances = ctxvault_common::types::GraphAffordances::default();
+
+        for edge_ref in self.graph.edges_directed(idx, Direction::Outgoing) {
+            let weight = edge_ref.weight();
+            match weight.edge_type.as_str() {
+                "calls" => affordances.calls_out = Some(affordances.calls_out.unwrap_or(0) + 1),
+                "implements" => {
+                    affordances.implements = Some(affordances.implements.unwrap_or(0) + 1)
+                }
+                "imports" => affordances.imports = Some(affordances.imports.unwrap_or(0) + 1),
+                "wikilink" => {
+                    affordances.wikilinks_out = Some(affordances.wikilinks_out.unwrap_or(0) + 1)
+                }
+                "documents" => {
+                    affordances.documents_code = Some(affordances.documents_code.unwrap_or(0) + 1)
+                }
+                _ => {}
+            }
+        }
+
+        for edge_ref in self.graph.edges_directed(idx, Direction::Incoming) {
+            let weight = edge_ref.weight();
+            match weight.edge_type.as_str() {
+                "calls" => affordances.calls_in = Some(affordances.calls_in.unwrap_or(0) + 1),
+                "wikilink" => {
+                    affordances.wikilinks_in = Some(affordances.wikilinks_in.unwrap_or(0) + 1)
+                }
+                "documents" => {
+                    let existing = affordances.documents_code.unwrap_or(0);
+                    affordances.documents_code = Some(existing + 1);
+                }
+                _ => {}
+            }
+        }
+
+        affordances
     }
 
     // ─── Structural Lineage & Taxonomy ───────────────────────────────────────
@@ -1763,6 +1833,10 @@ impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
 
     fn stats(&self) -> GraphStats {
         KnowledgeGraph::stats(self)
+    }
+
+    fn compute_affordances(&self, path: &str) -> ctxvault_common::types::GraphAffordances {
+        KnowledgeGraph::compute_affordances(self, path)
     }
 
     fn traverse_lineage(

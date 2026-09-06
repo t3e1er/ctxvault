@@ -10,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use ctxvault_common::types::{
-    ChunkRecord, EdgeTypeRecord, FileRecord, IndexingState, IndexingStatus,
+    ChunkRecord, EdgeRecord, EdgeTypeRecord, FileRecord, GraphAffordances, IndexingState,
+    IndexingStatus,
 };
 use ctxvault_common::{Error, Result};
 
@@ -92,6 +93,21 @@ CREATE TABLE IF NOT EXISTS code_symbols (
 
 CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(file_path);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    target TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    edge_class TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1.0,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    metadata TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_source_type ON edges(source, edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_target_type ON edges(target, edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(source, edge_type, target);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -104,7 +120,7 @@ pub struct Store {
 }
 
 impl Store {
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().expect("store connection mutex poisoned")
     }
 
@@ -344,6 +360,137 @@ impl Store {
             .map_err(|e| Error::Database(e.to_string()))?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // Relational Edges
+    // ------------------------------------------------------------------
+
+    /// Insert a batch of relational edges within a single transaction.
+    pub fn insert_edges(&self, edges: &[EdgeRecord]) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(|e| Error::Database(e.to_string()))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO edges (source, target, edge_type, edge_class, weight, confidence, metadata)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            for edge in edges {
+                stmt.execute(params![
+                    edge.source,
+                    edge.target,
+                    edge.edge_type,
+                    edge.edge_class,
+                    edge.weight,
+                    edge.confidence,
+                    edge.metadata,
+                ])
+                .map_err(|e| Error::Database(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Delete all edges where the given path is source or target.
+    pub fn delete_edges_for_node(&self, path: &str) -> Result<()> {
+        let _ = self
+            .conn()
+            .execute("DELETE FROM edges WHERE source = ?1 OR target = ?1", params![path])
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve all incident edges (where node is source or target).
+    pub fn get_edges_for_node(&self, path: &str) -> Result<Vec<EdgeRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, source, target, edge_type, edge_class, weight, confidence, metadata
+                 FROM edges WHERE source = ?1 OR target = ?1",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![path], |row| {
+                Ok(EdgeRecord {
+                    id: Some(row.get(0)?),
+                    source: row.get(1)?,
+                    target: row.get(2)?,
+                    edge_type: row.get(3)?,
+                    edge_class: row.get(4)?,
+                    weight: row.get(5)?,
+                    confidence: row.get(6)?,
+                    metadata: row.get(7)?,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Retrieve degree affordance counts for a node using indexed SQLite aggregation.
+    pub fn get_degree_counts(&self, node: &str) -> Result<GraphAffordances> {
+        let conn = self.conn();
+
+        let mut out_stmt = conn
+            .prepare("SELECT edge_type, COUNT(*) FROM edges WHERE source = ?1 GROUP BY edge_type")
+            .map_err(|e| Error::Database(e.to_string()))?;
+        let out_rows = out_stmt
+            .query_map(params![node], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut in_stmt = conn
+            .prepare("SELECT edge_type, COUNT(*) FROM edges WHERE target = ?1 GROUP BY edge_type")
+            .map_err(|e| Error::Database(e.to_string()))?;
+        let in_rows = in_stmt
+            .query_map(params![node], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut affordances = GraphAffordances::default();
+
+        for item in out_rows {
+            let (edge_type, count) = item.map_err(|e| Error::Database(e.to_string()))?;
+            match edge_type.as_str() {
+                "calls" => affordances.calls_out = Some(count),
+                "implements" => affordances.implements = Some(count),
+                "imports" => affordances.imports = Some(count),
+                "wikilink" => affordances.wikilinks_out = Some(count),
+                "documents" => affordances.documents_code = Some(count),
+                _ => {}
+            }
+        }
+
+        for item in in_rows {
+            let (edge_type, count) = item.map_err(|e| Error::Database(e.to_string()))?;
+            match edge_type.as_str() {
+                "calls" => affordances.calls_in = Some(count),
+                "wikilink" => affordances.wikilinks_in = Some(count),
+                "documents" => {
+                    let existing = affordances.documents_code.unwrap_or(0);
+                    affordances.documents_code = Some(existing + count);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(affordances)
+    }
+
+    /// Remove all edges from the database.
+    pub fn clear_all_edges(&self) -> Result<()> {
+        let _ = self
+            .conn()
+            .execute("DELETE FROM edges", [])
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -760,6 +907,26 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         Store::list_edge_types(self)
     }
 
+    fn insert_edges(&self, edges: &[EdgeRecord]) -> Result<()> {
+        Store::insert_edges(self, edges)
+    }
+
+    fn delete_edges_for_node(&self, path: &str) -> Result<()> {
+        Store::delete_edges_for_node(self, path)
+    }
+
+    fn get_edges_for_node(&self, path: &str) -> Result<Vec<EdgeRecord>> {
+        Store::get_edges_for_node(self, path)
+    }
+
+    fn get_degree_counts(&self, node: &str) -> Result<GraphAffordances> {
+        Store::get_degree_counts(self, node)
+    }
+
+    fn clear_all_edges(&self) -> Result<()> {
+        Store::clear_all_edges(self)
+    }
+
     fn set_config(&self, key: &str, value: &str) -> Result<()> {
         Store::set_config(self, key, value)
     }
@@ -1150,5 +1317,80 @@ mod tests {
         assert_eq!(ambiguous.len(), 2, "should return both candidates for disambiguation");
         assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'tcx, T> > instantiate"));
         assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'a, A> > instantiate"));
+    }
+
+    #[test]
+    fn test_edges_table_crud_and_degrees() {
+        let store = Store::open_in_memory().unwrap();
+
+        let edges = vec![
+            EdgeRecord {
+                id: None,
+                source: "file_a.rs > func_a".to_string(),
+                target: "file_b.rs > func_b".to_string(),
+                edge_type: "calls".to_string(),
+                edge_class: "structural".to_string(),
+                weight: 1.0,
+                confidence: 1.0,
+                metadata: None,
+            },
+            EdgeRecord {
+                id: None,
+                source: "file_c.rs > func_c".to_string(),
+                target: "file_b.rs > func_b".to_string(),
+                edge_type: "calls".to_string(),
+                edge_class: "structural".to_string(),
+                weight: 1.0,
+                confidence: 1.0,
+                metadata: None,
+            },
+            EdgeRecord {
+                id: None,
+                source: "file_b.rs > func_b".to_string(),
+                target: "interface.rs > TraitB".to_string(),
+                edge_type: "implements".to_string(),
+                edge_class: "structural".to_string(),
+                weight: 1.0,
+                confidence: 1.0,
+                metadata: None,
+            },
+            EdgeRecord {
+                id: None,
+                source: "file_b.rs > func_b".to_string(),
+                target: "dep.rs".to_string(),
+                edge_type: "imports".to_string(),
+                edge_class: "structural".to_string(),
+                weight: 1.0,
+                confidence: 1.0,
+                metadata: None,
+            },
+            EdgeRecord {
+                id: None,
+                source: "docs/spec.md".to_string(),
+                target: "file_b.rs > func_b".to_string(),
+                edge_type: "documents".to_string(),
+                edge_class: "hybrid".to_string(),
+                weight: 1.0,
+                confidence: 1.0,
+                metadata: None,
+            },
+        ];
+
+        store.insert_edges(&edges).unwrap();
+
+        let b_edges = store.get_edges_for_node("file_b.rs > func_b").unwrap();
+        assert_eq!(b_edges.len(), 5);
+
+        let deg = store.get_degree_counts("file_b.rs > func_b").unwrap();
+        assert_eq!(deg.calls_in, Some(2));
+        assert_eq!(deg.implements, Some(1));
+        assert_eq!(deg.imports, Some(1));
+        assert_eq!(deg.documents_code, Some(1));
+        assert_eq!(deg.calls_out, None);
+
+        // Delete edges for node
+        store.delete_edges_for_node("file_b.rs > func_b").unwrap();
+        let remaining = store.get_edges_for_node("file_b.rs > func_b").unwrap();
+        assert!(remaining.is_empty());
     }
 }

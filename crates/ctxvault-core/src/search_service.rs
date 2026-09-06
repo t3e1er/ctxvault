@@ -81,7 +81,7 @@ impl SearchService for CoreSearchService<'_> {
         let limit = query.limit.unwrap_or(10);
         let modality = query.modality;
 
-        match mode {
+        let mut results = match mode {
             "bm25" => {
                 let mut results = search::search_bm25(self.bm25, &query.query, limit, modality)?;
                 search::enrich_results_with_lineage(&mut results, self.graph);
@@ -209,7 +209,14 @@ impl SearchService for CoreSearchService<'_> {
                 "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain",
                 other
             ))),
+        }?;
+
+        for r in &mut results {
+            let affordances = self.graph.compute_affordances(&r.path);
+            r.graph_affordances = Some(affordances);
         }
+
+        Ok(results)
     }
 
     fn explain(&self, query: &SearchQuery) -> Result<Vec<SearchExplanation>> {
@@ -257,10 +264,11 @@ impl SearchService for CoreSearchService<'_> {
         limit: usize,
         modality: Modality,
     ) -> Result<Vec<SearchResult>> {
-        // Related search traverses only the held graph + code-path set. The
-        // free function carries two vestigial params (`_damping`, `_iterations`)
-        // it ignores; pass the exact literals the MCP handler used so behaviour
-        // is byte-identical.
-        search::search_related(self.graph, seeds, limit, 0.85, 20, modality, &self.code_paths)
+        let mut results =
+            search::search_related(self.graph, seeds, limit, 0.85, 20, modality, &self.code_paths)?;
+        for r in &mut results {
+            r.graph_affordances = Some(self.graph.compute_affordances(&r.path));
+        }
+        Ok(results)
     }
 }

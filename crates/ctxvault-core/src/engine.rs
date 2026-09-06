@@ -778,9 +778,12 @@ impl Engine {
         Ok(total_files)
     }
 
-    /// Commit all pending changes (Tantivy commit, graph save, vector index save).
+    /// Commit all pending changes (Tantivy commit, SQLite edges sync, graph save, vector index save).
     pub fn commit(&mut self) -> Result<()> {
         self.bm25.commit()?;
+        let edge_records = self.graph.get_all_edge_records();
+        self.store.clear_all_edges()?;
+        self.store.insert_edges(&edge_records)?;
         self.graph.save(&self.index_dir.join("graph.bin"))?;
         // Save vector index (only if it has data and has unpersisted changes).
         if let Some(ref vi) = self.vector_index {
@@ -914,6 +917,25 @@ impl Engine {
     /// Get a port-typed mutable reference to the graph for manipulation.
     pub fn graph_mut(&mut self) -> &mut impl GraphStore {
         &mut self.graph
+    }
+
+    /// Execute a Cypher-Lite linear path pattern match across code and doc entities.
+    pub fn graph_match(
+        &self,
+        pattern: &str,
+        edge_class: Option<&str>,
+        where_clause: Option<&str>,
+        limit: usize,
+        max_depth: usize,
+    ) -> Result<ctxvault_common::types::GraphMatchResult> {
+        let parsed = crate::graph::query::parse_path_pattern(pattern)?;
+        let qe = crate::graph::query::QueryEngine::new(&self.store);
+        qe.execute_match(&parsed, edge_class, where_clause, limit, max_depth)
+    }
+
+    /// Compute direct degree affordances for a node.
+    pub fn compute_affordances(&self, path: &str) -> ctxvault_common::types::GraphAffordances {
+        self.graph.compute_affordances(path)
     }
 
     /// Build the set of graph node keys that represent code entities.

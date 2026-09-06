@@ -52,27 +52,27 @@ Every major concern is defined as a trait (**port**) in `ctxvault-common::ports`
 
 ---
 
-## 3. MCP Tool Surface (39 Tools) & Usage Directives
+## 3. MCP Tool Surface (31 Tools) & Usage Directives
 
 Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers are `ReadOnly(fn(&Engine, Value))` or `ReadWrite(fn(&mut Engine, Value))`.
 
-### Registered Tool Inventory
+### Registered Tool Inventory (31 Tools)
 
 | Category | Count | Tools |
 |---|---|---|
 | **Read** | 6 | `search` handles $\to$ `get_snippet`, `read_note`, `read_code_file`, `read_multiple`, `list_notes`, `get_frontmatter` |
-| **Search** | 2 | `search` (single tool; `mode` = `hybrid` \| `bm25` \| `semantic` \| `graph` \| `explain`), `search_related` |
-| **Graph** | 8 | `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`, `graph_subgraph`, `graph_communities` (`algorithm` = `leiden` \| `louvain`), `list_edge_types`, `traverse_lineage` |
+| **Search** | 2 | `search` (single tool; bimodal partitioned response with `graph_affordances` & `schema_envelope`; `mode` = `hybrid` \| `bm25` \| `semantic` \| `graph` \| `explain`), `search_related` |
+| **Graph** | 2 | `graph_match` (linear Cypher-Lite ASCII path query compiled to recursive SQLite CTEs with cycle guards), `graph_communities` (`algorithm` = `leiden` \| `louvain`) |
 | **Write** | 5 | `create_note`, `update_note`, `delete_note`, `move_note`, `promote_concept` (all mutating) |
 | **Template / Validation** | 4 | `validate_note`, `validate_corpus`, `list_templates`, `validate_taxonomy` |
 | **Analysis** | 5 | `analyze_density`, `find_semantic_gaps`, `suggest_splits`, `coverage_report`, `check_index_coverage` |
-| **Code Intel** | 4 | `get_symbol_definition`, `find_callers`, `get_architecture`, `detect_changes` (mutating) |
-| **System / Corpus** | 5 | `status` (single tool; `scope` = `all` \| `corpus` \| `indexing`), `corpus_list`, `reindex_corpus` (mutating), `sync_corpus` (mutating), `reembed_corpus` (mutating) |
+| **Code Intel** | 2 | `get_symbol_definition`, `get_architecture` |
+| **System / Corpus** | 5 | `status` (single tool; `scope` = `all` \| `corpus` \| `indexing` \| `graph`), `corpus_list`, `reindex_corpus` (mutating), `sync_corpus` (mutating), `reembed_corpus` (mutating) |
 
 ### Tool Profiles (`--profile`)
 - **`scout`** (9 tools): Minimal retrieve/navigate set (`search`, `search_related`, `get_snippet`, `read_note`, `read_code_file`, `read_multiple`, `list_notes`, `get_frontmatter`, `status`).
-- **`analysis`** (30 tools): `scout` + read-only graph, validation, code intelligence, and corpus analysis.
-- **`all`** (39 tools): Full suite including mutating write and administrative tools.
+- **`analysis`** (23 tools): `scout` + read-only graph (`graph_match`, `graph_communities`), validation (4), code intelligence (2), corpus analysis (5), and `corpus_list`.
+- **`all`** (31 tools): Full suite including mutating write (5) and maintenance tools (`sync_corpus`, `reindex_corpus`, `reembed_corpus`).
 
 ### Agent Directives
 1. **Files are ground truth**: Trust file content on disk over cached search snippets.
@@ -82,10 +82,13 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
    - `mode="semantic"`: Conceptual similarity and abstract technical intentions.
    - `mode="graph"`: Typed graph traversal; filter by `edge_types` or `edge_class` (`structural`, `semantic`, `hybrid`).
    - `mode="explain"`: Introspect scoring breakdowns (BM25 vs vector vs graph).
-3. **Progressive disclosure**: Always query `search` $\to$ fetch targeted code/doc sections via `get_snippet` $\to$ read whole files (`read_note`, `read_code_file`) only when necessary.
-4. **Schema discipline on writes**: Query `list_templates` before authoring, adhere to required frontmatter, and confirm validity with `validate_note`.
-5. **Crystallize lasting knowledge (Principle 3)**: Turn non-obvious solutions, debugging insights, and architectural decisions into durable vault notes using `promote_concept`. Trace provenance with `traverse_lineage`.
-6. **Destructive operations**: `delete_note` permanently removes files and index entries; confirm with user before executing.
+3. **Turn 1 Affordance Grounding & Turn 2 Path Expansion**:
+   - Turn 1: `search` returns partitioned results (`docs` and `code`) enriched with `graph_affordances` (degree counts: `calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`, etc.) and `schema_envelope` (active node labels and edge types).
+   - Turn 2: Follow information scents with `graph_match` using linear Cypher-Lite ASCII patterns, e.g. `(:CodeSymbol {name: "foo"})-[:calls*1..2]->(target)` or `(:DocNode {path: "adrs/002.md"})-[:supersedes]->(target)`.
+4. **Progressive disclosure**: Always query `search` $\to$ fetch targeted code/doc sections via `get_snippet` $\to$ read whole files (`read_note`, `read_code_file`) only when necessary.
+5. **Schema discipline on writes**: Query `list_templates` before authoring, adhere to required frontmatter, and confirm validity with `validate_note`.
+6. **Crystallize lasting knowledge (Principle 3)**: Turn non-obvious solutions, debugging insights, and architectural decisions into durable vault notes using `promote_concept`. Trace lineage via `graph_match(pattern="...-[:supersedes*1..3]->...")`.
+7. **Destructive operations**: `delete_note` permanently removes files and index entries; confirm with user before executing.
 
 ---
 
