@@ -39,11 +39,12 @@ fn default_templates_dir() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum IndexMode {
-    /// Full indexing: BM25 + Graph + Embedding/Vector (default).
+    /// Full indexing: BM25 + Graph + Embedding/Vector across both code and docs (default).
     #[default]
     Full,
-    /// Fast mode: BM25 + Graph only. No ONNX model loading, no embedding, no HNSW vector index.
-    /// Semantic/vector search tools are unavailable; BM25 keyword search and graph tools work immediately.
+    /// Intermediate mode: BM25 + Graph for both code and docs; HNSW Vector embeddings for markdown docs anchors only.
+    DocsEmbed,
+    /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
     Fast,
 }
 
@@ -374,5 +375,13 @@ mod tests {
         "#;
         let config_def: CorpusConfig = toml::from_str(toml_default).unwrap();
         assert_eq!(config_def.index_mode, IndexMode::Full);
+
+        let toml_docs_embed = r#"
+            name = "docs-embed-corpus"
+            path = "./src"
+            index_mode = "docs-embed"
+        "#;
+        let config_docs_embed: CorpusConfig = toml::from_str(toml_docs_embed).unwrap();
+        assert_eq!(config_docs_embed.index_mode, IndexMode::DocsEmbed);
     }
 }

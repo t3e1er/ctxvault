@@ -74,7 +74,8 @@ impl EngineBuilder {
                 info!(corpus = %config.name, "Fast Mode enabled: skipping vector index allocation and ONNX embedder initialization");
                 None
             }
-            ctxvault_common::config::IndexMode::Full => {
+            ctxvault_common::config::IndexMode::Full
+            | ctxvault_common::config::IndexMode::DocsEmbed => {
                 let configured_model_name =
                     crate::embedding::ModelName::from_str_name(&config.embedding.model)
                         .unwrap_or_default();
