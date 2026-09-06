@@ -84,6 +84,10 @@ struct Cli {
     #[arg(long = "index-mode", value_enum)]
     index_mode: Option<CliIndexMode>,
 
+    /// Ingest a SCIP protobuf index file into the knowledge graph on startup.
+    #[arg(long = "scip", value_name = "PATH")]
+    scip: Option<PathBuf>,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -268,6 +272,23 @@ async fn main() -> anyhow::Result<()> {
             corpora = corpus_names.len(),
             "skipping indexing on startup (use --sync or --reindex, or call sync_corpus/reindex_corpus tools)"
         );
+    }
+
+    // Ingest SCIP index if specified
+    if let Some(ref scip_path) = cli.scip {
+        for name in &corpus_names {
+            tracing::info!(corpus = %name, scip = %scip_path.display(), "ingesting SCIP index");
+            let engine = manager.get_engine_mut(name)?;
+            let stats = engine.ingest_scip(scip_path)?;
+            tracing::info!(
+                corpus = %name,
+                documents = stats.documents_processed,
+                definitions = stats.definitions_extracted,
+                calls = stats.calls_extracted,
+                edges = stats.edges_added,
+                "SCIP index ingestion complete"
+            );
+        }
     }
 
     // Cross-corpus symbol linking: only meaningful with more than one corpus.

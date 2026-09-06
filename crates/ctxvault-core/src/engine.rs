@@ -812,6 +812,34 @@ impl Engine {
         Ok(())
     }
 
+    /// Ingest a pre-computed SCIP (Source Code Intelligence Protocol) index into the knowledge graph.
+    ///
+    /// Reads the SCIP binary protobuf file, extracts high-confidence symbol definitions (`defines`)
+    /// and cross-file references/calls (`calls`), stores them in the graph, and commits the graph state.
+    pub fn ingest_scip(&mut self, scip_path: &Path) -> Result<crate::graph::scip::ScipIngestStats> {
+        info!("Ingesting SCIP index from: {}", scip_path.display());
+        let (edges, stats) = crate::graph::scip::ScipIngester::extract_edges_from_file(scip_path)?;
+
+        for edge in &edges {
+            self.graph.add_code_edge(edge);
+        }
+
+        let edge_records = self.graph.get_all_edge_records();
+        self.store.clear_all_edges()?;
+        self.store.insert_edges(&edge_records)?;
+        self.graph.save(&self.index_dir.join("graph.bin"))?;
+
+        info!(
+            "SCIP ingestion complete: {} documents, {} definitions, {} calls, {} edges added",
+            stats.documents_processed,
+            stats.definitions_extracted,
+            stats.calls_extracted,
+            stats.edges_added
+        );
+
+        Ok(stats)
+    }
+
     /// Build a [`CoreSearchService`](crate::search_service::CoreSearchService)
     /// over this engine's resolved retrieval backends.
     ///
