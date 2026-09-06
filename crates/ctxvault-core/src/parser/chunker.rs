@@ -580,7 +580,16 @@ fn split_by_chars(
             break;
         }
 
-        let target_end = (start_idx + target_chars).min(len);
+        let mut target_end = (start_idx + target_chars).min(len);
+        while target_end > start_idx && !text.is_char_boundary(target_end) {
+            target_end -= 1;
+        }
+        if target_end == start_idx {
+            while target_end < len && !text.is_char_boundary(target_end) {
+                target_end += 1;
+            }
+        }
+
         let mut split_point = target_end;
 
         // Try to break on whitespace before target_end
@@ -598,8 +607,13 @@ fn split_by_chars(
         if split_point == start_idx {
             // Force progress if no whitespace found
             split_point = (start_idx + max_chars).min(len);
-            while split_point < len && !text.is_char_boundary(split_point) {
-                split_point += 1;
+            while split_point > start_idx && !text.is_char_boundary(split_point) {
+                split_point -= 1;
+            }
+            if split_point == start_idx {
+                while split_point < len && !text.is_char_boundary(split_point) {
+                    split_point += 1;
+                }
             }
         }
 

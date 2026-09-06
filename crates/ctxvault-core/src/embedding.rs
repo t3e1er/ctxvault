@@ -975,6 +975,10 @@ impl Embedder {
         flat_attention_mask: Vec<i64>,
         flat_token_type_ids: Option<Vec<i64>>,
     ) -> Result<Vec<Vec<f32>>> {
+        if flat_input_ids.is_empty() || batch_size == 0 || max_len == 0 {
+            return Ok(Vec::new());
+        }
+
         let use_hardware = !self.gpu_disabled.load(Ordering::Relaxed);
         let mut hw_error: Option<String> = None;
         let sub_start = std::time::Instant::now();

@@ -1,4 +1,4 @@
-﻿# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
+# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
 
 This roadmap defines the architectural specification, academic foundations, tooling evaluation, and phased engineering plan for integrating **polyglot codebases** into the **Enterprise Semantic MCP** engine (`ctxvault-core`, `ctxvault-common`, `ctxvault-mcp`).
 
@@ -100,6 +100,8 @@ The open-source **`DeusData/codebase-memory-mcp`** represents an industry baseli
 1. **Lightweight "Hybrid LSP" Import Resolution**: Resolving `import`/`use` statements across the SQLite symbol table to connect cross-file `calls` and `implements` edges without compiler passes.
 2. **Community Detection (Louvain / Infomap)**: Clustering symbols in Petgraph to generate architectural module summaries automatically.
 3. **Targeted Structural MCP Tools**: Exposing `get_symbol_definition`, `find_callers`, and `get_module_graph` alongside continuous hybrid search.
+
+> 📄 **Detailed Analysis**: For the full 162-grammar audit, missing language breakdown, and LSP feasibility analysis, see [RFC: Polyglot Tree-sitter Grammar Expansion & LSP Integration Analysis](file:///c:/dev/semantic/ctxvault/docs/RFC-treesitter-expansion-and-lsp-analysis.md).
 
 ---
 
