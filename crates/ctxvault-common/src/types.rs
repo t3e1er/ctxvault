@@ -575,6 +575,9 @@ pub struct SearchResult {
     /// have not been tagged with a source corpus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corpus: Option<String>,
+    /// Graph degree affordances for Turn 2 expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_affordances: Option<GraphAffordances>,
 }
 
 impl SearchResult {
@@ -590,6 +593,7 @@ impl SearchResult {
             entity_kind: None,
             language: None,
             corpus: None,
+            graph_affordances: None,
         }
     }
 
@@ -626,6 +630,12 @@ impl SearchResult {
     /// Set the source corpus tag.
     pub fn with_corpus(mut self, corpus: Option<String>) -> Self {
         self.corpus = corpus;
+        self
+    }
+
+    /// Set graph affordances.
+    pub fn with_graph_affordances(mut self, affordances: GraphAffordances) -> Self {
+        self.graph_affordances = Some(affordances);
         self
     }
 }
@@ -842,4 +852,157 @@ pub struct CommunityDensity {
     pub internal_edges: usize,
     /// Density: internal_edges / max_possible_internal_edges.
     pub density: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive Graph Expansion & Relational Graph Types (RFC)
+// ---------------------------------------------------------------------------
+
+/// Graph affordances for a search result node.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GraphAffordances {
+    /// Inbound calls count (for code symbols).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_in: Option<usize>,
+    /// Outbound calls count (for code symbols).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_out: Option<usize>,
+    /// Implemented interfaces / traits count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<usize>,
+    /// Imported dependencies count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imports: Option<usize>,
+    /// Inbound wikilinks count (for doc nodes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikilinks_in: Option<usize>,
+    /// Outbound wikilinks count (for doc nodes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikilinks_out: Option<usize>,
+    /// Connected code documentation links count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documents_code: Option<usize>,
+}
+
+impl GraphAffordances {
+    /// Returns true if all affordance counts are None or zero.
+    pub fn is_empty(&self) -> bool {
+        self.calls_in.unwrap_or(0) == 0
+            && self.calls_out.unwrap_or(0) == 0
+            && self.implements.unwrap_or(0) == 0
+            && self.imports.unwrap_or(0) == 0
+            && self.wikilinks_in.unwrap_or(0) == 0
+            && self.wikilinks_out.unwrap_or(0) == 0
+            && self.documents_code.unwrap_or(0) == 0
+    }
+}
+
+/// Contextual schema envelope returned with search partitions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SchemaEnvelope {
+    /// Distinct node labels/kinds relevant to this partition.
+    pub node_labels: Vec<String>,
+    /// Active edge types present in this partition.
+    pub active_edges: Vec<String>,
+}
+
+/// A partitioned search result set (docs or code).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchPartition {
+    /// Hits in this partition.
+    pub results: Vec<SearchResult>,
+    /// Total matches across the corpus in this modality.
+    pub total_matches: usize,
+    /// Number of hits returned in `results`.
+    pub top_k_returned: usize,
+    /// Schema envelope providing information scent for Turn 2 expansion.
+    pub schema_envelope: SchemaEnvelope,
+}
+
+/// Partitioned bimodal search response.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchResponse {
+    /// Documentation partition (if requested/available).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<SearchPartition>,
+    /// Source code partition (if requested/available).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<SearchPartition>,
+}
+
+/// Durable relational edge record for SQLite persistence (`meta.db`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeRecord {
+    /// Database row ID (None for unsaved records).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<i64>,
+    /// Source document or code entity path.
+    pub source: String,
+    /// Target document or code entity path.
+    pub target: String,
+    /// Edge relationship type (e.g. "calls", "defines", "imports", "implements", "wikilink", "documents").
+    pub edge_type: String,
+    /// Edge classification class ("structural", "semantic", "hybrid").
+    pub edge_class: String,
+    /// Edge weight (default 1.0).
+    pub weight: f32,
+    /// Resolution confidence (0.0 - 1.0, default 1.0).
+    pub confidence: f32,
+    /// Optional metadata payload (e.g. line numbers, call AST context).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+}
+
+/// Result of a `graph_match` path query.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphMatchResult {
+    /// Matched paths from anchor to terminal node.
+    pub matches: Vec<PathMatch>,
+    /// Total matched path instances.
+    pub total_matches: usize,
+    /// Distinct nodes in the matched subgraph.
+    pub nodes: Vec<MatchedNode>,
+    /// Distinct edges in the matched subgraph.
+    pub edges: Vec<MatchedEdge>,
+}
+
+/// A single matched path traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PathMatch {
+    /// Identifier or scope path of the terminal node.
+    pub node: String,
+    /// Traversal depth (hops) from the anchor.
+    pub depth: usize,
+    /// Linear path representation (e.g. "A -> B <- C").
+    pub path: String,
+    /// Symbol type or node label if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_type: Option<String>,
+    /// File path where the terminal entity lives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+}
+
+/// A node in the matched subgraph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedNode {
+    /// Node identifier (path or scope path).
+    pub id: String,
+    /// Node label (e.g. "CodeSymbol", "DocNode", "Interface").
+    pub label: String,
+    /// Node properties.
+    pub properties: std::collections::HashMap<String, String>,
+}
+
+/// An edge in the matched subgraph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedEdge {
+    /// Source node ID.
+    pub source: String,
+    /// Target node ID.
+    pub target: String,
+    /// Edge type (e.g. "calls", "implements").
+    pub edge_type: String,
+    /// Direction relative to traversal ("outgoing", "incoming").
+    pub direction: String,
 }

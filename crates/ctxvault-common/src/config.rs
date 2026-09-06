@@ -265,6 +265,15 @@ impl EdgeClass {
             EdgeClass::Structural => *self == EdgeClass::Structural || *self == EdgeClass::Hybrid,
         }
     }
+
+    /// Return static str representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Structural => "structural",
+            Self::Hybrid => "hybrid",
+        }
+    }
 }
 
 #[cfg(test)]

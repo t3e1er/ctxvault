@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
-use ctxvault_common::config::{CorpusMode, EdgeClass};
+use ctxvault_common::config::CorpusMode;
 use ctxvault_common::ports::{GraphStore, MetadataCatalog, SearchQuery, SearchService};
 use ctxvault_common::{Error, Result};
 use ctxvault_core::engine::Engine;
@@ -80,17 +80,10 @@ const SCOUT_TOOLS: [&str; 9] = [
 ];
 
 /// Read-only tools added by the `analysis` profile on top of `scout`.
-const ANALYSIS_ONLY_TOOLS: [&str; 21] = [
-    "backlinks",
-    "forwardlinks",
-    "graph_path",
-    "graph_stats",
-    "graph_subgraph",
+const ANALYSIS_ONLY_TOOLS: [&str; 14] = [
+    "graph_match",
     "graph_communities",
-    "list_edge_types",
-    "traverse_lineage",
     "get_symbol_definition",
-    "find_callers",
     "get_architecture",
     "validate_note",
     "validate_corpus",
@@ -360,74 +353,36 @@ impl ToolRegistry {
 
         // Graph tools
         self.register_read(
-            "backlinks",
-            "Get all notes that link TO a given note, grouped by edge type.",
+            "graph_match",
+            "Linear Cypher-Lite graph path query compiled to recursive SQLite CTEs. Traverses heterogeneous relations across code symbols and documentation notes. Cycle-safe with depth bounding.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path of the target note" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter by edge class" }
+                    "pattern": {
+                        "type": "string",
+                        "description": "Linear Cypher-Lite ASCII path pattern, e.g. '(:CodeSymbol {name: \"SelectVictimsOnNode\"})-[:implements]->(:Interface)<-[:calls*1..2]-(c:CodeSymbol)'"
+                    },
+                    "edge_class": {
+                        "type": "string",
+                        "enum": ["structural", "semantic", "hybrid"],
+                        "description": "Optional edge class filter: structural (AST/wikilinks), semantic (tags/similarity), hybrid (both)"
+                    },
+                    "where": {
+                        "type": "string",
+                        "description": "Optional filter predicate on candidate paths"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of paths to return (default 20, max 100)"
+                    },
+                    "max_depth": {
+                        "type": "number",
+                        "description": "Hard cap on recursive traversal depth (default 3, max 5)"
+                    }
                 },
-                "required": ["path"]
+                "required": ["pattern"]
             }),
-            handle_backlinks,
-        );
-
-        self.register_read(
-            "forwardlinks",
-            "Get all notes that a given note links TO, grouped by edge type.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Path of the source note" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter by edge class" }
-                },
-                "required": ["path"]
-            }),
-            handle_forwardlinks,
-        );
-
-        self.register_read(
-            "graph_path",
-            "Find the shortest path between two notes in the knowledge graph.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "from": { "type": "string", "description": "Source note path" },
-                    "to": { "type": "string", "description": "Target note path" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter path search by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter path search by edge class" }
-                },
-                "required": ["from", "to"]
-            }),
-            handle_graph_path,
-        );
-
-        self.register_read(
-            "graph_stats",
-            "Get graph statistics: node count, edge count, orphans, most connected nodes, edge type distribution.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            handle_graph_stats,
-        );
-
-        self.register_read(
-            "graph_subgraph",
-            "Get the N-hop neighborhood (subgraph) around a node via BFS traversal.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Starting node path" },
-                    "depth": { "type": "number", "description": "Maximum traversal depth (default 2)" },
-                    "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Filter traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "Filter traversal by edge class" }
-                },
-                "required": ["path"]
-            }),
-            handle_graph_subgraph,
+            handle_graph_match,
         );
 
         self.register_read(
@@ -442,35 +397,6 @@ impl ToolRegistry {
                 "required": []
             }),
             handle_graph_communities,
-        );
-
-        self.register_read(
-            "list_edge_types",
-            "List all configured edge types in the taxonomy with their classes, sources, descriptions, template constraints, and live edge counts.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "edge_class": { "type": "string", "enum": ["structural", "semantic", "all", "hybrid"], "description": "Filter by edge class (default: all)" }
-                },
-                "required": []
-            }),
-            handle_list_edge_types,
-        );
-
-        self.register_read(
-            "traverse_lineage",
-            "Deterministically traverse the knowledge graph along a structural edge type (e.g. supersedes, implements, depends_on) in outgoing, incoming, or both directions.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "start_path": { "type": "string", "description": "Starting document path" },
-                    "edge_type": { "type": "string", "description": "Structural edge type to traverse (e.g. 'supersedes', 'implements', 'depends_on')" },
-                    "direction": { "type": "string", "enum": ["outgoing", "incoming", "both"], "description": "Direction of traversal (default: 'outgoing')" },
-                    "max_depth": { "type": "number", "description": "Maximum traversal depth hops (default 3)" }
-                },
-                "required": ["start_path", "edge_type"]
-            }),
-            handle_traverse_lineage,
         );
 
         // Write tools
@@ -729,11 +655,11 @@ impl ToolRegistry {
 
         self.register_read(
             "status",
-            "Corpus + indexing status in one tool via `scope`: corpus = per-corpus statistics, document counts, and configuration; indexing = current indexing progress, throughput, and estimated time remaining; all (default) = both combined. When no specific corpus is targeted the multi-corpus overview (all configured corpora) is included.",
+            "Corpus, indexing, and graph topology status in one tool via `scope`: corpus = per-corpus statistics, document counts, and configuration; indexing = current indexing progress, throughput, and estimated time remaining; graph = topology counts, edge distribution, and orphans; all (default) = combined. When no specific corpus is targeted the multi-corpus overview (all configured corpora) is included.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "scope": { "type": "string", "enum": ["corpus", "indexing", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; all (default) = both combined." },
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats; all (default) = combined." },
                     "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." }
                 },
                 "required": []
@@ -757,19 +683,6 @@ impl ToolRegistry {
         );
 
         self.register_read(
-            "find_callers",
-            "Find all inbound call sites and callers for a given code symbol or method across polyglot source files.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "symbol_name": { "type": "string", "description": "Symbol name to find callers for" }
-                },
-                "required": ["symbol_name"]
-            }),
-            handle_find_callers,
-        );
-
-        self.register_read(
             "get_architecture",
             "Get high-level architectural component overview via Louvain community clustering across the cross-modal knowledge graph.",
             serde_json::json!({
@@ -780,19 +693,6 @@ impl ToolRegistry {
                 "required": []
             }),
             handle_get_architecture,
-        );
-
-        self.register_write(
-            "detect_changes",
-            "Detect modified files and calculate their impact radius (impacted symbols and upstream callers).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "since": { "type": "string", "description": "Optional revision/reference" }
-                },
-                "required": []
-            }),
-            handle_detect_changes,
         );
 
         // Inject corpus/corpora discrimination args into tool schemas.
@@ -984,6 +884,80 @@ impl MultiCorpusToolRegistry {
             }));
         }
 
+        let all_search_responses = per_corpus
+            .iter()
+            .all(|(_, v)| v.is_object() && (v.get("docs").is_some() || v.get("code").is_some()));
+        if all_search_responses {
+            let mut docs_tagged: Vec<(String, Vec<ctxvault_common::types::SearchResult>)> =
+                Vec::new();
+            let mut code_tagged: Vec<(String, Vec<ctxvault_common::types::SearchResult>)> =
+                Vec::new();
+            for (corpus_name, value) in per_corpus {
+                let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(value)
+                    .map_err(|e| Error::Config(format!("invalid search response: {}", e)))?;
+                if let Some(d) = resp.docs {
+                    docs_tagged.push((corpus_name.clone(), d.results));
+                }
+                if let Some(c) = resp.code {
+                    code_tagged.push((corpus_name, c.results));
+                }
+            }
+            let merged_docs = search::rrf_fuse_cross_corpus(&docs_tagged, limit);
+            let merged_code = search::rrf_fuse_cross_corpus(&code_tagged, limit);
+            let docs_partition = if !merged_docs.is_empty() {
+                Some(ctxvault_common::types::SearchPartition {
+                    total_matches: merged_docs.len(),
+                    top_k_returned: merged_docs.len(),
+                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
+                        node_labels: vec![
+                            "DocNode".to_string(),
+                            "ADR".to_string(),
+                            "Concept".to_string(),
+                        ],
+                        active_edges: vec![
+                            "wikilink".to_string(),
+                            "supersedes".to_string(),
+                            "documents".to_string(),
+                            "tag".to_string(),
+                        ],
+                    },
+                    results: merged_docs,
+                })
+            } else {
+                None
+            };
+            let code_partition = if !merged_code.is_empty() {
+                Some(ctxvault_common::types::SearchPartition {
+                    total_matches: merged_code.len(),
+                    top_k_returned: merged_code.len(),
+                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
+                        node_labels: vec![
+                            "CodeSymbol".to_string(),
+                            "CodeChunk".to_string(),
+                            "Function".to_string(),
+                            "Method".to_string(),
+                            "Struct".to_string(),
+                        ],
+                        active_edges: vec![
+                            "calls".to_string(),
+                            "implements".to_string(),
+                            "imports".to_string(),
+                            "defines".to_string(),
+                        ],
+                    },
+                    results: merged_code,
+                })
+            } else {
+                None
+            };
+            let resp = ctxvault_common::types::SearchResponse {
+                docs: docs_partition,
+                code: code_partition,
+            };
+            return serde_json::to_value(resp)
+                .map_err(|e| Error::Config(format!("serialize merged search response: {}", e)));
+        }
+
         // If every successful output is a JSON array, treat as search-style and RRF-merge.
         let all_arrays = per_corpus.iter().all(|(_, v)| v.is_array());
         if all_arrays {
@@ -1164,18 +1138,30 @@ fn multi_or_single(mut names: Vec<String>) -> Result<CorpusTarget> {
 /// Tag a single-corpus read output: if it is a JSON array of `SearchResult`,
 /// stamp each hit with the source corpus; otherwise return it unchanged.
 fn tag_search_output(output: Value, corpus_name: &str) -> Value {
-    if !output.is_array() {
-        return output;
-    }
-    match serde_json::from_value::<Vec<ctxvault_common::types::SearchResult>>(output.clone()) {
-        Ok(results) => {
+    if output.is_array() {
+        if let Ok(results) =
+            serde_json::from_value::<Vec<ctxvault_common::types::SearchResult>>(output.clone())
+        {
             let tagged: Vec<ctxvault_common::types::SearchResult> =
                 results.into_iter().map(|r| r.with_corpus(Some(corpus_name.to_string()))).collect();
-            serde_json::to_value(tagged).unwrap_or(output)
+            return serde_json::to_value(tagged).unwrap_or(output);
         }
-        // A non-SearchResult array (e.g. search_explain) is returned as-is.
-        Err(_) => output,
+    } else if let Ok(mut resp) =
+        serde_json::from_value::<ctxvault_common::types::SearchResponse>(output.clone())
+    {
+        if let Some(ref mut d) = resp.docs {
+            for r in &mut d.results {
+                r.corpus = Some(corpus_name.to_string());
+            }
+        }
+        if let Some(ref mut c) = resp.code {
+            for r in &mut c.results {
+                r.corpus = Some(corpus_name.to_string());
+            }
+        }
+        return serde_json::to_value(resp).unwrap_or(output);
     }
+    output
 }
 
 /// Get overall system status from the CorpusManager.
@@ -1283,31 +1269,13 @@ struct StatusParams {
 }
 
 #[derive(Deserialize)]
-struct BacklinksParams {
-    path: String,
+struct GraphMatchParams {
+    pattern: String,
     edge_class: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ForwardlinksParams {
-    path: String,
-    edge_class: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GraphPathParams {
-    from: String,
-    to: String,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GraphSubgraphParams {
-    path: String,
-    depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
+    #[serde(rename = "where")]
+    where_clause: Option<String>,
+    limit: Option<usize>,
+    max_depth: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1354,19 +1322,6 @@ struct ValidateNoteParams {
 #[derive(Deserialize)]
 struct ValidateCorpusParams {
     limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct ListEdgeTypesParams {
-    edge_class: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct TraverseLineageParams {
-    start_path: String,
-    edge_type: String,
-    direction: Option<String>,
-    max_depth: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1442,12 +1397,6 @@ struct NoteListItem {
     title: Option<String>,
     template: Option<String>,
     content_hash: String,
-}
-
-#[derive(Serialize)]
-struct SubgraphNode {
-    path: String,
-    depth: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -2028,7 +1977,77 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
     } else {
         let results = service.search(&query)?;
         let results = apply_detail(results, params.detail.as_deref());
-        serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+
+        let mut docs_items = Vec::new();
+        let mut code_items = Vec::new();
+
+        for r in results {
+            let is_code = r
+                .entity_kind
+                .as_ref()
+                .map(|k| k.is_code())
+                .unwrap_or_else(|| !r.path.ends_with(".md"));
+            if is_code {
+                code_items.push(r);
+            } else {
+                docs_items.push(r);
+            }
+        }
+
+        let docs_partition =
+            if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {
+                Some(ctxvault_common::types::SearchPartition {
+                    total_matches: docs_items.len(),
+                    top_k_returned: docs_items.len(),
+                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
+                        node_labels: vec![
+                            "DocNode".to_string(),
+                            "ADR".to_string(),
+                            "Concept".to_string(),
+                        ],
+                        active_edges: vec![
+                            "wikilink".to_string(),
+                            "supersedes".to_string(),
+                            "documents".to_string(),
+                            "tag".to_string(),
+                        ],
+                    },
+                    results: docs_items,
+                })
+            } else {
+                None
+            };
+
+        let code_partition =
+            if !code_items.is_empty() || modality != ctxvault_common::types::Modality::Docs {
+                Some(ctxvault_common::types::SearchPartition {
+                    total_matches: code_items.len(),
+                    top_k_returned: code_items.len(),
+                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
+                        node_labels: vec![
+                            "CodeSymbol".to_string(),
+                            "CodeChunk".to_string(),
+                            "Function".to_string(),
+                            "Method".to_string(),
+                            "Struct".to_string(),
+                        ],
+                        active_edges: vec![
+                            "calls".to_string(),
+                            "implements".to_string(),
+                            "imports".to_string(),
+                            "defines".to_string(),
+                        ],
+                    },
+                    results: code_items,
+                })
+            } else {
+                None
+            };
+
+        let response =
+            ctxvault_common::types::SearchResponse { docs: docs_partition, code: code_partition };
+
+        serde_json::to_value(response).map_err(|e| Error::Config(format!("serialize error: {}", e)))
     }
 }
 
@@ -2056,78 +2075,23 @@ fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
-/// All notes linking TO a note, grouped by edge type.
-fn handle_backlinks(engine: &Engine, args: Value) -> Result<Value> {
-    let params: BacklinksParams = serde_json::from_value(args)
+/// Execute a Cypher-Lite graph path query compiled to SQLite recursive CTE.
+fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
+    let params: GraphMatchParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-    let backlinks = engine.graph().backlinks(&params.path, edge_class_filter);
+    let limit = params.limit.unwrap_or(20);
+    let max_depth = params.max_depth.unwrap_or(3);
 
-    serde_json::to_value(backlinks).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
+    let match_result = engine.graph_match(
+        &params.pattern,
+        params.edge_class.as_deref(),
+        params.where_clause.as_deref(),
+        limit,
+        max_depth,
+    )?;
 
-/// All notes a note links TO, grouped by edge type.
-fn handle_forwardlinks(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ForwardlinksParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-    let forwardlinks = engine.graph().forwardlinks(&params.path, edge_class_filter);
-
-    serde_json::to_value(forwardlinks).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Shortest path between two notes.
-fn handle_graph_path(engine: &Engine, args: Value) -> Result<Value> {
-    let params: GraphPathParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let edge_type_filter = params.edge_types;
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-
-    let path = engine.graph().shortest_path(
-        &params.from,
-        &params.to,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-    );
-
-    match path {
-        Some(p) => {
-            serde_json::to_value(p).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        None => Ok(Value::Null),
-    }
-}
-
-/// Graph statistics.
-fn handle_graph_stats(engine: &Engine, _args: Value) -> Result<Value> {
-    let stats = engine.graph().stats();
-
-    serde_json::to_value(stats).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// N-hop neighborhood around a node.
-fn handle_graph_subgraph(engine: &Engine, args: Value) -> Result<Value> {
-    let params: GraphSubgraphParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let depth = params.depth.unwrap_or(2);
-    let edge_type_filter = params.edge_types;
-    let edge_class_filter = params.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-
-    let neighbors = engine.graph().traverse_bfs(
-        &params.path,
-        depth,
-        edge_type_filter.as_deref(),
-        edge_class_filter,
-    );
-
-    let nodes: Vec<SubgraphNode> =
-        neighbors.into_iter().map(|(path, d)| SubgraphNode { path, depth: d }).collect();
-
-    serde_json::to_value(nodes).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    serde_json::to_value(match_result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// Detect communities via Louvain algorithm.
@@ -2277,13 +2241,21 @@ fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
             serde_json::to_value(status)
                 .map_err(|e| Error::Config(format!("serialize error: {}", e)))
         }
+        "graph" => {
+            let stats = engine.graph().stats();
+            serde_json::to_value(stats)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
         _ => {
             let corpus = corpus_stats(engine)?;
             let indexing = serde_json::to_value(engine.get_indexing_status()?)
                 .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
+            let graph = serde_json::to_value(engine.graph().stats())
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
             Ok(serde_json::json!({
                 "corpus": corpus,
                 "indexing": indexing,
+                "graph": graph,
             }))
         }
     }
@@ -2782,82 +2754,6 @@ fn handle_list_templates(engine: &Engine, _args: Value) -> Result<Value> {
     serde_json::to_value(list).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
-/// List all edge types in the taxonomy.
-fn handle_list_edge_types(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ListEdgeTypesParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let filter_class = params.edge_class.as_deref().and_then(|s| {
-        if s.eq_ignore_ascii_case("all") {
-            None
-        } else {
-            EdgeClass::from_str_name(s)
-        }
-    });
-
-    let stats = engine.graph().stats();
-    let config_edge_types = &engine.config().graph.edge_types;
-
-    let mut edge_types_info = Vec::new();
-    for et in config_edge_types {
-        let class = et.class.unwrap_or_else(|| EdgeClass::infer_from_source(&et.source));
-        if let Some(filter) = filter_class {
-            if !class.matches(filter) {
-                continue;
-            }
-        }
-
-        let live_count = *stats.edge_type_distribution.get(&et.name).unwrap_or(&0);
-        edge_types_info.push(serde_json::json!({
-            "name": et.name,
-            "class": format!("{:?}", class).to_lowercase(),
-            "source": format!("{:?}", et.source).to_lowercase(),
-            "weight": et.weight,
-            "bidirectional": et.bidirectional,
-            "field": et.field,
-            "direction": et.direction.as_ref().map(|d| format!("{:?}", d).to_lowercase()),
-            "description": et.description,
-            "allowed_source_templates": et.allowed_source_templates,
-            "allowed_target_templates": et.allowed_target_templates,
-            "live_edge_count": live_count,
-        }));
-    }
-
-    Ok(serde_json::json!({
-        "edge_types": edge_types_info,
-        "total_edge_types": edge_types_info.len(),
-        "total_live_edges": stats.edge_count,
-    }))
-}
-
-/// Traverse knowledge graph along a structural edge type.
-fn handle_traverse_lineage(engine: &Engine, args: Value) -> Result<Value> {
-    let params: TraverseLineageParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let direction = params.direction.as_deref().unwrap_or("outgoing");
-    let max_depth = params.max_depth.unwrap_or(3);
-
-    let nodes = engine.graph().traverse_lineage(
-        &params.start_path,
-        &params.edge_type,
-        direction,
-        max_depth,
-    );
-
-    let total_hops = nodes.iter().map(|n| n.depth).max().unwrap_or(0);
-
-    Ok(serde_json::json!({
-        "start_path": params.start_path,
-        "edge_type": params.edge_type,
-        "direction": direction,
-        "max_depth": max_depth,
-        "nodes": nodes,
-        "node_count": nodes.len(),
-        "total_hops": total_hops,
-    }))
-}
-
 /// Promote fluid notes into a consolidated, schema-validated concept note.
 fn handle_promote_concept(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: PromoteConceptParams = serde_json::from_value(args)
@@ -3105,43 +3001,6 @@ fn handle_get_symbol_definition(engine: &Engine, params: Value) -> Result<Value>
     }))
 }
 
-fn handle_find_callers(engine: &Engine, params: Value) -> Result<Value> {
-    let symbol_name = params["symbol_name"]
-        .as_str()
-        .ok_or_else(|| Error::Config("missing required parameter: symbol_name".to_string()))?;
-
-    let edges = engine.graph().get_all_edges();
-    let caller_edges: Vec<_> = edges
-        .into_iter()
-        .filter(|e| {
-            e.edge_type == "calls"
-                && (e.target == symbol_name || e.target.ends_with(&format!(" > {}", symbol_name)))
-        })
-        .collect();
-
-    let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
-    let mut callers = Vec::new();
-
-    for edge in &caller_edges {
-        let sym = all_symbols.iter().find(|s| s.scope_path == edge.source || s.name == edge.source);
-        callers.push(serde_json::json!({
-            "caller_symbol": edge.source,
-            "target_symbol": edge.target,
-            "file_path": sym.map(|s| s.file_path.clone()),
-            "start_line": sym.map(|s| s.start_line),
-            "signature": sym.map(|s| s.signature.clone()),
-            "docstring": sym.and_then(|s| s.docstring.clone()),
-            "confidence": edge.confidence,
-        }));
-    }
-
-    Ok(serde_json::json!({
-        "target_symbol": symbol_name,
-        "callers_count": callers.len(),
-        "callers": callers,
-    }))
-}
-
 fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
     let result = engine.graph().detect_communities_leiden();
     let densities = engine.graph().community_densities();
@@ -3191,39 +3050,6 @@ fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
     }))
 }
 
-fn handle_detect_changes(engine: &mut Engine, _params: Value) -> Result<Value> {
-    let delta = engine.delta_scan()?;
-    let edges = engine.graph().get_all_edges();
-
-    let mut impacted_symbols = Vec::new();
-    for path in &delta.modified_files {
-        let symbols = engine.store().get_code_symbols_for_file(path).unwrap_or_default();
-        for sym in symbols {
-            let callers: Vec<String> = edges
-                .iter()
-                .filter(|e| {
-                    e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
-                })
-                .map(|e| e.source.clone())
-                .collect();
-
-            impacted_symbols.push(serde_json::json!({
-                "symbol": sym.scope_path,
-                "file_path": sym.file_path,
-                "symbol_type": sym.symbol_type,
-                "impacted_callers": callers,
-            }));
-        }
-    }
-
-    Ok(serde_json::json!({
-        "new_files": delta.new_files,
-        "modified_files": delta.modified_files,
-        "deleted_files": delta.deleted_files,
-        "impacted_symbols": impacted_symbols,
-    }))
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -3232,8 +3058,8 @@ fn handle_detect_changes(engine: &mut Engine, _params: Value) -> Result<Value> {
 mod tests {
     use super::*;
     use ctxvault_common::config::{
-        ChunkingConfig, CorpusConfig, CorpusMode, EdgeSource, EdgeTypeConfig, EmbeddingConfig,
-        GraphConfig, IndexMode,
+        ChunkingConfig, CorpusConfig, CorpusMode, EdgeClass, EdgeSource, EdgeTypeConfig,
+        EmbeddingConfig, GraphConfig, IndexMode,
     };
     use ctxvault_common::types::EdgeProvenance;
     use std::fs;
@@ -3282,7 +3108,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 39, "Expected 39 tools registered");
+        assert_eq!(tools.len(), 31, "Expected 31 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -3294,14 +3120,8 @@ mod tests {
             "get_frontmatter",
             "search",
             "search_related",
-            "backlinks",
-            "forwardlinks",
-            "graph_path",
-            "graph_stats",
-            "graph_subgraph",
+            "graph_match",
             "graph_communities",
-            "list_edge_types",
-            "traverse_lineage",
             "create_note",
             "update_note",
             "delete_note",
@@ -3322,18 +3142,16 @@ mod tests {
             "reindex_corpus",
             "status",
             "get_symbol_definition",
-            "find_callers",
             "get_architecture",
-            "detect_changes",
         ];
 
-        assert_eq!(expected.len(), 39, "expected-name list must match the 39-tool count");
+        assert_eq!(expected.len(), 31, "expected-name list must match the 31-tool count");
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
         }
 
-        // The consolidated tools replace the old per-mode / per-status tools.
+        // The consolidated / deleted legacy tools must not be registered.
         for gone in [
             "search_bm25",
             "search_semantic",
@@ -3343,6 +3161,15 @@ mod tests {
             "get_status",
             "get_corpus_stats",
             "get_indexing_status",
+            "backlinks",
+            "forwardlinks",
+            "graph_path",
+            "graph_stats",
+            "graph_subgraph",
+            "list_edge_types",
+            "traverse_lineage",
+            "find_callers",
+            "detect_changes",
         ] {
             assert!(registry.get(gone).is_none(), "Tool '{}' must no longer be registered", gone);
         }
@@ -3352,13 +3179,12 @@ mod tests {
         assert!(registry.is_read_only("search"));
         assert!(registry.is_read_only("status"));
         assert!(registry.is_read_only("get_symbol_definition"));
-        assert!(registry.is_read_only("find_callers"));
+        assert!(registry.is_read_only("graph_match"));
         assert!(registry.is_read_only("get_architecture"));
         assert!(registry.is_read_only("get_snippet"));
         assert!(registry.is_read_only("read_code_file"));
         assert!(registry.is_read_only("read_multiple"));
         assert!(registry.is_read_only("check_index_coverage"));
-        assert!(!registry.is_read_only("detect_changes"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
     }
@@ -3376,16 +3202,17 @@ mod tests {
         // scout ⊂ analysis ⊂ all.
         assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
         assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
-        assert_eq!(all_count, 39, "all profile advertises every registered tool");
+        assert_eq!(all_count, 31, "all profile advertises every registered tool");
+        assert_eq!(analysis_count, 23, "analysis profile advertises scout + analysis tools");
         assert_eq!(scout_count, 9, "scout profile advertises the minimal set");
 
-        // scout includes core retrieval/fetch but not writes.
+        // scout includes core retrieval/fetch but not writes or analysis-only tools.
         let scout_names: HashSet<&str> = scout.list().iter().map(|t| t.name.as_str()).collect();
         assert!(scout_names.contains("search"));
         assert!(scout_names.contains("get_snippet"));
         assert!(scout_names.contains("status"));
         assert!(!scout_names.contains("create_note"));
-        assert!(!scout_names.contains("backlinks"));
+        assert!(!scout_names.contains("graph_match"));
 
         // Hidden tools still execute (advertise-only filtering): create_note is
         // registered even though scout does not advertise it.
@@ -3394,7 +3221,7 @@ mod tests {
         // analysis adds read-only tools but still hides writes.
         let analysis_names: HashSet<&str> =
             analysis.list().iter().map(|t| t.name.as_str()).collect();
-        assert!(analysis_names.contains("backlinks"));
+        assert!(analysis_names.contains("graph_match"));
         assert!(analysis_names.contains("corpus_list"));
         assert!(!analysis_names.contains("create_note"));
         assert!(!analysis_names.contains("reindex_corpus"));
@@ -3458,9 +3285,11 @@ mod tests {
             )
             .unwrap();
 
-        let results: Vec<Value> = serde_json::from_value(result).unwrap();
-        assert!(!results.is_empty(), "Should find indexed file via search");
-        assert_eq!(results[0]["path"], "rust.md");
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let docs = resp.docs.unwrap();
+        assert!(!docs.results.is_empty(), "Should find indexed file via search");
+        assert_eq!(docs.results[0].path, "rust.md");
+        assert!(docs.results[0].graph_affordances.is_some());
     }
 
     #[test]
@@ -3499,8 +3328,9 @@ mod tests {
                 serde_json::json!({ "query": "new note", "mode": "bm25" }),
             )
             .unwrap();
-        let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
-        assert!(!hits.is_empty());
+        let resp: ctxvault_common::types::SearchResponse =
+            serde_json::from_value(search_result).unwrap();
+        assert!(!resp.docs.unwrap().results.is_empty());
     }
 
     #[test]
@@ -3675,8 +3505,10 @@ mod tests {
                 serde_json::json!({ "query": "Going away", "mode": "bm25" }),
             )
             .unwrap();
-        let hits: Vec<Value> = serde_json::from_value(search_result).unwrap();
-        assert!(hits.is_empty() || hits.iter().all(|h| h["path"] != "delete-me.md"));
+        let resp: ctxvault_common::types::SearchResponse =
+            serde_json::from_value(search_result).unwrap();
+        let hits = resp.docs.map(|d| d.results).unwrap_or_default();
+        assert!(hits.is_empty() || hits.iter().all(|h| h.path != "delete-me.md"));
     }
 
     #[test]
@@ -3772,8 +3604,8 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 39 tools.
-        assert_eq!(tools.len(), 39, "Expected 39 tools in multi-corpus registry");
+        // Should have 31 tools.
+        assert_eq!(tools.len(), 31, "Expected 31 tools in multi-corpus registry");
         assert!(
             registry.registry().get("status").is_some(),
             "consolidated status tool should be registered"
@@ -3823,9 +3655,10 @@ mod tests {
             )
             .unwrap();
 
-        let results: Vec<Value> = serde_json::from_value(result).unwrap();
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let results = resp.docs.unwrap().results;
         assert!(!results.is_empty(), "Should find wiki note via default corpus");
-        assert_eq!(results[0]["path"], "note.md");
+        assert_eq!(results[0].path, "note.md");
     }
 
     #[test]
@@ -3888,9 +3721,10 @@ mod tests {
                 serde_json::json!({ "query": "programming", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
-        let results: Vec<Value> = serde_json::from_value(result).unwrap();
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let results = resp.docs.unwrap().results;
         assert!(!results.is_empty(), "Should find rust.md in wiki");
-        assert_eq!(results[0]["path"], "rust.md");
+        assert_eq!(results[0].path, "rust.md");
 
         // Search in docs corpus explicitly.
         let result = registry
@@ -3900,9 +3734,10 @@ mod tests {
                 serde_json::json!({ "query": "documentation", "mode": "bm25", "corpus": "docs" }),
             )
             .unwrap();
-        let results: Vec<Value> = serde_json::from_value(result).unwrap();
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let results = resp.docs.unwrap().results;
         assert!(!results.is_empty(), "Should find python.md in docs");
-        assert_eq!(results[0]["path"], "python.md");
+        assert_eq!(results[0].path, "python.md");
 
         // Verify isolation: searching wiki for python returns nothing.
         let result = registry
@@ -3912,9 +3747,10 @@ mod tests {
                 serde_json::json!({ "query": "python documentation", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
-        let results: Vec<Value> = serde_json::from_value(result).unwrap();
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let results = resp.docs.map(|d| d.results).unwrap_or_default();
         assert!(
-            results.is_empty() || results.iter().all(|r| r["path"] != "python.md"),
+            results.is_empty() || results.iter().all(|r| r.path != "python.md"),
             "Wiki corpus should not contain python.md"
         );
     }
@@ -3969,15 +3805,16 @@ mod tests {
             )
             .unwrap();
 
-        let results: Vec<ctxvault_common::types::SearchResult> =
-            serde_json::from_value(result).unwrap();
-        assert_eq!(results.len(), 2, "both corpora should contribute a hit");
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(result).unwrap();
+        let docs = resp.docs.unwrap();
+        assert_eq!(docs.results.len(), 2, "both corpora should contribute a hit");
 
         // Same path, distinct corpora → two tagged hits.
-        let corpora: HashSet<String> = results.iter().filter_map(|r| r.corpus.clone()).collect();
+        let corpora: HashSet<String> =
+            docs.results.iter().filter_map(|r| r.corpus.clone()).collect();
         assert!(corpora.contains("wiki"), "a hit must be tagged 'wiki'");
         assert!(corpora.contains("docs"), "a hit must be tagged 'docs'");
-        assert!(results.iter().all(|r| r.path == "shared.md"));
+        assert!(docs.results.iter().all(|r| r.path == "shared.md"));
 
         // Single-corpus read via corpus="wiki" also tags its hit.
         let single = registry
@@ -3987,10 +3824,11 @@ mod tests {
                 serde_json::json!({ "query": "shared", "mode": "bm25", "corpus": "wiki" }),
             )
             .unwrap();
-        let single_results: Vec<ctxvault_common::types::SearchResult> =
+        let single_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(single).unwrap();
-        assert!(!single_results.is_empty());
-        assert!(single_results.iter().all(|r| r.corpus.as_deref() == Some("wiki")));
+        let single_docs = single_resp.docs.unwrap();
+        assert!(!single_docs.results.is_empty());
+        assert!(single_docs.results.iter().all(|r| r.corpus.as_deref() == Some("wiki")));
     }
 
     #[test]
@@ -4053,30 +3891,14 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ─── Structural Tools Tests ────────────────────────────────────────
+    // ─── Graph Match Tool Tests ────────────────────────────────────────
 
     #[test]
-    fn test_list_edge_types_tool() {
-        let tmp = TempDir::new().unwrap();
-        let mut engine = create_test_engine(&tmp);
-        let mut registry = ToolRegistry::new();
-        registry.register_all();
-
-        let result = registry
-            .execute("list_edge_types", &mut engine, serde_json::json!({ "edge_class": "all" }))
-            .unwrap();
-
-        assert_eq!(result["total_edge_types"], 1);
-        let edge_types = result["edge_types"].as_array().unwrap();
-        assert_eq!(edge_types[0]["name"], "Wikilink");
-    }
-
-    #[test]
-    fn test_traverse_lineage_tool() {
+    fn test_graph_match_tool() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
 
-        // Add nodes and lineage edge directly to graph
+        // Add nodes and lineage edge directly to graph and SQLite
         engine.graph_mut().add_edge(
             "docs/adrs/002.md",
             "docs/adrs/001.md",
@@ -4085,27 +3907,25 @@ mod tests {
             EdgeProvenance::Frontmatter,
             EdgeClass::Structural,
         );
+        engine.commit().unwrap();
 
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
         let result = registry
             .execute(
-                "traverse_lineage",
+                "graph_match",
                 &mut engine,
                 serde_json::json!({
-                    "start_path": "docs/adrs/002.md",
-                    "edge_type": "supersedes",
-                    "direction": "outgoing"
+                    "pattern": "(a)-[:supersedes]->(b)"
                 }),
             )
             .unwrap();
 
-        assert_eq!(result["start_path"], "docs/adrs/002.md");
-        assert_eq!(result["node_count"], 2);
-        let nodes = result["nodes"].as_array().unwrap();
-        assert_eq!(nodes[0]["path"], "docs/adrs/002.md");
-        assert_eq!(nodes[1]["path"], "docs/adrs/001.md");
+        let match_res: ctxvault_common::types::GraphMatchResult =
+            serde_json::from_value(result).unwrap();
+        assert_eq!(match_res.total_matches, 1);
+        assert_eq!(match_res.matches[0].node, "docs/adrs/001.md");
     }
 
     #[test]
@@ -4278,13 +4098,18 @@ pub fn tokenize(input: &str) -> Vec<String> {
         assert_eq!(def["file_path"], "parser.rs");
         assert!(def["snippet"].as_str().unwrap().contains("tokenize(raw)"));
 
-        // 2. Test find_callers
+        // 2. Test callers via graph_match
         let callers_res = registry
-            .execute_read("find_callers", &engine, serde_json::json!({ "symbol_name": "tokenize" }))
+            .execute_read(
+                "graph_match",
+                &engine,
+                serde_json::json!({ "pattern": "(caller)-[:calls]->(target {name: \"tokenize\"})" }),
+            )
             .unwrap();
-
-        assert_eq!(callers_res["callers_count"], 1);
-        assert_eq!(callers_res["callers"][0]["caller_symbol"], "QueryParser > parse_query");
+        let match_res: ctxvault_common::types::GraphMatchResult =
+            serde_json::from_value(callers_res).unwrap();
+        assert_eq!(match_res.total_matches, 1);
+        assert_eq!(match_res.matches[0].node, "tokenize");
 
         // 3. Test get_architecture
         let arch_res =
@@ -4292,12 +4117,6 @@ pub fn tokenize(input: &str) -> Vec<String> {
 
         assert!(arch_res["total_nodes"].as_u64().unwrap() >= 1);
         assert!(arch_res["clusters_count"].as_u64().unwrap() >= 1);
-
-        // 4. Test detect_changes
-        let change_res =
-            registry.execute("detect_changes", &mut engine, serde_json::json!({})).unwrap();
-
-        assert_eq!(change_res["new_files"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -4435,9 +4254,11 @@ pub fn indexed_fn() -> u32 {
                 serde_json::json!({ "query": "architecture", "mode": "hybrid" }),
             )
             .unwrap();
-        let hyb_array = hyb_res.as_array().unwrap();
-        assert_eq!(hyb_array.len(), 1);
-        assert_eq!(hyb_array[0]["path"], "guide.md");
+        let hyb_resp: ctxvault_common::types::SearchResponse =
+            serde_json::from_value(hyb_res).unwrap();
+        let hyb_docs = hyb_resp.docs.unwrap();
+        assert_eq!(hyb_docs.results.len(), 1);
+        assert_eq!(hyb_docs.results[0].path, "guide.md");
 
         // 3. Find semantic gaps must fail in fast mode
         let gaps_err = registry
@@ -4500,8 +4321,9 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "query": "retrieval ranking", "mode": "bm25", "detail": "ids" }),
             )
             .unwrap();
-        let ids_results: Vec<ctxvault_common::types::SearchResult> =
+        let ids_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(ids_res).unwrap();
+        let ids_results = ids_resp.docs.unwrap().results;
         assert!(!ids_results.is_empty(), "detail=ids should still return handles");
         assert!(
             ids_results.iter().all(|r| r.snippet.is_none()),
@@ -4516,8 +4338,9 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "query": "retrieval ranking", "mode": "bm25" }),
             )
             .unwrap();
-        let default_results: Vec<ctxvault_common::types::SearchResult> =
+        let default_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(default_res).unwrap();
+        let default_results = default_resp.docs.unwrap().results;
         assert!(default_results.iter().any(|r| r.snippet.is_some()), "default keeps a snippet");
 
         // Tier 2 (doc): fetch exactly one chunk by path + chunk_index, bounded.
@@ -4682,8 +4505,9 @@ impl Service {
                 }),
             )
             .unwrap();
-        let code_ids_results: Vec<ctxvault_common::types::SearchResult> =
+        let code_ids_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(code_ids_res).unwrap();
+        let code_ids_results = code_ids_resp.code.unwrap().results;
         assert!(!code_ids_results.is_empty(), "expected hits for Service process");
         for r in &code_ids_results {
             assert!(r.snippet.is_none(), "code hit snippet must be None with detail=ids");
@@ -4707,8 +4531,9 @@ impl Service {
                 }),
             )
             .unwrap();
-        let doc_ids_results: Vec<ctxvault_common::types::SearchResult> =
+        let doc_ids_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(doc_ids_res).unwrap();
+        let doc_ids_results = doc_ids_resp.docs.unwrap().results;
         assert!(!doc_ids_results.is_empty(), "expected hits for Legacy architecture");
         for r in &doc_ids_results {
             assert!(r.snippet.is_none(), "doc hit snippet must be None with detail=ids");
@@ -4732,8 +4557,9 @@ impl Service {
                 }),
             )
             .unwrap();
-        let default_results: Vec<ctxvault_common::types::SearchResult> =
+        let default_resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(default_res).unwrap();
+        let default_results = default_resp.docs.unwrap().results;
         assert!(!default_results.is_empty());
         let legacy_hit = default_results.iter().find(|r| r.path.contains("legacy.md")).unwrap();
         assert!(legacy_hit.snippet.is_some(), "snippet must be preserved with detail=default");

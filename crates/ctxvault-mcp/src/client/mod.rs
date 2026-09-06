@@ -1,4 +1,4 @@
-﻿//! Full-Featured Model Context Protocol (MCP) Client.
+//! Full-Featured Model Context Protocol (MCP) Client.
 //!
 //! Provides strongly-typed client access to any standard MCP server
 //! over HTTP or Stdio transports.
@@ -238,5 +238,30 @@ impl<T: McpTransport> McpClient<T> {
     /// List all templates registered in the corpus.
     pub async fn list_templates(&self) -> Result<Value> {
         self.call_tool("list_templates", serde_json::json!({})).await
+    }
+
+    /// Execute a linear Cypher-Lite graph path query via `graph_match`.
+    pub async fn graph_match(
+        &self,
+        pattern: &str,
+        edge_class: Option<&str>,
+        where_filter: Option<&str>,
+        limit: Option<usize>,
+        max_depth: Option<usize>,
+    ) -> Result<Value> {
+        let mut args = serde_json::json!({ "pattern": pattern });
+        if let Some(c) = edge_class {
+            args["edge_class"] = c.into();
+        }
+        if let Some(w) = where_filter {
+            args["where"] = w.into();
+        }
+        if let Some(l) = limit {
+            args["limit"] = l.into();
+        }
+        if let Some(d) = max_depth {
+            args["max_depth"] = d.into();
+        }
+        self.call_tool("graph_match", args).await
     }
 }
