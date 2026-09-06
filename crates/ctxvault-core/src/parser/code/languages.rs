@@ -78,6 +78,28 @@ pub enum SupportedLanguage {
     Graphql,
     /// R (`.r`, `.R`)
     R,
+    /// HCL / Terraform (`.hcl`, `.tf`, `.tfvars`)
+    Hcl,
+    /// Nix (`.nix`)
+    Nix,
+    /// CUDA (`.cu`, `.cuh`)
+    Cuda,
+    /// Verilog / SystemVerilog (`.v`, `.sv`, `.svh`)
+    Verilog,
+    /// TLA+ (`.tla`)
+    Tlaplus,
+    /// Starlark / Bazel (`.bzl`, `BUILD`, `WORKSPACE`)
+    Starlark,
+    /// Azure Bicep (`.bicep`)
+    Bicep,
+    /// Gleam (`.gleam`)
+    Gleam,
+    /// PowerShell (`.ps1`, `.psm1`, `.psd1`)
+    PowerShell,
+    /// D (`.d`, `.di`)
+    D,
+    /// WGSL WebGPU Shader (`.wgsl`)
+    Wgsl,
 }
 
 impl SupportedLanguage {
@@ -120,6 +142,17 @@ impl SupportedLanguage {
             Self::Julia => "julia",
             Self::Graphql => "graphql",
             Self::R => "r",
+            Self::Hcl => "hcl",
+            Self::Nix => "nix",
+            Self::Cuda => "cuda",
+            Self::Verilog => "verilog",
+            Self::Tlaplus => "tlaplus",
+            Self::Starlark => "starlark",
+            Self::Bicep => "bicep",
+            Self::Gleam => "gleam",
+            Self::PowerShell => "powershell",
+            Self::D => "d",
+            Self::Wgsl => "wgsl",
         }
     }
 
@@ -162,6 +195,17 @@ impl SupportedLanguage {
             Self::Julia => tree_sitter_julia::LANGUAGE.into(),
             Self::Graphql => tree_sitter_graphql::LANGUAGE.into(),
             Self::R => tree_sitter_r::LANGUAGE.into(),
+            Self::Hcl => tree_sitter_hcl::LANGUAGE.into(),
+            Self::Nix => tree_sitter_nix::LANGUAGE.into(),
+            Self::Cuda => tree_sitter_cuda::LANGUAGE.into(),
+            Self::Verilog => tree_sitter_verilog::LANGUAGE.into(),
+            Self::Tlaplus => tree_sitter_tlaplus::LANGUAGE.into(),
+            Self::Starlark => tree_sitter_starlark::LANGUAGE.into(),
+            Self::Bicep => tree_sitter_bicep::LANGUAGE.into(),
+            Self::Gleam => tree_sitter_gleam::LANGUAGE.into(),
+            Self::PowerShell => tree_sitter_powershell::LANGUAGE.into(),
+            Self::D => tree_sitter_d::LANGUAGE.into(),
+            Self::Wgsl => tree_sitter_wgsl_bevy::LANGUAGE.into(),
         }
     }
 
@@ -185,6 +229,13 @@ pub fn detect_language(path: &Path) -> Option<SupportedLanguage> {
     }
     if filename == "makefile" || filename == "gnumakefile" {
         return Some(SupportedLanguage::Make);
+    }
+    if filename == "build"
+        || filename == "build.bazel"
+        || filename == "workspace"
+        || filename == "workspace.bazel"
+    {
+        return Some(SupportedLanguage::Starlark);
     }
 
     let ext = path.extension()?.to_str()?.to_lowercase();
@@ -225,6 +276,17 @@ pub fn detect_language(path: &Path) -> Option<SupportedLanguage> {
         "jl" => Some(SupportedLanguage::Julia),
         "graphql" | "gql" => Some(SupportedLanguage::Graphql),
         "r" => Some(SupportedLanguage::R),
+        "hcl" | "tf" | "tfvars" => Some(SupportedLanguage::Hcl),
+        "nix" => Some(SupportedLanguage::Nix),
+        "cu" | "cuh" => Some(SupportedLanguage::Cuda),
+        "v" | "sv" | "svh" => Some(SupportedLanguage::Verilog),
+        "tla" => Some(SupportedLanguage::Tlaplus),
+        "bzl" | "star" => Some(SupportedLanguage::Starlark),
+        "bicep" => Some(SupportedLanguage::Bicep),
+        "gleam" => Some(SupportedLanguage::Gleam),
+        "ps1" | "psm1" | "psd1" => Some(SupportedLanguage::PowerShell),
+        "d" | "di" => Some(SupportedLanguage::D),
+        "wgsl" => Some(SupportedLanguage::Wgsl),
         _ => None,
     }
 }

@@ -276,8 +276,29 @@ impl<'a> AstExtractor<'a> {
                 || kind == "type_identifier"
                 || kind == "property_identifier"
                 || kind == "field_identifier"
+                || kind == "simple_identifier"
+                || kind == "function_name"
+                || kind == "type_name"
             {
                 return Some(self.node_text(child).to_string());
+            }
+        }
+        // Check 1 level down for header/wrapper nodes (e.g. Verilog module_header)
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let mut sub_cursor = child.walk();
+            for grandchild in child.children(&mut sub_cursor) {
+                let kind = grandchild.kind();
+                if kind == "identifier"
+                    || kind == "type_identifier"
+                    || kind == "property_identifier"
+                    || kind == "field_identifier"
+                    || kind == "simple_identifier"
+                    || kind == "function_name"
+                    || kind == "type_name"
+                {
+                    return Some(self.node_text(grandchild).to_string());
+                }
             }
         }
         None
@@ -1062,5 +1083,104 @@ deploy_app() {
             ),
             ChunkEmbedPolicy::GraphOnly
         );
+    }
+
+    #[test]
+    fn test_tier1_languages_chunking_and_symbols() {
+        let config = ChunkingConfig::default();
+
+        // 1. CUDA
+        let cuda_code = "__global__ void my_kernel(int *a) { *a = 1; }";
+        let res = CodeChunker::parse_and_chunk(Path::new("kernel.cu"), cuda_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "my_kernel" && s.symbol_type == CodeSymbolType::Function));
+
+        // 2. Verilog
+        let verilog_code = "module counter(input clk); endmodule";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("counter.v"), verilog_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "counter" && s.symbol_type == CodeSymbolType::Module));
+
+        // 3. Starlark
+        let starlark_code = "def helper(x):\n    return x\n";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("rules.bzl"), starlark_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "helper" && s.symbol_type == CodeSymbolType::Function));
+
+        // 4. Bicep
+        let bicep_code =
+            "resource stg 'Microsoft.Storage/storageAccounts@2021-04-01' = { name: 'mystg' }";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("main.bicep"), bicep_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "stg" && s.symbol_type == CodeSymbolType::Struct));
+
+        // 5. Gleam
+        let gleam_code = "pub fn hello() { }\npub type Person { Person(name: String) }\n";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("main.gleam"), gleam_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "hello" && s.symbol_type == CodeSymbolType::Function));
+
+        // 6. PowerShell
+        let ps_code = "function Get-Data { param($x) }";
+        let res = CodeChunker::parse_and_chunk(Path::new("script.ps1"), ps_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Get-Data" && s.symbol_type == CodeSymbolType::Function));
+
+        // 7. D
+        let d_code = "class Greeter { void greet() {} }\nstruct Point { int x; }";
+        let res = CodeChunker::parse_and_chunk(Path::new("app.d"), d_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Greeter" && s.symbol_type == CodeSymbolType::Class));
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Point" && s.symbol_type == CodeSymbolType::Struct));
+
+        // 8. WGSL
+        let wgsl_code = "struct VertexInput { position: vec3<f32>, };\nfn vs_main() {}";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("shader.wgsl"), wgsl_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "VertexInput" && s.symbol_type == CodeSymbolType::Struct));
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "vs_main" && s.symbol_type == CodeSymbolType::Function));
+
+        // 9. HCL
+        let hcl_code = "resource \"aws_s3_bucket\" \"b\" { bucket = \"my-tf-test-bucket\" }";
+        let res = CodeChunker::parse_and_chunk(Path::new("main.tf"), hcl_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
+
+        // 10. Nix
+        let nix_code = "{ pkgs ? import <nixpkgs> {} }: let f = x: x; in f";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("default.nix"), nix_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
+
+        // 11. TLA+
+        let tla_code = "---- MODULE Test ----\nEXTENDS Naturals\nVARIABLE x\nInit == x = 0\n====";
+        let res = CodeChunker::parse_and_chunk(Path::new("spec.tla"), tla_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
     }
 }
