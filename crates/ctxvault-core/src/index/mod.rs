@@ -215,21 +215,42 @@ impl BM25Index {
         let field_tags = self.field_tags;
         let field_modality = self.field_modality;
 
-        let writer = self.ensure_writer()?;
+        let docs: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                let modality_tag =
+                    chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
+                doc!(
+                    field_path => doc_path,
+                    field_chunk_index => chunk.chunk_index.to_string(),
+                    field_title => title_text,
+                    field_body => chunk.text.as_str(),
+                    field_tags => tags_text.as_str(),
+                    field_modality => modality_tag,
+                )
+            })
+            .collect();
 
-        for chunk in chunks {
-            // Coarse modality tag: "code" for any code entity, "docs" otherwise.
-            let modality_tag =
-                chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
-            let tantivy_doc = doc!(
-                field_path => doc_path,
-                field_chunk_index => chunk.chunk_index.to_string(),
-                field_title => title_text,
-                field_body => chunk.text.as_str(),
-                field_tags => tags_text.as_str(),
-                field_modality => modality_tag,
-            );
-            let _ = writer.add_document(tantivy_doc).map_err(|e| Error::Index(e.to_string()))?;
+        let writer = self.ensure_writer()?;
+        let mut failed = false;
+        for tantivy_doc in &docs {
+            if let Err(e) = writer.add_document(tantivy_doc.clone()) {
+                tracing::warn!("Tantivy add_document error: {e}. Re-acquiring index writer...");
+                failed = true;
+                break;
+            }
+        }
+
+        if failed {
+            self.release_writer();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Some(ref path) = self.index_path {
+                heal_stale_lockfiles(path);
+            }
+            let writer = self.ensure_writer()?;
+            for tantivy_doc in docs {
+                writer.add_document(tantivy_doc).map_err(|e| Error::Index(e.to_string()))?;
+            }
         }
 
         Ok(())
@@ -249,7 +270,18 @@ impl BM25Index {
     /// Commit pending changes to disk.
     pub fn commit(&mut self) -> Result<()> {
         if let Some(ref mut writer) = self.writer {
-            let _ = writer.commit().map_err(|e| Error::Index(e.to_string()))?;
+            if let Err(e) = writer.commit() {
+                tracing::warn!("Tantivy commit error: {e}. Re-acquiring index writer...");
+                drop(self.writer.take());
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if let Some(ref path) = self.index_path {
+                    heal_stale_lockfiles(path);
+                }
+                let writer = self.ensure_writer()?;
+                writer
+                    .commit()
+                    .map_err(|e2| Error::Index(format!("Commit failed after retry: {e2}")))?;
+            }
         }
         Ok(())
     }

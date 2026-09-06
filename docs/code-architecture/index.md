@@ -13,6 +13,7 @@ related:
   - "[[docs/code-architecture/decisions/adr-008-anchor-embedding-paradigm]]"
   - "[[docs/code-architecture/decisions/adr-009-greenfield-no-backwards-compat]]"
   - "[[docs/code-architecture/decisions/adr-016-generic-normalized-scope-resolution]]"
+  - "[[docs/code-architecture/decisions/adr-017-docs-embed-intermediate-indexing-mode]]"
 ---
 
 # Code Architecture & Systems Engineering Hub
@@ -70,3 +71,4 @@ Welcome to the **Code Architecture & Systems Engineering** module of `ctxvault`.
 * **[[docs/code-architecture/decisions/adr-008-anchor-embedding-paradigm]]**: Decoupling dense embeddings from 100% lexical BM25 and structural AST indexing, slashing cold-index runtime by over 80%.
 * **[[docs/code-architecture/decisions/adr-009-greenfield-no-backwards-compat]]**: Strict greenfield engineering discipline—zero compatibility shims, no legacy aliased handlers, and instant removal of dead code.
 * **[[docs/code-architecture/decisions/adr-016-generic-normalized-scope-resolution]]**: AST generic-normalization fallback pattern in SQLite catalog to resolve unspecialized symbol paths.
+* **[[docs/code-architecture/decisions/adr-017-docs-embed-intermediate-indexing-mode]]**: Intermediate indexing mode restricting dense neural embeddings to markdown documentation while maintaining 100% BM25, SQLite, and Petgraph coverage for code.

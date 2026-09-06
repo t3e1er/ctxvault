@@ -103,6 +103,7 @@ This documentation is organized as a **compiled, structured knowledge corpus** f
 │ ADR 014 │ [[docs/gpu-optimization/decisions/adr-014-wmi-dedicated-gpu-a...│ GPU Optimization: Hardware Selection     │
 │ ADR 015 │ [[docs/gpu-optimization/decisions/adr-015-dynamic-token-budge...│ GPU Optimization: TDR Safety Ceiling     │
 │ ADR 016 │ [[docs/code-architecture/decisions/adr-016-generic-normalized...│ Code Architecture: Scope Resolution      │
+│ ADR 017 │ [[docs/code-architecture/decisions/adr-017-docs-embed-interme...│ Code Architecture: Docs-Only Embedding   │
 └─────────┴───────────────────────────────────────────────────────────────────┴──────────────────────────────────────────┘
 ```
 

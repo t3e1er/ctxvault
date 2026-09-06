@@ -665,6 +665,14 @@ impl Engine {
 
         self.store.update_indexing_state(&state)?;
 
+        let tag_configs: Vec<_> = self
+            .config
+            .graph
+            .edge_types
+            .iter()
+            .filter(|et| et.source == ctxvault_common::config::EdgeSource::Tag)
+            .cloned()
+            .collect();
         let mut all_docs: Vec<Document> = Vec::new();
         let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
         let mut processed_in_current_batch = 0usize;
@@ -693,8 +701,12 @@ impl Engine {
 
             // Staged indexing (handles both markdown and polyglot code files, returning chunks for batched embedding)
             let (chunks, maybe_doc) = self.index_file_staged(rel_path, &content)?;
-            if let Some(doc) = maybe_doc {
-                all_docs.push(doc);
+            if let Some(mut doc) = maybe_doc {
+                if !tag_configs.is_empty() && !doc.tags.is_empty() {
+                    doc.content.clear();
+                    doc.wikilinks.clear();
+                    all_docs.push(doc);
+                }
             }
 
             // Stream anchor chunks to the async GPU pipeline and poll any completed batches
@@ -747,15 +759,6 @@ impl Engine {
         }
 
         // Second pass: build tag-based edges with all documents available.
-        let tag_configs: Vec<_> = self
-            .config
-            .graph
-            .edge_types
-            .iter()
-            .filter(|et| et.source == ctxvault_common::config::EdgeSource::Tag)
-            .cloned()
-            .collect();
-
         if !tag_configs.is_empty() && !all_docs.is_empty() {
             self.graph.build_all_tag_edges(&tag_configs, &all_docs);
         }
