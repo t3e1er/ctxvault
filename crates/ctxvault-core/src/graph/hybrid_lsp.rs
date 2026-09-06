@@ -2,7 +2,7 @@
 //!
 //! Tracks lexical scope stacks, variable type bindings, and imported symbols
 //! directly on Tree-sitter ASTs to disambiguate method calls and receiver invocations
-//! (e.g., `client.query(...)` -> `SearchClient > query`) with [`ResolutionConfidence::High`],
+//! (e.g., `client.query(...)` -> `SearchClient > query`) with [`ResolutionConfidence::High`](ctxvault_common::types::ResolutionConfidence::High),
 //! eliminating speculative cross-file call edges without external LSP daemons.
 
 use std::collections::HashMap;
