@@ -10,7 +10,9 @@ use std::path::Path;
 use ctxvault_common::types::{CodeSymbol, Edge, EdgeProvenance, ResolutionConfidence};
 use tree_sitter::{Node, Parser};
 
+use crate::graph::hybrid_lsp::{clean_type_name, TypeEnvironment};
 use crate::parser::code::languages::{detect_language, SupportedLanguage};
+use crate::parser::code::spec::get_language_spec;
 
 /// Extracted structural code relationship.
 #[derive(Debug, Clone)]
@@ -92,6 +94,7 @@ struct CallAndImportVisitor<'a> {
     current_caller: Option<String>,
     edges: Vec<Edge>,
     visited_calls: HashSet<(String, String)>,
+    type_env: TypeEnvironment,
 }
 
 impl<'a> CallAndImportVisitor<'a> {
@@ -111,6 +114,7 @@ impl<'a> CallAndImportVisitor<'a> {
             current_caller: None,
             edges: Vec::new(),
             visited_calls: HashSet::new(),
+            type_env: TypeEnvironment::new(language),
         }
     }
 
@@ -120,35 +124,40 @@ impl<'a> CallAndImportVisitor<'a> {
 
     fn visit(&mut self, node: Node) {
         let kind = node.kind();
+        let spec = get_language_spec(self.language);
+
+        // Track container scope (class, struct, trait, interface, or Rust impl)
+        let is_rust_impl = self.language == SupportedLanguage::Rust && kind == "impl_item";
+        let is_container = is_rust_impl
+            || spec.class_node_kinds.contains(&kind)
+            || spec.struct_node_kinds.contains(&kind)
+            || spec.trait_node_kinds.contains(&kind)
+            || spec.interface_node_kinds.contains(&kind);
+
+        if is_container {
+            let container_name = if is_rust_impl {
+                node.child_by_field_name("type").map(|t| clean_type_name(self.node_text(t)))
+            } else {
+                node.child_by_field_name("name").map(|n| clean_type_name(self.node_text(n)))
+            };
+
+            self.type_env.push_scope(container_name);
+
+            if is_rust_impl {
+                self.extract_implements(node);
+            }
+
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                self.visit(child);
+            }
+
+            self.type_env.pop_scope();
+            return;
+        }
 
         // Track caller function/method scope
-        let is_callable = match self.language {
-            SupportedLanguage::Rust => kind == "function_item",
-            SupportedLanguage::TypeScript
-            | SupportedLanguage::Tsx
-            | SupportedLanguage::JavaScript => {
-                kind == "function_declaration" || kind == "method_definition" || kind == "function"
-            }
-            SupportedLanguage::Python => kind == "function_definition",
-            SupportedLanguage::Go => kind == "function_declaration" || kind == "method_declaration",
-            SupportedLanguage::C
-            | SupportedLanguage::Cpp
-            | SupportedLanguage::Java
-            | SupportedLanguage::CSharp
-            | SupportedLanguage::Php
-            | SupportedLanguage::Swift
-            | SupportedLanguage::Bash => {
-                kind == "function_definition"
-                    || kind == "method_declaration"
-                    || kind == "function_declaration"
-                    || kind == "init_declaration"
-            }
-            SupportedLanguage::Ruby => kind == "method" || kind == "singleton_method",
-            SupportedLanguage::Elixir => kind == "call",
-            SupportedLanguage::Lua => kind == "function_declaration" || kind == "local_function",
-        };
-
-        if is_callable {
+        if spec.is_callable(kind) {
             let start_line = node.start_position().row + 1;
             let end_line = node.end_position().row + 1;
             let matching_sym = self
@@ -157,22 +166,38 @@ impl<'a> CallAndImportVisitor<'a> {
                 .filter(|s| s.start_line <= start_line && s.end_line >= end_line)
                 .min_by_key(|s| s.end_line - s.start_line);
 
+            let prev_caller = self.current_caller.take();
             if let Some(sym) = matching_sym {
-                let prev_caller = self.current_caller.replace(sym.scope_path.clone());
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    self.visit(child);
-                }
-                self.current_caller = prev_caller;
-                return;
+                self.current_caller = Some(sym.scope_path.clone());
+            } else {
+                self.current_caller = prev_caller.clone();
             }
+
+            self.type_env.push_scope(None);
+
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                self.type_env.inspect_node(child, self.content);
+                self.visit(child);
+            }
+
+            self.type_env.pop_scope();
+            self.current_caller = prev_caller;
+            return;
         }
 
+        // Inside a body: inspect statements/declarations for variable bindings
+        self.type_env.inspect_node(node, self.content);
+
         // Extract imports
-        self.extract_import(node);
+        if spec.is_import(kind) {
+            self.extract_import(node);
+        }
 
         // Extract call expressions
-        self.extract_call(node);
+        if spec.is_call(kind) {
+            self.extract_call(node);
+        }
 
         // Extract trait implementations
         self.extract_implements(node);
@@ -190,15 +215,18 @@ impl<'a> CallAndImportVisitor<'a> {
                 if kind == "use_declaration" {
                     let text = self.node_text(node).trim().trim_end_matches(';').trim();
                     if let Some(target) = text.strip_prefix("use ") {
+                        let target_str = target.trim().to_string();
+                        let sym = target_str.rsplit("::").next().unwrap_or(&target_str).to_string();
                         self.edges.push(Edge {
                             source: self.file_path.clone(),
-                            target: target.trim().to_string(),
+                            target: target_str.clone(),
                             edge_type: "imports".to_string(),
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
                             target_corpus: None,
                             confidence: Some(ResolutionConfidence::Speculative),
                         });
+                        self.type_env.register_import(sym, target_str);
                     }
                 }
             }
@@ -207,11 +235,15 @@ impl<'a> CallAndImportVisitor<'a> {
             | SupportedLanguage::JavaScript => {
                 if kind == "import_statement" {
                     if let Some(source_node) = node.child_by_field_name("source") {
-                        let raw =
-                            self.node_text(source_node).trim().trim_matches('"').trim_matches('\'');
+                        let raw = self
+                            .node_text(source_node)
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
                         self.edges.push(Edge {
                             source: self.file_path.clone(),
-                            target: raw.to_string(),
+                            target: raw,
                             edge_type: "imports".to_string(),
                             weight: 0.6,
                             provenance: EdgeProvenance::CodeImports,
@@ -223,10 +255,10 @@ impl<'a> CallAndImportVisitor<'a> {
             }
             SupportedLanguage::Python => {
                 if kind == "import_statement" || kind == "import_from_statement" {
-                    let text = self.node_text(node).trim();
+                    let text = self.node_text(node).trim().to_string();
                     self.edges.push(Edge {
                         source: self.file_path.clone(),
-                        target: text.to_string(),
+                        target: text,
                         edge_type: "imports".to_string(),
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
@@ -237,10 +269,36 @@ impl<'a> CallAndImportVisitor<'a> {
             }
             SupportedLanguage::Go => {
                 if kind == "import_spec" {
-                    let path = self.node_text(node).trim().trim_matches('"');
+                    let path = self.node_text(node).trim().trim_matches('"').to_string();
+                    let pkg = path.rsplit('/').next().unwrap_or(&path).to_string();
                     self.edges.push(Edge {
                         source: self.file_path.clone(),
-                        target: path.to_string(),
+                        target: path.clone(),
+                        edge_type: "imports".to_string(),
+                        weight: 0.6,
+                        provenance: EdgeProvenance::CodeImports,
+                        target_corpus: None,
+                        confidence: Some(ResolutionConfidence::Speculative),
+                    });
+                    self.type_env.register_import(pkg, path);
+                }
+            }
+            _ => {
+                let text = self.node_text(node).trim().trim_end_matches(';').trim();
+                let clean = text
+                    .strip_prefix("import ")
+                    .or_else(|| text.strip_prefix("#include "))
+                    .or_else(|| text.strip_prefix("include "))
+                    .or_else(|| text.strip_prefix("using "))
+                    .unwrap_or(text)
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('<')
+                    .trim_matches('>');
+                if !clean.is_empty() && clean.len() < 200 {
+                    self.edges.push(Edge {
+                        source: self.file_path.clone(),
+                        target: clean.to_string(),
                         edge_type: "imports".to_string(),
                         weight: 0.6,
                         provenance: EdgeProvenance::CodeImports,
@@ -249,32 +307,19 @@ impl<'a> CallAndImportVisitor<'a> {
                     });
                 }
             }
-            _ => {}
         }
     }
 
     fn extract_call(&mut self, node: Node) {
-        let kind = node.kind();
-        let is_call = kind == "call_expression"
-            || kind == "method_call_expression"
-            || kind == "invocation_expression"
-            || kind == "call"
-            || kind == "function_call";
-
-        if !is_call {
-            return;
-        }
-
         let Some(ref caller) = self.current_caller else {
             return;
         };
 
-        let callee_name = self.extract_callee_name(node);
-        let Some(callee) = callee_name else {
+        let Some((receiver, callee)) = self.extract_call_parts(node) else {
             return;
         };
 
-        if let Some((target_sym, confidence)) = self.resolve_callee(&callee) {
+        if let Some((target_sym, confidence)) = self.resolve_callee(receiver.as_deref(), &callee) {
             let key = (caller.clone(), target_sym.scope_path.clone());
             if !self.visited_calls.contains(&key) && caller != &target_sym.scope_path {
                 self.visited_calls.insert(key);
@@ -291,42 +336,158 @@ impl<'a> CallAndImportVisitor<'a> {
         }
     }
 
-    fn extract_callee_name(&self, node: Node) -> Option<String> {
+    fn extract_call_parts(&self, node: Node) -> Option<(Option<String>, String)> {
         let kind = node.kind();
-        if kind == "call_expression" {
-            let func = node.child_by_field_name("function")?;
+        if kind == "method_call_expression" {
+            let method = node.child_by_field_name("name")?;
+            let receiver =
+                node.child_by_field_name("receiver").map(|r| self.node_text(r).trim().to_string());
+            return Some((receiver, self.node_text(method).trim().to_string()));
+        }
+
+        if kind == "method_invocation" {
+            let method = node.child_by_field_name("name")?;
+            let receiver =
+                node.child_by_field_name("object").map(|r| self.node_text(r).trim().to_string());
+            return Some((receiver, self.node_text(method).trim().to_string()));
+        }
+
+        if kind == "call_expression" || kind == "call" || kind == "function_call" {
+            let func = node.child_by_field_name("function").or_else(|| node.child(0))?;
             let func_kind = func.kind();
+
+            if func_kind == "field_expression" {
+                let field = func.child_by_field_name("field")?;
+                let receiver = func
+                    .child_by_field_name("value")
+                    .or_else(|| func.child_by_field_name("argument"))
+                    .map(|a| self.node_text(a).trim().to_string());
+                return Some((receiver, self.node_text(field).trim().to_string()));
+            }
+
+            if func_kind == "scoped_identifier" {
+                let name = func.child_by_field_name("name")?;
+                let path =
+                    func.child_by_field_name("path").map(|p| self.node_text(p).trim().to_string());
+                return Some((path, self.node_text(name).trim().to_string()));
+            }
+
+            if func_kind == "member_expression" {
+                let prop = func.child_by_field_name("property")?;
+                let obj = func
+                    .child_by_field_name("object")
+                    .map(|o| self.node_text(o).trim().to_string());
+                return Some((obj, self.node_text(prop).trim().to_string()));
+            }
+
+            if func_kind == "attribute" {
+                let attr = func.child_by_field_name("attribute")?;
+                let val =
+                    func.child_by_field_name("value").map(|v| self.node_text(v).trim().to_string());
+                return Some((val, self.node_text(attr).trim().to_string()));
+            }
+
+            if func_kind == "selector_expression" {
+                let field = func.child_by_field_name("field")?;
+                let operand = func
+                    .child_by_field_name("operand")
+                    .map(|o| self.node_text(o).trim().to_string());
+                return Some((operand, self.node_text(field).trim().to_string()));
+            }
+
             if func_kind == "identifier" || func_kind == "property_identifier" {
-                return Some(self.node_text(func).to_string());
-            } else if func_kind == "field_expression" || func_kind == "member_expression" {
-                if let Some(prop) = func
-                    .child_by_field_name("field")
-                    .or_else(|| func.child_by_field_name("property"))
-                {
-                    return Some(self.node_text(prop).to_string());
+                return Some((None, self.node_text(func).trim().to_string()));
+            }
+
+            let full = self.node_text(func).trim();
+            if let Some((rec, method)) = full.rsplit_once('.') {
+                return Some((Some(rec.trim().to_string()), method.trim().to_string()));
+            }
+            if let Some((rec, method)) = full.rsplit_once("::") {
+                return Some((Some(rec.trim().to_string()), method.trim().to_string()));
+            }
+            if let Some((rec, method)) = full.rsplit_once("->") {
+                return Some((Some(rec.trim().to_string()), method.trim().to_string()));
+            }
+            if !full.is_empty() {
+                return Some((None, full.to_string()));
+            }
+        }
+
+        if kind == "invocation_expression" {
+            if let Some(expr) = node.child_by_field_name("expression") {
+                if expr.kind() == "member_access_expression" {
+                    let name = expr.child_by_field_name("name")?;
+                    let expr_node = expr
+                        .child_by_field_name("expression")
+                        .map(|e| self.node_text(e).trim().to_string());
+                    return Some((expr_node, self.node_text(name).trim().to_string()));
                 }
             }
-            Some(self.node_text(func).to_string())
-        } else if kind == "method_call_expression" {
-            let method = node.child_by_field_name("name")?;
-            Some(self.node_text(method).to_string())
-        } else {
-            None
         }
+
+        None
     }
 
     /// Resolve a callee name to a symbol, returning the resolution confidence band.
     ///
-    /// Confidence reflects how the callee was disambiguated:
-    /// - [`ResolutionConfidence::High`] — a unique match in the current file (case 1)
-    ///   or a unique match across the workspace symbol index (case 2).
-    /// - [`ResolutionConfidence::Medium`] — disambiguated by the same-directory
-    ///   heuristic among multiple candidates (case 3).
-    /// - [`ResolutionConfidence::Speculative`] — fell back to the first of many
-    ///   candidates with no better signal (case 4).
-    fn resolve_callee(&self, callee_name: &str) -> Option<(&'a CodeSymbol, ResolutionConfidence)> {
+    /// When a receiver is present and resolved by Hybrid LSP type tracking, matching
+    /// container methods are resolved with [`ResolutionConfidence::High`].
+    fn resolve_callee(
+        &self,
+        receiver: Option<&str>,
+        callee_name: &str,
+    ) -> Option<(&'a CodeSymbol, ResolutionConfidence)> {
         let clean_name = callee_name.rsplit("::").next().unwrap_or(callee_name);
         let clean_name = clean_name.rsplit('.').next().unwrap_or(clean_name);
+
+        // 0. Hybrid LSP: If receiver is present, attempt type-guided disambiguation
+        if let Some(rec) = receiver {
+            let rec_clean = rec.trim();
+            let resolved_type = self.type_env.resolve_variable_type(rec_clean).or_else(|| {
+                if rec_clean.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+                    Some(rec_clean.rsplit("::").next().unwrap_or(rec_clean).to_string())
+                } else {
+                    None
+                }
+            });
+
+            if let Some(ref type_name) = resolved_type {
+                // A. Check within current file symbols
+                if let Some(local_match) = self.file_symbols.iter().find(|s| {
+                    s.name == clean_name
+                        && (s.scope_path.contains(type_name.as_str())
+                            || s.scope_path == format!("{type_name} > {clean_name}"))
+                }) {
+                    return Some((local_match, ResolutionConfidence::High));
+                }
+
+                // B. Check workspace symbol catalog
+                if let Some(candidates) = self.symbol_index.get(clean_name) {
+                    let type_matches: Vec<&&CodeSymbol> = candidates
+                        .iter()
+                        .filter(|s| {
+                            s.scope_path.contains(type_name.as_str())
+                                || s.scope_path == format!("{type_name} > {clean_name}")
+                        })
+                        .collect();
+
+                    if type_matches.len() == 1 {
+                        return Some((type_matches[0], ResolutionConfidence::High));
+                    } else if !type_matches.is_empty() {
+                        let file_dir =
+                            Path::new(&self.file_path).parent().unwrap_or_else(|| Path::new(""));
+                        if let Some(dir_match) = type_matches.iter().find(|c| {
+                            Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new(""))
+                                == file_dir
+                        }) {
+                            return Some((dir_match, ResolutionConfidence::High));
+                        }
+                        return Some((type_matches[0], ResolutionConfidence::High));
+                    }
+                }
+            }
+        }
 
         // 1. Search within the current file first (fastest and highest confidence)
         if let Some(local_match) = self.file_symbols.iter().find(|s| s.name == clean_name) {
@@ -496,5 +657,101 @@ pub fn run() {
             "same-directory disambiguation should yield Medium confidence"
         );
         assert_ne!(call_edge.confidence, Some(ResolutionConfidence::High));
+    }
+
+    #[test]
+    fn test_hybrid_lsp_receiver_method_disambiguation_rust() {
+        let caller_code = r#"
+pub struct QueryService;
+
+impl QueryService {
+    pub fn execute(&self) {
+        let client = SearchClient::new();
+        client.query("rust");
+    }
+}
+"#;
+        let search_client_code = r#"
+pub struct SearchClient;
+
+impl SearchClient {
+    pub fn new() -> Self { SearchClient }
+    pub fn query(&self, q: &str) -> Vec<String> { vec![] }
+}
+"#;
+        let db_client_code = r#"
+pub struct DatabaseClient;
+
+impl DatabaseClient {
+    pub fn query(&self, sql: &str) -> Vec<String> { vec![] }
+}
+"#;
+        let config = ChunkingConfig::default();
+        let caller_res =
+            CodeChunker::parse_and_chunk(Path::new("src/service.rs"), caller_code, &config)
+                .unwrap();
+        let search_res =
+            CodeChunker::parse_and_chunk(Path::new("src/search.rs"), search_client_code, &config)
+                .unwrap();
+        let db_res =
+            CodeChunker::parse_and_chunk(Path::new("src/db.rs"), db_client_code, &config).unwrap();
+
+        let mut all_symbols = caller_res.symbols.clone();
+        all_symbols.extend(search_res.symbols.clone());
+        all_symbols.extend(db_res.symbols.clone());
+
+        let edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/service.rs"),
+            caller_code,
+            &caller_res.symbols,
+            &all_symbols,
+        );
+
+        let call_edge = edges
+            .iter()
+            .find(|e| e.edge_type == "calls" && e.target == "SearchClient > query")
+            .expect("expected a call edge to SearchClient > query");
+        assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+    }
+
+    #[test]
+    fn test_hybrid_lsp_receiver_method_disambiguation_typescript() {
+        let ts_caller = r#"
+export class Controller {
+    handleRequest() {
+        const client = new ApiClient();
+        client.fetchData();
+    }
+}
+"#;
+        let ts_target = r#"
+export class ApiClient {
+    fetchData() {
+        return "data";
+    }
+}
+"#;
+        let config = ChunkingConfig::default();
+        let caller_res =
+            CodeChunker::parse_and_chunk(Path::new("src/controller.ts"), ts_caller, &config)
+                .unwrap();
+        let target_res =
+            CodeChunker::parse_and_chunk(Path::new("src/api.ts"), ts_target, &config).unwrap();
+
+        let mut all_symbols = caller_res.symbols.clone();
+        all_symbols.extend(target_res.symbols.clone());
+
+        let edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/controller.ts"),
+            ts_caller,
+            &caller_res.symbols,
+            &all_symbols,
+        );
+
+        let call_edge = edges
+            .iter()
+            .find(|e| e.edge_type == "calls" && e.target == "ApiClient > fetchData")
+            .expect("expected a call edge to ApiClient > fetchData");
+        assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
     }
 }

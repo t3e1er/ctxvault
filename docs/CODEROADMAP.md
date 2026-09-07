@@ -315,3 +315,56 @@ roadmap above with cross-cutting capabilities that apply to both code and docs:
   `graph_communities` accepts `algorithm=louvain` for the raw partition.
 * **`check_index_coverage`.** Reports index/parse coverage for given paths or prefixes
   (distinct from the query-driven `coverage_report`).
+
+---
+
+## 10. Language Grammar & Code Intelligence Roadmap (Tiers 1, 2, 3)
+
+### 10.1 Tier 1: Crates.io Native Grammars & In-Engine Intelligence (Delivered)
+Branch `feature/treesitter-expansion-and-lsp` expands code intelligence to **47 programming and configuration languages** in 100% pure Rust without external compiler daemons:
+
+| Domain | Languages Supported (47 Total) |
+|---|---|
+| **Core Systems & Backend** | Rust, C, C++, Go, Java, C#, Zig, D, CUDA |
+| **Web & Scripting** | TypeScript, TSX, JavaScript, Python, Ruby, PHP, Lua, Bash, PowerShell |
+| **Functional & Emerging** | Elixir, OCaml, Haskell, Scala, Kotlin, Swift, Dart, Julia, Gleam, R |
+| **Hardware & Formal** | Verilog / SystemVerilog, TLA+ |
+| **Config, Build & Cloud** | HCL / Terraform, Azure Bicep, Nix, Starlark / Bazel, CMake, Make, Dockerfile, YAML, TOML, JSON |
+| **Schemas, Data & Web Tech** | SQL, Protocol Buffers, Solidity, GraphQL, HTML, CSS, WGSL (WebGPU) |
+
+#### Key Capabilities Delivered
+1. **Declarative `LanguageSpec` Architecture**:
+   Unified declarative table in `crates/ctxvault-core/src/parser/code/spec.rs` mapping AST node kinds to `CodeSymbolType`, call expressions, and scope breadcrumbs across all 47 languages.
+2. **In-Engine Pure-Rust "Hybrid LSP"**:
+   Zero-daemon static analysis engine with `TypeEnvironment` variable tracking and receiver method call disambiguation (`x.method()` $\to$ `Type::method`), upgrading graph call edges from `Speculative` to `ResolutionConfidence::High` in sub-millisecond time.
+3. **Offline SCIP Protobuf Index Ingestion**:
+   Direct ingestion of compiler-grade `.scip` dumps (generated via `scip-rust`, `scip-typescript`, `scip-python`, etc.) via `Engine::ingest_scip` and CLI `--scip <PATH>`, importing 100% compiler-accurate symbol definitions, calls, and references in <200ms.
+4. **Tree-Sitter 0.25 Modernization**:
+   Upgraded tree-sitter core runtime to 0.25 to support modern ABI 14 and ABI 15 grammars while preserving `#![forbid(unsafe_code)]` and zero compiler warnings.
+
+---
+
+### 10.2 Tier 2: Upstream C/C++ Tree-Sitter Grammars via `cc` in `build.rs` (Roadmap)
+For languages lacking maintained pure-Rust crates on crates.io, Tier 2 will vendor upstream C grammars directly:
+
+* **Target Languages**:
+  Clojure, Nim, Odin, Fortran, COBOL, Ada, Apex, Pascal, Perl, Erlang, Fish, V, Reason, Scheme, Common Lisp, Racket, Standard ML.
+* **Compilation Mechanism**:
+  Vendor `parser.c` and `scanner.c` into `vendored/grammars/<lang>/` and compile via `cc::Build` in `crates/ctxvault-core/build.rs`.
+* **Safety & Invariant Preservation**:
+  Maintain `#![forbid(unsafe_code)]` at our crate boundary. Isolate raw `extern "C"` FFI declarations inside a dedicated FFI module that validates grammar ABI versions and produces safe `tree_sitter::Language` handles.
+* **Activation Trigger**:
+  Introduced when indexing enterprise repositories that rely on legacy mainframe (COBOL, Fortran, Ada), enterprise CRM (Apex), or specialized Lisp/ML stacks.
+
+---
+
+### 10.3 Tier 3: Compiler-Grade Code Intelligence & LSP Daemon Integrations (Roadmap)
+Tier 3 addresses scenarios where heuristic and syntactic extraction is insufficient and exact macro expansions or cross-crate monomorphizations are required:
+
+1. **Deep SCIP Ecosystem Automation**:
+   - **Automated CI / Indexing Hooks**: Provide automated toolchain wrappers that invoke `scip-rust`, `scip-typescript`, `scip-python`, or `scip-clang` prior to indexing when compiler environments are present.
+   - **Incremental SCIP Diffs**: Support incremental patching of the SQLite symbol table and Petgraph graph using partial SCIP documents without re-ingesting whole workspaces.
+   - **Cross-Corpus SCIP Namespace Resolution**: Map SCIP global symbol identifiers across multiple corpus roots to enable compiler-exact cross-corpus symbol navigation.
+2. **External LSP Daemon Socket Integration (Zero-Daemon Overhead)**:
+   - **No Embedded Daemon Supervision**: Explicitly reject running live LSP daemons (`rust-analyzer`, `pyright`, `gopls`) as child processes within the MCP server process, avoiding 2–6 GB memory overhead, 15–90s cold starts, and host environment failures.
+   - **Opt-in Socket Connector**: Provide an opt-in client (`--lsp-socket <lang>:<addr>`) that connects to an *already-running* IDE or editor language server socket over standard JSON-RPC. Allows querying real-time hover documentation and call hierarchies on demand while keeping `ctxvault` ultra-lightweight and immediately available.

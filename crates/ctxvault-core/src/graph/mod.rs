@@ -1,7 +1,9 @@
 //! Knowledge graph: typed directed edges, traversal, PPR, subgraph extraction.
 
 pub mod code;
+pub mod hybrid_lsp;
 pub mod query;
+pub mod scip;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -160,13 +162,15 @@ impl KnowledgeGraph {
 
     /// Add a code edge into the graph with appropriate EdgeClass.
     pub fn add_code_edge(&mut self, edge: &ctxvault_common::types::Edge) {
-        self.add_edge(
+        self.add_edge_full(
             &edge.source,
             &edge.target,
             &edge.edge_type,
             edge.weight,
             edge.provenance.clone(),
             EdgeClass::Structural,
+            edge.target_corpus.clone(),
+            edge.confidence,
         );
     }
 

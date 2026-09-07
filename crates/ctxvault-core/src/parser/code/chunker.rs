@@ -92,23 +92,7 @@ impl<'a> AstExtractor<'a> {
     fn traverse(&mut self, node: Node) {
         let lang = self.language;
 
-        let symbol_info = match lang {
-            SupportedLanguage::Rust => self.classify_rust_node(node),
-            SupportedLanguage::TypeScript
-            | SupportedLanguage::Tsx
-            | SupportedLanguage::JavaScript => self.classify_js_ts_node(node),
-            SupportedLanguage::Python => self.classify_python_node(node),
-            SupportedLanguage::Go => self.classify_go_node(node),
-            SupportedLanguage::C | SupportedLanguage::Cpp => self.classify_c_cpp_node(node),
-            SupportedLanguage::Java => self.classify_java_node(node),
-            SupportedLanguage::CSharp => self.classify_csharp_node(node),
-            SupportedLanguage::Ruby => self.classify_ruby_node(node),
-            SupportedLanguage::Php => self.classify_php_node(node),
-            SupportedLanguage::Swift => self.classify_swift_node(node),
-            SupportedLanguage::Elixir => self.classify_elixir_node(node),
-            SupportedLanguage::Lua => self.classify_lua_node(node),
-            SupportedLanguage::Bash => self.classify_bash_node(node),
-        };
+        let symbol_info = self.classify_node(node);
 
         if let Some((sym_type, name, signature)) = symbol_info {
             let start_byte = node.start_byte();
@@ -154,15 +138,7 @@ impl<'a> AstExtractor<'a> {
             });
 
             // If it's a container type (class, struct, trait, impl), push to scope stack and traverse children
-            let is_container = matches!(
-                sym_type,
-                CodeSymbolType::Class
-                    | CodeSymbolType::Struct
-                    | CodeSymbolType::Trait
-                    | CodeSymbolType::Interface
-                    | CodeSymbolType::Module
-                    | CodeSymbolType::Enum
-            );
+            let is_container = crate::parser::code::spec::LanguageSpec::is_container(sym_type);
 
             // Large container nodes (e.g. large impl blocks) have their child functions emitted separately.
             // For the container itself, emit header up to max_chars to describe the container.
@@ -280,6 +256,19 @@ impl<'a> AstExtractor<'a> {
         if let Some(n) = node.child_by_field_name("name") {
             return Some(self.node_text(n).to_string());
         }
+        if let Some(d) = node.child_by_field_name("declarator") {
+            if let Some(n) = d.child_by_field_name("declarator") {
+                return Some(self.node_text(n).to_string());
+            }
+            let mut cursor = d.walk();
+            for child in d.children(&mut cursor) {
+                let kind = child.kind();
+                if kind == "identifier" || kind == "type_identifier" || kind == "field_identifier" {
+                    return Some(self.node_text(child).to_string());
+                }
+            }
+            return Some(self.node_text(d).to_string());
+        }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             let kind = child.kind();
@@ -287,36 +276,41 @@ impl<'a> AstExtractor<'a> {
                 || kind == "type_identifier"
                 || kind == "property_identifier"
                 || kind == "field_identifier"
+                || kind == "simple_identifier"
+                || kind == "function_name"
+                || kind == "type_name"
             {
                 return Some(self.node_text(child).to_string());
+            }
+        }
+        // Check 1 level down for header/wrapper nodes (e.g. Verilog module_header)
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let mut sub_cursor = child.walk();
+            for grandchild in child.children(&mut sub_cursor) {
+                let kind = grandchild.kind();
+                if kind == "identifier"
+                    || kind == "type_identifier"
+                    || kind == "property_identifier"
+                    || kind == "field_identifier"
+                    || kind == "simple_identifier"
+                    || kind == "function_name"
+                    || kind == "type_name"
+                {
+                    return Some(self.node_text(grandchild).to_string());
+                }
             }
         }
         None
     }
 
-    fn classify_rust_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_item" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            "struct_item" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Struct, name, sig))
-            }
-            "enum_item" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            "trait_item" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Trait, name, sig))
-            }
-            "impl_item" => {
+    fn classify_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
+        let lang = self.language;
+        let spec = crate::parser::code::spec::get_language_spec(lang);
+
+        // Rust custom constructs
+        if lang == SupportedLanguage::Rust {
+            if node.kind() == "impl_item" {
                 let type_name = if let Some(n) = node.child_by_field_name("type") {
                     self.node_text(n).to_string()
                 } else {
@@ -340,307 +334,18 @@ impl<'a> AstExtractor<'a> {
                     .map(|n| format!("{} for ", self.node_text(n)));
                 let full_name = format!("{}{}", trait_name.unwrap_or_default(), type_name);
                 let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Module, full_name, sig))
+                return Some((CodeSymbolType::Module, full_name, sig));
             }
-            "mod_item" => {
+
+            if node.kind() == "mod_item" {
                 let name = self.find_child_identifier(node)?;
                 let sig = format!("mod {name}");
-                Some((CodeSymbolType::Module, name, sig))
+                return Some((CodeSymbolType::Module, name, sig));
             }
-            "type_item" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::TypeAlias, name, sig))
-            }
-            _ => None,
         }
-    }
 
-    fn classify_js_ts_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_declaration" | "function" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            "method_definition" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            "class_declaration" | "class" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "interface_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Interface, name, sig))
-            }
-            "type_alias_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::TypeAlias, name, sig))
-            }
-            "enum_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_python_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_definition" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                let sym_type = if self.scope_stack.is_empty() {
-                    CodeSymbolType::Function
-                } else {
-                    CodeSymbolType::Method
-                };
-                Some((sym_type, name, sig))
-            }
-            "class_definition" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_go_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            "method_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            "type_declaration" => {
-                let sig = self.extract_first_line(node);
-                let name = node
-                    .child(0)
-                    .and_then(|c| c.child_by_field_name("name"))
-                    .map(|n| self.node_text(n).to_string())
-                    .unwrap_or_else(|| sig.clone());
-                Some((CodeSymbolType::Struct, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_c_cpp_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_definition" => {
-                let declarator = node.child_by_field_name("declarator");
-                let name = declarator
-                    .map(|d| self.node_text(d).to_string())
-                    .unwrap_or_else(|| "function".to_string());
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            "class_specifier" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "struct_specifier" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Struct, name, sig))
-            }
-            "enum_specifier" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_java_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "method_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            "class_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "interface_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Interface, name, sig))
-            }
-            "enum_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_csharp_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "method_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            "class_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "interface_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Interface, name, sig))
-            }
-            "enum_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            "struct_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Struct, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_ruby_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "class" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "module" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Module, name, sig))
-            }
-            "method" | "singleton_method" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_php_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "class_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "interface_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Interface, name, sig))
-            }
-            "trait_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Trait, name, sig))
-            }
-            "enum_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            "method_declaration" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, name, sig))
-            }
-            "function_definition" => {
-                let name =
-                    node.child_by_field_name("name").map(|n| self.node_text(n).to_string())?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_swift_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "class_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Class, name, sig))
-            }
-            "struct_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Struct, name, sig))
-            }
-            "protocol_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Interface, name, sig))
-            }
-            "enum_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Enum, name, sig))
-            }
-            "function_declaration" => {
-                let name = self.find_child_identifier(node)?;
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            "init_declaration" => {
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Method, "init".to_string(), sig))
-            }
-            _ => None,
-        }
-    }
-
-    fn classify_elixir_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        if node.kind() == "call" {
+        // Elixir custom constructs
+        if lang == SupportedLanguage::Elixir && node.kind() == "call" {
             let mut cursor = node.walk();
             let children: Vec<Node> = node.children(&mut cursor).collect();
             if let Some(target) = children.first() {
@@ -675,35 +380,29 @@ impl<'a> AstExtractor<'a> {
                     return Some((CodeSymbolType::Trait, name, sig));
                 }
             }
+            return None;
         }
-        None
-    }
 
-    fn classify_lua_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        match node.kind() {
-            "function_declaration" | "local_function" => {
-                let name =
-                    self.find_child_identifier(node).unwrap_or_else(|| "function".to_string());
-                let sig = self.extract_first_line(node);
-                Some((CodeSymbolType::Function, name, sig))
-            }
-            _ => None,
+        let mut sym_type = spec.classify_symbol(node)?;
+        if lang == SupportedLanguage::Python
+            && sym_type == CodeSymbolType::Function
+            && !self.scope_stack.is_empty()
+        {
+            sym_type = CodeSymbolType::Method;
         }
-    }
 
-    fn classify_bash_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
-        if node.kind() == "function_definition" {
-            let name = node
-                .child_by_field_name("name")
+        let name = if node.kind() == "init_declaration" {
+            "init".to_string()
+        } else if let Some(field) = spec.name_field {
+            node.child_by_field_name(field)
                 .map(|n| self.node_text(n).to_string())
-                .unwrap_or_else(|| {
-                    self.find_child_identifier(node).unwrap_or_else(|| "func".to_string())
-                });
-            let sig = self.extract_first_line(node);
-            Some((CodeSymbolType::Function, name, sig))
+                .or_else(|| self.find_child_identifier(node))?
         } else {
-            None
-        }
+            self.find_child_identifier(node)?
+        };
+
+        let sig = self.extract_first_line(node);
+        Some((sym_type, name, sig))
     }
 
     fn extract_first_line(&self, node: Node) -> String {
@@ -1384,5 +1083,104 @@ deploy_app() {
             ),
             ChunkEmbedPolicy::GraphOnly
         );
+    }
+
+    #[test]
+    fn test_tier1_languages_chunking_and_symbols() {
+        let config = ChunkingConfig::default();
+
+        // 1. CUDA
+        let cuda_code = "__global__ void my_kernel(int *a) { *a = 1; }";
+        let res = CodeChunker::parse_and_chunk(Path::new("kernel.cu"), cuda_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "my_kernel" && s.symbol_type == CodeSymbolType::Function));
+
+        // 2. Verilog
+        let verilog_code = "module counter(input clk); endmodule";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("counter.v"), verilog_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "counter" && s.symbol_type == CodeSymbolType::Module));
+
+        // 3. Starlark
+        let starlark_code = "def helper(x):\n    return x\n";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("rules.bzl"), starlark_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "helper" && s.symbol_type == CodeSymbolType::Function));
+
+        // 4. Bicep
+        let bicep_code =
+            "resource stg 'Microsoft.Storage/storageAccounts@2021-04-01' = { name: 'mystg' }";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("main.bicep"), bicep_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "stg" && s.symbol_type == CodeSymbolType::Struct));
+
+        // 5. Gleam
+        let gleam_code = "pub fn hello() { }\npub type Person { Person(name: String) }\n";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("main.gleam"), gleam_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "hello" && s.symbol_type == CodeSymbolType::Function));
+
+        // 6. PowerShell
+        let ps_code = "function Get-Data { param($x) }";
+        let res = CodeChunker::parse_and_chunk(Path::new("script.ps1"), ps_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Get-Data" && s.symbol_type == CodeSymbolType::Function));
+
+        // 7. D
+        let d_code = "class Greeter { void greet() {} }\nstruct Point { int x; }";
+        let res = CodeChunker::parse_and_chunk(Path::new("app.d"), d_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Greeter" && s.symbol_type == CodeSymbolType::Class));
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "Point" && s.symbol_type == CodeSymbolType::Struct));
+
+        // 8. WGSL
+        let wgsl_code = "struct VertexInput { position: vec3<f32>, };\nfn vs_main() {}";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("shader.wgsl"), wgsl_code, &config).unwrap();
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "VertexInput" && s.symbol_type == CodeSymbolType::Struct));
+        assert!(res
+            .symbols
+            .iter()
+            .any(|s| s.name == "vs_main" && s.symbol_type == CodeSymbolType::Function));
+
+        // 9. HCL
+        let hcl_code = "resource \"aws_s3_bucket\" \"b\" { bucket = \"my-tf-test-bucket\" }";
+        let res = CodeChunker::parse_and_chunk(Path::new("main.tf"), hcl_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
+
+        // 10. Nix
+        let nix_code = "{ pkgs ? import <nixpkgs> {} }: let f = x: x; in f";
+        let res =
+            CodeChunker::parse_and_chunk(Path::new("default.nix"), nix_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
+
+        // 11. TLA+
+        let tla_code = "---- MODULE Test ----\nEXTENDS Naturals\nVARIABLE x\nInit == x = 0\n====";
+        let res = CodeChunker::parse_and_chunk(Path::new("spec.tla"), tla_code, &config).unwrap();
+        assert!(!res.chunks.is_empty());
     }
 }

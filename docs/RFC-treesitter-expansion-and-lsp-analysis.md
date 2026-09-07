@@ -1,6 +1,6 @@
 # RFC: Polyglot Tree-sitter Grammar Expansion & LSP Integration Analysis
 
-**Status**: Proposed / Analysis  
+**Status**: Implemented (Tier 1 Delivered; Tier 2 & Tier 3 on Roadmap)  
 **Author**: Antigravity & Architecture Team  
 **Scope**: `ctxvault-core`, `ctxvault-common`, `ctxvault-mcp`  
 **Date**: September 2026  
@@ -13,19 +13,17 @@
 
 `ctxvault` (`ctxv`) is an enterprise semantic Model Context Protocol (MCP) server designed to deliver sub-millisecond, high-signal retrieval for AI coding agents without file dumping or non-deterministic LLM entity extraction. Central to this mission is **cAST (Syntactic Abstract Syntax Tree) chunking** and **deterministic code graph construction** (`defines`, `imports`, `calls`, `implements_trait`), executed in 100% safe, pure Rust (`#![forbid(unsafe_code)]`).
 
-However, an audit against industry baseline [`DeusData/codebase-memory-mcp`](file:///c:/dev/semantic/codebase-memory-mcp) highlights two capability gaps in code intelligence:
-
 ```mermaid
 flowchart TD
     subgraph "Current State: ctxvault vs. codebase-memory-mcp"
         direction TB
         subgraph "Grammar Surface"
             CBM_G["codebase-memory-mcp<br/><b>162 Grammars</b> (Vendored C)"]
-            CV_G["ctxvault<br/><b>16 Targets / 15 Languages</b> (Crates)"]
+            CV_G["ctxvault (Delivered)<br/><b>47 Languages / 48 Targets</b> (Pure Rust Crates)"]
         end
         subgraph "Cross-File Resolution"
             CBM_LSP["codebase-memory-mcp<br/><b>Hybrid LSP</b> (In-Engine C Type Resolver for 10 Families)"]
-            CV_LSP["ctxvault<br/><b>Global Symbol Index</b> (Heuristic name/dir matching in graph/code.rs)"]
+            CV_LSP["ctxvault (Delivered)<br/><b>Hybrid LSP + SCIP</b> (Pure Rust TypeEnvironment & SCIP Ingestion)"]
         end
     end
 ```
@@ -231,44 +229,41 @@ Instead of running heavy daemons dynamically:
 
 ---
 
-## 7. Strategic Recommendations & Phased Roadmap
+---
+
+## 7. Phased Architecture & Strategic Roadmap (Tiers 1, 2, 3)
 
 ```mermaid
 timeline
     title Strategic Implementation Roadmap
-    section Phase 1 : Grammar Infrastructure
-        Declarative LanguageSpec : Refactor chunker.rs away from procedural matching
-        Tier 1 Crates Expansion : Add Kotlin, Scala, Zig, Dart, SQL, YAML, Dockerfile
-    section Phase 2 : Hybrid LSP
-        Scope & Type Resolver : Pure-Rust lexical scope & receiver method resolution
-        Rust & TS Resolvers : Eliminate Speculative call edges in top 2 languages
-    section Phase 3 : Advanced Intelligence
-        Python & Go Resolvers : Expand Hybrid LSP to 4 major language families
-        SCIP Ingestion Hook : Support optional compiler-grade index importing
+    section Tier 1 : Pure Rust Crates & In-Engine LSP (Delivered)
+        Declarative LanguageSpec : spec.rs unified declarative symbol mapping
+        47 Language Support : 47 languages across official tree-sitter crates
+        Pure-Rust Hybrid LSP : TypeEnvironment & receiver method resolution
+        SCIP Ingestion : Direct protobuf ingestion via Engine::ingest_scip
+    section Tier 2 : Vendored C Grammars (Roadmap)
+        Upstream C Vendoring : parser.c / scanner.c via cc::Build in build.rs
+        Long-Tail Coverage : Clojure, Nim, Odin, Fortran, COBOL, Ada, Apex, Perl
+    section Tier 3 : Compiler-Grade Tooling (Roadmap)
+        SCIP CI Tooling : Automated pre-indexing wrappers for toolchains
+        External LSP Socket : Opt-in socket client to existing IDE LSP daemons
 ```
 
-### Phase 1: Declarative Spec Refactor & High-Value Grammar Expansion
-1. **Refactor `chunker.rs`**: Introduce the `LanguageSpec` declarative registry in [`parser/code/mod.rs`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/parser/code/mod.rs).
-2. **Add Tier 1 Crate Dependencies**:
-   Add official/standard crates to [`Cargo.toml`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/Cargo.toml):
-   - `tree-sitter-kotlin`
-   - `tree-sitter-scala`
-   - `tree-sitter-zig`
-   - `tree-sitter-dart`
-   - `tree-sitter-sql`
-   - `tree-sitter-yaml`
-   - `tree-sitter-dockerfile`
-   - `tree-sitter-proto`
-   - `tree-sitter-solidity`
-   This immediately increases enterprise coverage from 15 to 24 languages with standard Cargo tooling.
+### 7.1 Tier 1: Declarative Specs, 47 Languages, Hybrid LSP & SCIP (Delivered)
+1. **Declarative `LanguageSpec` Architecture**:
+   Unified declarative table in [`crates/ctxvault-core/src/parser/code/spec.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/code/spec.rs) covering 47 programming and config languages.
+2. **Grammar Expansion**:
+   Expanded from 15 to **47 supported languages** across systems, web, scripting, functional, cloud/infra, and schema domains.
+3. **In-Engine Pure-Rust Hybrid LSP**:
+   Implemented `TypeEnvironment` and lexical scopes in [`crates/ctxvault-core/src/graph/code.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/graph/code.rs), enabling receiver method disambiguation (`x.method()` $\to$ `Type::method`) with `ResolutionConfidence::High`.
+4. **SCIP Protobuf Index Ingestion**:
+   Added [`crates/ctxvault-core/src/graph/scip.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/graph/scip.rs) and `Engine::ingest_scip` with CLI `--scip <PATH>`, supporting <200ms ingestion of compiler-exact `.scip` dumps.
 
-### Phase 2: Pure-Rust "Hybrid LSP" for Call Graph Precision
-1. Implement `TypeEnvironment` and `ScopeTracker` within [`crates/ctxvault-core/src/graph/code.rs`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/graph/code.rs).
-2. For Rust and TypeScript:
-   - Track local variable bindings (`let x: Type = ...`).
-   - Resolve method invocations `x.method()` against known type declarations.
-   - Upgrade resolved edges from `ResolutionConfidence::Speculative` to `ResolutionConfidence::High`.
+### 7.2 Tier 2: Upstream C/C++ Tree-Sitter Grammars via `cc` in `build.rs` (Roadmap)
+* **Goal**: Expand from 47 to 100+ languages by directly compiling upstream C grammars (`parser.c`, `scanner.c`) via `cc::Build` in `build.rs`.
+* **Target Languages**: Clojure, Nim, Odin, Fortran, COBOL, Ada, Apex, Pascal, Perl, Erlang, Fish, V, Reason, Scheme, Common Lisp, Racket.
+* **Safety Isolation**: Maintain `#![forbid(unsafe_code)]` at our crate boundary by isolating raw FFI declarations within a sealed `ffi` module.
 
-### Phase 3: SCIP Ingestion as an Optional Compiler-Grade Power Feature
-1. Avoid spawning live LSP daemons (Option 2) due to memory, latency, and operational fragility.
-2. Implement a `ctxvault index --scip <path>` reader using `prost` (Option 3). Teams that require 100% compiler-grade macro and cross-crate fidelity can feed pre-indexed SCIP data directly into `ctxvault`'s graph without adding runtime latency to agent sessions.
+### 7.3 Tier 3: Compiler-Grade Code Intelligence & LSP Daemon Integrations (Roadmap)
+* **Automated SCIP Pipeline**: Toolchain automation hooks for `scip-rust`, `scip-typescript`, `scip-python`, and `scip-clang` with incremental diffing and cross-corpus namespace resolution.
+* **External LSP Socket Connector**: Zero-overhead opt-in socket client (`--lsp-socket <lang>:<addr>`) connecting to pre-existing background IDE language servers without spawning unmanaged, memory-heavy daemon supervisor processes inside `ctxvault`.
