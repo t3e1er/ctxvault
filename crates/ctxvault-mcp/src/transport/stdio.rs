@@ -3,6 +3,10 @@
 //! Reads newline-delimited JSON-RPC messages from stdin, dispatches them to
 //! MCP handlers, and writes responses to stdout.
 
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+
 use serde_json::Value;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::debug;
@@ -14,7 +18,8 @@ use crate::client::transport::McpTransport;
 use crate::client::HttpMcpTransport;
 use crate::tools::MultiCorpusToolRegistry;
 use crate::transport::dispatch::{
-    dispatch_multi, format_rpc_response, make_error_response, JsonRpcRequest, JsonRpcResponse,
+    dispatch_multi_read, dispatch_multi_write, format_rpc_response, is_read_only_request_multi,
+    make_error_response, JsonRpcRequest, JsonRpcResponse,
 };
 
 /// Run the MCP stdio proxy transport loop.
@@ -127,11 +132,27 @@ pub async fn run_stdio_proxy(server_url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run the MCP stdio transport loop with multi-corpus routing.
+/// Run the MCP stdio transport loop with multi-corpus routing and optional continuous watching.
 pub async fn run_stdio_multi(
-    manager: &mut CorpusManager,
-    registry: &MultiCorpusToolRegistry,
+    manager: Arc<RwLock<CorpusManager>>,
+    registry: Arc<MultiCorpusToolRegistry>,
+    watch: bool,
 ) -> Result<()> {
+    if watch {
+        let paths = {
+            let mgr = manager.read().await;
+            mgr.corpus_paths()
+        };
+        for (name, root_path) in paths {
+            ctxvault_core::watcher::spawn_corpus_watcher(
+                name,
+                root_path,
+                manager.clone(),
+                Duration::from_millis(500),
+            );
+        }
+    }
+
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin);
@@ -164,7 +185,14 @@ pub async fn run_stdio_multi(
 
         debug!(method = %request.method, "received request (multi-corpus stdio)");
 
-        let response = dispatch_multi(&request, manager, registry);
+        let is_read = is_read_only_request_multi(&request, &registry);
+        let response = if is_read {
+            let mgr = manager.read().await;
+            dispatch_multi_read(&request, &*mgr, &registry)
+        } else {
+            let mut mgr = manager.write().await;
+            dispatch_multi_write(&request, &mut *mgr, &registry)
+        };
 
         if let Some(id) = request.id.clone() {
             let rpc_response = format_rpc_response(id, response);

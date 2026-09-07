@@ -461,7 +461,8 @@ impl ToolRegistry {
                     "mode": { "type": "string", "enum": ["delta", "full", "reembed"], "description": "Sync mode: 'delta' (default, incremental sync), 'full' (full reindex), 'reembed' (recompute embeddings)" },
                     "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" },
                     "docs_embed": { "type": "boolean", "description": "Enable DocsEmbed Mode: compute embeddings for markdown doc anchors only, skipping code" },
-                    "index_mode": { "type": "string", "enum": ["full", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'docs-embed', 'fast')" },
+                    "skeleton": { "type": "boolean", "description": "Enable Skeleton Mode: compute embeddings for markdown doc anchors and code symbol skeletons, skipping code bodies" },
+                    "index_mode": { "type": "string", "enum": ["full", "skeleton", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'skeleton', 'docs-embed', 'fast')" },
                     "batch_size": { "type": "number", "description": "Batch size for commits / intermediate checkpoints (default 50)" },
                     "resume": { "type": "boolean", "description": "For mode 'full': resume from last indexing checkpoint if available (default true)" }
                 },
@@ -1246,6 +1247,7 @@ pub(crate) struct SyncCorpusParams {
     pub resume: Option<bool>,
     pub fast: Option<bool>,
     pub docs_embed: Option<bool>,
+    pub skeleton: Option<bool>,
     pub index_mode: Option<String>,
 }
 
@@ -2057,6 +2059,7 @@ fn apply_index_mode_override(
     engine: &mut Engine,
     index_mode: Option<&str>,
     docs_embed: Option<bool>,
+    skeleton: Option<bool>,
     fast: Option<bool>,
 ) -> Result<()> {
     if let Some(mode_str) = index_mode {
@@ -2065,9 +2068,12 @@ fn apply_index_mode_override(
             "docs-embed" | "docsembed" | "docs_embed" => {
                 engine.set_index_mode(ctxvault_common::config::IndexMode::DocsEmbed);
             }
+            "skeleton" => engine.set_index_mode(ctxvault_common::config::IndexMode::Skeleton),
             "full" => engine.set_index_mode(ctxvault_common::config::IndexMode::Full),
             other => return Err(Error::Config(format!("invalid index_mode '{}'", other))),
         }
+    } else if let Some(true) = skeleton {
+        engine.set_index_mode(ctxvault_common::config::IndexMode::Skeleton);
     } else if let Some(true) = docs_embed {
         engine.set_index_mode(ctxvault_common::config::IndexMode::DocsEmbed);
     } else if let Some(fast) = fast {
@@ -2088,12 +2094,14 @@ fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
         resume: None,
         fast: None,
         docs_embed: None,
+        skeleton: None,
         index_mode: None,
     });
     apply_index_mode_override(
         engine,
         params.index_mode.as_deref(),
         params.docs_embed,
+        params.skeleton,
         params.fast,
     )?;
 

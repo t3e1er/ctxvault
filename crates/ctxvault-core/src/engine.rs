@@ -264,10 +264,16 @@ impl Engine {
                     } else {
                         c.embed_policy
                     };
+                    let text =
+                        if self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton {
+                            c.skeleton_text.clone().unwrap_or_else(|| c.text.clone())
+                        } else {
+                            c.text.clone()
+                        };
                     pending.push(PendingChunk {
                         doc_path: rel_path.to_string(),
                         chunk_index: c.chunk_index,
-                        text: c.text.clone(),
+                        text,
                         embed_policy,
                         modality,
                     });
@@ -780,6 +786,128 @@ impl Engine {
         Ok(DeltaScanResult { new_files, modified_files, deleted_files })
     }
 
+    /// Incrementally synchronize a specific list of changed or deleted paths.
+    ///
+    /// Ideal for continuous file watchers (`notify`) where specific file events are known,
+    /// avoiding full directory tree traversal.
+    pub fn sync_delta_paths(&mut self, paths: &[PathBuf]) -> Result<DeltaScanResult> {
+        let corpus_path = PathBuf::from(&self.config.path);
+        let mut new_files = Vec::new();
+        let mut modified_files = Vec::new();
+        let mut deleted_files = Vec::new();
+
+        self.ensure_vector_index();
+        let _ = self.ensure_embedder();
+        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+
+        let tag_configs: Vec<_> = self
+            .config
+            .graph
+            .edge_types
+            .iter()
+            .filter(|et| et.source == ctxvault_common::config::EdgeSource::Tag)
+            .cloned()
+            .collect();
+        let mut all_docs: Vec<Document> = Vec::new();
+
+        for path in paths {
+            // Determine relative path within corpus
+            let rel_path = if path.is_absolute() {
+                match path.strip_prefix(&corpus_path) {
+                    Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                    Err(_) => path.to_string_lossy().replace('\\', "/"),
+                }
+            } else {
+                path.to_string_lossy().replace('\\', "/")
+            };
+
+            let full_path = if path.is_absolute() { path.clone() } else { corpus_path.join(path) };
+
+            if !full_path.exists() {
+                // File was deleted
+                if self.store.get_file(&rel_path)?.is_some() {
+                    self.remove_file(&rel_path)?;
+                    deleted_files.push(rel_path);
+                }
+            } else {
+                // File exists: check if new or modified
+                let content = match fs::read_to_string(&full_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Failed to read {}: {}", rel_path, e);
+                        continue;
+                    }
+                };
+                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                let stored_file = self.store.get_file(&rel_path)?;
+
+                let is_new = stored_file.is_none();
+                let is_modified = stored_file.as_ref().map_or(false, |f| f.content_hash != hash);
+
+                if is_new || is_modified {
+                    let record = match parse_file_record(
+                        &rel_path,
+                        &content,
+                        hash,
+                        &self.config.chunking,
+                        self.config.index_mode,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            warn!("Failed to parse {}: {}", rel_path, e);
+                            continue;
+                        }
+                    };
+
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        if let Some(tx) = pipeline.chunk_sender() {
+                            for chunk in &record.chunks {
+                                if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                    let _ = tx.send(chunk.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    if let Err(e) = self.ingest_parsed_record(record, &tag_configs, &mut all_docs) {
+                        warn!("Failed to ingest {}: {}", rel_path, e);
+                        continue;
+                    }
+
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        if let Some(ref mut vi) = self.vector_index {
+                            let _ = pipeline.try_recv_completed(vi);
+                        }
+                    }
+
+                    if is_new {
+                        new_files.push(rel_path);
+                    } else {
+                        modified_files.push(rel_path);
+                    }
+                }
+            }
+        }
+
+        if let Some(mut pipeline) = embedding_pipeline {
+            if let Some(ref mut vi) = self.vector_index {
+                pipeline.finish(vi)?;
+            }
+        }
+
+        self.commit()?;
+        let _ = self.store.checkpoint();
+
+        info!(
+            "sync_delta_paths complete: {} new, {} modified, {} deleted",
+            new_files.len(),
+            modified_files.len(),
+            deleted_files.len()
+        );
+
+        Ok(DeltaScanResult { new_files, modified_files, deleted_files })
+    }
+
     /// Full reindex with default parameters (batch_size=50, resume=false).
     ///
     /// Returns the number of files indexed.
@@ -1106,6 +1234,11 @@ impl Engine {
         self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed
     }
 
+    /// Check whether the engine is running in Skeleton Mode.
+    pub fn is_skeleton_mode(&self) -> bool {
+        self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton
+    }
+
     /// Update the index mode dynamically, allocating or dropping the vector index as appropriate.
     pub fn set_index_mode(&mut self, mode: ctxvault_common::config::IndexMode) {
         self.config.index_mode = mode;
@@ -1114,6 +1247,7 @@ impl Engine {
                 self.vector_index = None;
             }
             ctxvault_common::config::IndexMode::Full
+            | ctxvault_common::config::IndexMode::Skeleton
             | ctxvault_common::config::IndexMode::DocsEmbed => {
                 self.ensure_vector_index();
             }
@@ -1606,10 +1740,15 @@ fn parse_file_record(
                 } else {
                     c.embed_policy
                 };
+                let text = if index_mode == IndexMode::Skeleton {
+                    c.skeleton_text.clone().unwrap_or_else(|| c.text.clone())
+                } else {
+                    c.text.clone()
+                };
                 pending.push(PendingChunk {
                     doc_path: rel_path.to_string(),
                     chunk_index: c.chunk_index,
-                    text: c.text.clone(),
+                    text,
                     embed_policy,
                     modality,
                 });
@@ -1863,6 +2002,69 @@ mod tests {
             .iter()
             .any(|c| c.embed_policy == ctxvault_common::types::ChunkEmbedPolicy::Anchor);
         assert!(has_anchor);
+    }
+
+    #[test]
+    fn test_skeleton_mode() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+
+        fs::write(
+            corpus_dir.join("guide.md"),
+            "# Architecture Guide\n\n## Overview\n\nSkeleton mode indexes signature text for code vectors.\n",
+        )
+        .unwrap();
+
+        let rust_code = r#"
+/// Configuration for the database connection pool.
+pub struct PoolConfig {
+    pub max_size: u32,
+    pub timeout_ms: u64,
+}
+
+impl PoolConfig {
+    /// Initialize with defaults.
+    pub fn new() -> Self {
+        Self { max_size: 10, timeout_ms: 5000 }
+    }
+}
+"#;
+        fs::write(corpus_dir.join("pool.rs"), rust_code).unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
+
+        let index_dir = tmp.path().join("index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        assert!(engine.is_skeleton_mode());
+        assert!(!engine.is_fast_mode());
+        assert!(!engine.is_docs_embed_mode());
+        assert!(engine.has_vector_index());
+
+        let (code_pending, _) = engine.index_file_staged("src/pool.rs", rust_code).unwrap();
+        assert!(!code_pending.is_empty());
+
+        // In skeleton mode, the text submitted to the embedder should be the skeleton text (signature + doc)
+        // rather than the full method body!
+        let struct_chunk = code_pending.iter().find(|c| c.text.contains("PoolConfig")).unwrap();
+        assert_eq!(struct_chunk.embed_policy, ctxvault_common::types::ChunkEmbedPolicy::Anchor);
+        assert!(struct_chunk.text.contains("pub struct PoolConfig"));
+
+        // All chunks in skeleton mode must have skeleton text populated (no inner function bodies)
+        for chunk in &code_pending {
+            assert!(!chunk.text.contains("Self { max_size: 10"));
+        }
+
+        let files_indexed = engine.full_reindex_paginated(10, false).unwrap();
+        assert_eq!(files_indexed, 2);
+
+        // Test delta sync: modify pool.rs and verify incremental reindex
+        fs::write(corpus_dir.join("pool.rs"), format!("{}\n// modified line\n", rust_code))
+            .unwrap();
+        let delta_result = engine.sync_delta_paths(&[corpus_dir.join("pool.rs")]).unwrap();
+        assert_eq!(delta_result.modified_files.len(), 1);
     }
 
     #[test]

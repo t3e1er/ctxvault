@@ -88,7 +88,11 @@ struct Cli {
     #[arg(long = "docs-embed")]
     docs_embed: bool,
 
-    /// Indexing mode: full, docs-embed, or fast. Overrides --fast and --docs-embed if set.
+    /// Skeleton mode: compute embeddings for markdown docs anchors and code symbol skeletons (signature + docstring + scope).
+    #[arg(long)]
+    skeleton: bool,
+
+    /// Indexing mode: full, skeleton, docs-embed, or fast. Overrides --fast, --skeleton, and --docs-embed if set.
     #[arg(long = "index-mode", value_enum)]
     index_mode: Option<CliIndexMode>,
 
@@ -99,6 +103,10 @@ struct Cli {
     /// Run server as a detached background daemon with idle auto-shutdown.
     #[arg(long)]
     daemon: bool,
+
+    /// Continuously watch corpus directories for file changes and incrementally reindex.
+    #[arg(long)]
+    watch: bool,
 
     /// Idle timeout in minutes before background daemon auto-shuts down (0 = disabled).
     #[arg(long, default_value = "30")]
@@ -167,6 +175,8 @@ enum ConfigAction {
 enum CliIndexMode {
     /// Full indexing: BM25 + Graph + Embedding across both code and docs.
     Full,
+    /// Skeleton mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown doc anchors and code symbol skeletons.
+    Skeleton,
     /// Intermediate mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown docs anchors only.
     DocsEmbed,
     /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
@@ -177,6 +187,7 @@ impl From<CliIndexMode> for ctxvault_common::config::IndexMode {
     fn from(m: CliIndexMode) -> Self {
         match m {
             CliIndexMode::Full => ctxvault_common::config::IndexMode::Full,
+            CliIndexMode::Skeleton => ctxvault_common::config::IndexMode::Skeleton,
             CliIndexMode::DocsEmbed => ctxvault_common::config::IndexMode::DocsEmbed,
             CliIndexMode::Fast => ctxvault_common::config::IndexMode::Fast,
         }
@@ -369,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         let server_url = &cli.server;
         if !is_server_healthy(server_url).await {
             tracing::info!(server = %server_url, "central daemon is down; spawning background server");
-            spawn_daemon(&cli.bind, cli.idle_timeout, &cli.log_level)?;
+            spawn_daemon(&cli.bind, cli.idle_timeout, &cli.log_level, cli.watch)?;
 
             // Poll /health until server is responsive (up to 5 seconds deadline)
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -456,6 +467,8 @@ async fn main() -> anyhow::Result<()> {
             }
             if let Some(mode) = cli.index_mode {
                 config.index_mode = mode.into();
+            } else if cli.skeleton {
+                config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
             } else if cli.docs_embed {
                 config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
             } else if cli.fast {
@@ -471,7 +484,16 @@ async fn main() -> anyhow::Result<()> {
                 || cwd.join(".index").exists()
                 || cwd.join("corpus.toml").exists()
             {
-                let config = load_or_default_config(&cwd)?;
+                let mut config = load_or_default_config(&cwd)?;
+                if let Some(mode) = cli.index_mode {
+                    config.index_mode = mode.into();
+                } else if cli.skeleton {
+                    config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
+                } else if cli.docs_embed {
+                    config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+                } else if cli.fast {
+                    config.index_mode = ctxvault_common::config::IndexMode::Fast;
+                }
                 corpus_names.push(config.name.clone());
                 manager.add_corpus(config)?;
             }
@@ -548,17 +570,23 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.mode {
         Mode::Local => {
-            tracing::info!("starting stdio MCP transport");
-            transport::run_stdio_multi(&mut manager, &registry).await?;
+            tracing::info!(watch = cli.watch, "starting stdio MCP transport");
+            let manager_arc = std::sync::Arc::new(tokio::sync::RwLock::new(manager));
+            transport::run_stdio_multi(manager_arc, std::sync::Arc::new(registry), cli.watch)
+                .await?;
         }
         Mode::Server => {
-            tracing::info!(bind = %cli.bind, daemon = cli.daemon, "starting localhost HTTP MCP server");
+            tracing::info!(bind = %cli.bind, daemon = cli.daemon, watch = cli.watch, "starting localhost HTTP MCP server");
             let idle_dur = if cli.idle_timeout > 0 {
                 Some(Duration::from_secs(cli.idle_timeout * 60))
             } else {
                 None
             };
-            let options = transport::ServerOptions { daemon: cli.daemon, idle_timeout: idle_dur };
+            let options = transport::ServerOptions {
+                daemon: cli.daemon,
+                idle_timeout: idle_dur,
+                watch: cli.watch,
+            };
             transport::run_http_server_multi_with_options(&cli.bind, manager, registry, options)
                 .await?;
         }
@@ -581,7 +609,12 @@ async fn is_server_healthy(server_url: &str) -> bool {
 }
 
 /// Spawn the background server daemon in a detached process.
-fn spawn_daemon(bind_addr: &str, idle_timeout: u64, log_level: &str) -> anyhow::Result<()> {
+fn spawn_daemon(
+    bind_addr: &str,
+    idle_timeout: u64,
+    log_level: &str,
+    watch: bool,
+) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(current_exe);
     cmd.args([
@@ -595,6 +628,9 @@ fn spawn_daemon(bind_addr: &str, idle_timeout: u64, log_level: &str) -> anyhow::
         "--log-format",
         "json",
     ]);
+    if watch {
+        cmd.arg("--watch");
+    }
     if idle_timeout > 0 {
         cmd.arg(format!("--idle-timeout={}", idle_timeout));
     }
