@@ -148,6 +148,14 @@ impl Store {
         Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
 
+    /// Checkpoint the SQLite WAL journal.
+    pub fn checkpoint(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // File tracking
     // ------------------------------------------------------------------
@@ -985,6 +993,10 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
 
     fn get_all_code_symbols(&self) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
         Store::get_all_code_symbols(self)
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        Store::checkpoint(self)
     }
 }
 

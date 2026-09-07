@@ -32,21 +32,64 @@ $ZipFile = Join-Path $TempDir $ArchiveName
 
 try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipFile -UseBasicParsing
-    
+
+    # SHA-256 Digest Validation
+    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
+    $ChecksumFile = Join-Path $TempDir "checksums.txt"
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumFile -UseBasicParsing -ErrorAction SilentlyContinue
+        if (Test-Path $ChecksumFile) {
+            $ExpectedHash = Get-Content $ChecksumFile | Select-String $ArchiveName | ForEach-Object { ($_ -split '\s+')[0] }
+            if ($ExpectedHash) {
+                Write-Host "[*] Verifying SHA-256 checksum..." -ForegroundColor Cyan
+                $ActualHash = (Get-FileHash -Path $ZipFile -Algorithm SHA256).Hash.ToLower()
+                if ($ActualHash -ne $ExpectedHash.ToLower()) {
+                    Write-Error "Checksum verification failed! Expected: $ExpectedHash, Actual: $ActualHash"
+                    exit 1
+                }
+                Write-Host "[+] Checksum verified." -ForegroundColor Green
+            }
+        }
+    } catch {
+        Write-Host "[*] Checksum file not available, skipping verification." -ForegroundColor DarkGray
+    }
+
     Write-Host "[*] Extracting binary..." -ForegroundColor Cyan
     Expand-Archive -Path $ZipFile -DestinationPath $TempDir -Force
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    
+
     $SourceExe = Get-ChildItem -Path $TempDir -Filter "ctxvault.exe" -Recurse | Select-Object -First 1
     if (-not $SourceExe) {
         Write-Error "ctxvault.exe not found in extracted archive."
         exit 1
     }
 
+    # In-place Windows executable retirement (retires locked running binary to allow hot upgrade)
+    $DestExe = Join-Path $InstallDir "ctxvault.exe"
+    if (Test-Path $DestExe) {
+        $Timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $RetiredExe = "$DestExe.retired-$Timestamp"
+        try {
+            Move-Item -Path $DestExe -Destination $RetiredExe -Force -ErrorAction Stop
+            Write-Host "[*] Retired existing binary to $RetiredExe" -ForegroundColor Cyan
+        } catch {
+            # Continue with copy if rename not needed or fails
+        }
+    }
+    # Clean up stale retired binaries older than 24h
+    Get-ChildItem -Path $InstallDir -Filter "ctxvault.exe.retired-*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-1) } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
     Copy-Item -Path $SourceExe.FullName -Destination "$InstallDir\ctxvault.exe" -Force
     # Optional alias copy
     Copy-Item -Path $SourceExe.FullName -Destination "$InstallDir\ctxv.exe" -Force -ErrorAction SilentlyContinue
+
+    # Place updater script beside binary so ctxvault update points to local immutable script
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        Copy-Item -Path $PSCommandPath -Destination (Join-Path $InstallDir "install.ps1") -Force -ErrorAction SilentlyContinue
+    }
 
     # Install the bundled embedding model as a sidecar next to the binary so the
     # embedder resolves it at <exe_dir>\models\<model>\ (no separate download).
@@ -57,7 +100,7 @@ try {
         if (Test-Path $DestModels) { Remove-Item -Recurse -Force $DestModels }
         Copy-Item -Recurse -Path $SourceModels -Destination $DestModels -Force
     }
-    
+
     Write-Host ""
     Write-Host "[+] Successfully installed 'ctxvault.exe' to $InstallDir\ctxvault.exe" -ForegroundColor Green
     Write-Host ""
@@ -71,6 +114,10 @@ try {
         Write-Host "[+] Added $InstallDir to your User PATH environment variable." -ForegroundColor Yellow
         Write-Host "    (Restart your terminal/IDE for PATH changes to take full effect)." -ForegroundColor Yellow
     }
+
+    # Auto-configure installed coding agents
+    Write-Host "[*] Auto-configuring coding agents..." -ForegroundColor Cyan
+    & "$InstallDir\ctxvault.exe" install -y --dir="$InstallDir"
 
     Write-Host "[>] Run 'ctxvault --version' to verify your installation." -ForegroundColor Cyan
 } finally {

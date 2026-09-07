@@ -79,6 +79,10 @@ notify = "8.2"
 notify-debouncer-full = "0.7"
 fs4 = "0.13"
 
+# Compression & Archiving
+tar = "0.4"
+zstd = "0.13"
+
 # Hashing
 blake3 = "1.5"
 

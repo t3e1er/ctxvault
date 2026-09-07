@@ -1,20 +1,28 @@
 //! CLI entry point: argument parsing, mode selection, startup orchestration.
 
-use std::path::{Path, PathBuf};
+mod artifacts;
+mod config_cmd;
+mod installer;
 
-use clap::Parser;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-use ctxvault_common::config::CorpusConfig;
+use ctxvault_common::config::{get_logs_cache_dir, CorpusConfig};
 use ctxvault_core::corpus_manager::CorpusManager;
 use ctxvault_mcp::client::McpClient;
 use ctxvault_mcp::tools::MultiCorpusToolRegistry;
 use ctxvault_mcp::transport;
 
-/// Enterprise semantic MCP server for markdown knowledge bases.
+/// Enterprise semantic MCP server for markdown knowledge bases and codebases.
 #[derive(Parser, Debug)]
 #[command(name = "ctxvault", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Corpus root(s) to serve, repeatable. Each value is either `name=path` or a
     /// bare `path` (the name is derived from the directory's file name).
     #[arg(long = "corpus", value_name = "NAME=PATH|PATH")]
@@ -24,8 +32,8 @@ struct Cli {
     #[arg(long = "default-corpus", value_name = "NAME")]
     default_corpus: Option<String>,
 
-    /// Operating mode.
-    #[arg(long, default_value = "local")]
+    /// Operating mode. Auto probes port 9090, auto-spawns daemon if needed, and proxies stdio.
+    #[arg(long, default_value = "auto")]
     mode: Mode,
 
     /// Tool exposure profile controlling which tools `tools/list` advertises:
@@ -88,9 +96,71 @@ struct Cli {
     #[arg(long = "scip", value_name = "PATH")]
     scip: Option<PathBuf>,
 
+    /// Run server as a detached background daemon with idle auto-shutdown.
+    #[arg(long)]
+    daemon: bool,
+
+    /// Idle timeout in minutes before background daemon auto-shuts down (0 = disabled).
+    #[arg(long, default_value = "30")]
+    idle_timeout: u64,
+
     /// Log level.
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Log format: text (human-readable) or json (structured JSON Lines).
+    /// Defaults to json in daemon mode, text otherwise.
+    #[arg(long = "log-format", value_enum)]
+    log_format: Option<LogFormat>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Auto-detect and configure installed coding agents with zero-arg ctxvault entries.
+    Install {
+        /// Target installation directory containing ctxvault binary.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Automatically confirm modifications.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+        /// Dry-run mode: show what would change without modifying files.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// View and edit ctxvault configuration.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Export repository index into a compressed team sharing artifact (.ctxvault/vault.tar.zst).
+    ExportArtifact {
+        /// Target corpus name (optional, defaults to current repo or default corpus).
+        #[arg(long)]
+        corpus: Option<String>,
+        /// Destination archive file path (default: .ctxvault/vault.tar.zst).
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+    /// Import a compressed team sharing artifact (.ctxvault/vault.tar.zst) into local or central cache.
+    ImportArtifact {
+        /// Path to input archive file (default: .ctxvault/vault.tar.zst).
+        #[arg(long, short = 'i')]
+        input: Option<PathBuf>,
+        /// Target corpus name (optional).
+        #[arg(long)]
+        corpus: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    /// List active configuration values.
+    List,
+    /// Get the value of a configuration key.
+    Get { key: String },
+    /// Set a configuration key to a value.
+    Set { key: String, value: String },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -133,8 +203,10 @@ impl From<Profile> for ctxvault_mcp::tools::ToolProfile {
     }
 }
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
 enum Mode {
+    /// Auto-daemonizing launcher: probes server/health, spawns daemon if needed, proxies stdio.
+    Auto,
     /// Stdio MCP transport (single agent, local).
     Local,
     /// Streamable HTTP server (multi-agent, remote).
@@ -143,6 +215,14 @@ enum Mode {
     Client,
     /// Stdio locally, forwarding to a remote server.
     Proxy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum LogFormat {
+    /// Human-readable plain text format
+    Text,
+    /// Structured JSON Lines format (one JSON object per line)
+    Json,
 }
 
 #[tokio::main]
@@ -158,8 +238,159 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Initialize tracing to stderr — stdout is the JSON-RPC channel.
-    tracing_subscriber::fmt().with_env_filter(&cli.log_level).with_writer(std::io::stderr).init();
+    // -----------------------------------------------------------------------
+    // Subcommand Execution
+    // -----------------------------------------------------------------------
+    if let Some(cmd) = &cli.command {
+        match cmd {
+            Commands::Install { dir, yes, dry_run } => {
+                let summary = installer::run_install(dir.as_deref(), *dry_run, *yes)?;
+                if *dry_run {
+                    println!("\n=== ctxvault Agent Configuration (DRY RUN) ===");
+                    for line in summary.dry_run_detected {
+                        println!("  [dry-run] {}", line);
+                    }
+                } else {
+                    println!("\n=== ctxvault Agent Configuration Complete ===");
+                    for line in summary.configured {
+                        println!("  [+] Configured {}", line);
+                    }
+                }
+                for line in summary.skipped {
+                    println!("  [-] Skipped {}", line);
+                }
+                return Ok(());
+            }
+            Commands::Config { action } => match action {
+                ConfigAction::List => {
+                    config_cmd::handle_config_list()?;
+                    return Ok(());
+                }
+                ConfigAction::Get { key } => {
+                    config_cmd::handle_config_get(key)?;
+                    return Ok(());
+                }
+                ConfigAction::Set { key, value } => {
+                    config_cmd::handle_config_set(key, value)?;
+                    return Ok(());
+                }
+            },
+            Commands::ExportArtifact { corpus, output } => {
+                let cwd = std::env::current_dir()?;
+                let index_dir = if cwd.join(".index").exists() {
+                    cwd.join(".index")
+                } else if let Some(c) = corpus {
+                    ctxvault_common::config::get_corpora_cache_dir().join(c)
+                } else {
+                    let name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default");
+                    ctxvault_common::config::get_corpora_cache_dir().join(name)
+                };
+                let exported = artifacts::export_artifact(&index_dir, &cwd, output.as_deref())?;
+                println!("[+] Exported artifact to: {}", exported.display());
+                return Ok(());
+            }
+            Commands::ImportArtifact { input, corpus } => {
+                let cwd = std::env::current_dir()?;
+                let src_path =
+                    input.clone().unwrap_or_else(|| cwd.join(".ctxvault").join("vault.tar.zst"));
+                let dest_dir = if let Some(c) = corpus {
+                    ctxvault_common::config::get_corpora_cache_dir().join(c)
+                } else {
+                    cwd.join(".index")
+                };
+                let imported = artifacts::import_artifact(&src_path, &dest_dir)?;
+                println!("[+] Imported artifact into: {}", imported.display());
+                return Ok(());
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tracing Configuration
+    // -----------------------------------------------------------------------
+    let log_format =
+        cli.log_format.unwrap_or(if cli.daemon { LogFormat::Json } else { LogFormat::Text });
+
+    if cli.daemon {
+        let log_dir = get_logs_cache_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_filename = match log_format {
+            LogFormat::Json => "ctxvault-daemon.jsonl",
+            LogFormat::Text => "ctxvault-daemon.log",
+        };
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join(log_filename))?;
+
+        match log_format {
+            LogFormat::Json => {
+                tracing_subscriber::fmt()
+                    .json()
+                    .flatten_event(true)
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_env_filter(&cli.log_level)
+                    .with_writer(log_file)
+                    .init();
+            }
+            LogFormat::Text => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(&cli.log_level)
+                    .with_writer(log_file)
+                    .init();
+            }
+        }
+    } else {
+        match log_format {
+            LogFormat::Json => {
+                tracing_subscriber::fmt()
+                    .json()
+                    .flatten_event(true)
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_env_filter(&cli.log_level)
+                    .with_writer(std::io::stderr)
+                    .init();
+            }
+            LogFormat::Text => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(&cli.log_level)
+                    .with_writer(std::io::stderr)
+                    .init();
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto Mode Execution (Zero-Arg Launcher with Daemon Autostart)
+    // -----------------------------------------------------------------------
+    if matches!(cli.mode, Mode::Auto) {
+        let server_url = &cli.server;
+        if !is_server_healthy(server_url).await {
+            tracing::info!(server = %server_url, "central daemon is down; spawning background server");
+            spawn_daemon(&cli.bind, cli.idle_timeout, &cli.log_level)?;
+
+            // Poll /health until server is responsive (up to 5 seconds deadline)
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut up = false;
+            while Instant::now() < deadline {
+                if is_server_healthy(server_url).await {
+                    up = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            if !up {
+                anyhow::bail!("failed to start ctxvault background daemon on {}", cli.bind);
+            }
+        }
+
+        tracing::info!(server = %server_url, "bridging stdio JSON-RPC to central daemon");
+        transport::run_stdio_proxy(server_url).await?;
+        return Ok(());
+    }
 
     // -----------------------------------------------------------------------
     // Proxy Mode Execution
@@ -210,31 +441,41 @@ async fn main() -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     // Local / Server Modes
     // -----------------------------------------------------------------------
-    tracing::info!(mode = ?cli.mode, "starting ctxvault engine");
+    tracing::info!(mode = ?cli.mode, daemon = cli.daemon, "starting ctxvault engine");
 
-    if cli.corpora.is_empty() {
-        anyhow::bail!("at least one --corpus root is required for local/server mode");
-    }
-
-    // Build the multi-corpus manager. A single `--corpus` is just N=1.
+    // Build the multi-corpus manager.
     let mut manager = CorpusManager::new();
     let mut corpus_names: Vec<String> = Vec::new();
 
-    for spec in &cli.corpora {
-        let (name_override, corpus_path) = parse_corpus_spec(spec);
-        let mut config = load_or_default_config(&corpus_path)?;
-        if let Some(name) = name_override {
-            config.name = name;
+    if !cli.corpora.is_empty() {
+        for spec in &cli.corpora {
+            let (name_override, corpus_path) = parse_corpus_spec(spec);
+            let mut config = load_or_default_config(&corpus_path)?;
+            if let Some(name) = name_override {
+                config.name = name;
+            }
+            if let Some(mode) = cli.index_mode {
+                config.index_mode = mode.into();
+            } else if cli.docs_embed {
+                config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+            } else if cli.fast {
+                config.index_mode = ctxvault_common::config::IndexMode::Fast;
+            }
+            corpus_names.push(config.name.clone());
+            manager.add_corpus(config)?;
         }
-        if let Some(mode) = cli.index_mode {
-            config.index_mode = mode.into();
-        } else if cli.docs_embed {
-            config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
-        } else if cli.fast {
-            config.index_mode = ctxvault_common::config::IndexMode::Fast;
+    } else {
+        // If no --corpus passed, check current directory.
+        if let Ok(cwd) = std::env::current_dir() {
+            if matches!(cli.mode, Mode::Local)
+                || cwd.join(".index").exists()
+                || cwd.join("corpus.toml").exists()
+            {
+                let config = load_or_default_config(&cwd)?;
+                corpus_names.push(config.name.clone());
+                manager.add_corpus(config)?;
+            }
         }
-        corpus_names.push(config.name.clone());
-        manager.add_corpus(config)?;
     }
 
     if let Some(default_name) = &cli.default_corpus {
@@ -291,9 +532,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Cross-corpus symbol linking: only meaningful with more than one corpus.
-    // Runs after startup indexing so freshly indexed symbols are resolvable, and
-    // for corpora not indexed this run, their persisted SQLite symbols still are.
+    // Cross-corpus symbol linking
     if manager.corpus_count() > 1 {
         match manager.link_cross_corpus_symbols() {
             Ok(count) => {
@@ -313,19 +552,82 @@ async fn main() -> anyhow::Result<()> {
             transport::run_stdio_multi(&mut manager, &registry).await?;
         }
         Mode::Server => {
-            tracing::info!(bind = %cli.bind, "starting localhost HTTP MCP server");
-            transport::run_http_server_multi(&cli.bind, manager, registry).await?;
+            tracing::info!(bind = %cli.bind, daemon = cli.daemon, "starting localhost HTTP MCP server");
+            let idle_dur = if cli.idle_timeout > 0 {
+                Some(Duration::from_secs(cli.idle_timeout * 60))
+            } else {
+                None
+            };
+            let options = transport::ServerOptions { daemon: cli.daemon, idle_timeout: idle_dur };
+            transport::run_http_server_multi_with_options(&cli.bind, manager, registry, options)
+                .await?;
         }
-        Mode::Client | Mode::Proxy => unreachable!(),
+        Mode::Auto | Mode::Client | Mode::Proxy => unreachable!(),
     }
 
     Ok(())
 }
 
+/// Check if a ctxvault server /health endpoint is alive.
+async fn is_server_healthy(server_url: &str) -> bool {
+    let health_url = format!("{}/health", server_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(Duration::from_millis(150)).build();
+    if let Ok(c) = client {
+        if let Ok(resp) = c.get(&health_url).send().await {
+            return resp.status().is_success();
+        }
+    }
+    false
+}
+
+/// Spawn the background server daemon in a detached process.
+fn spawn_daemon(bind_addr: &str, idle_timeout: u64, log_level: &str) -> anyhow::Result<()> {
+    let current_exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(current_exe);
+    cmd.args([
+        "--mode",
+        "server",
+        "--bind",
+        bind_addr,
+        "--daemon",
+        "--log-level",
+        log_level,
+        "--log-format",
+        "json",
+    ]);
+    if idle_timeout > 0 {
+        cmd.arg(format!("--idle-timeout={}", idle_timeout));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        let log_dir = get_logs_cache_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        if let Ok(log_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("ctxvault-daemon.jsonl"))
+        {
+            cmd.stderr(log_file);
+        } else {
+            cmd.stderr(std::process::Stdio::null());
+        }
+    }
+
+    cmd.spawn()?;
+    Ok(())
+}
+
 /// Parse a `--corpus` spec of the form `name=path` or a bare `path`.
-///
-/// Returns an optional explicit corpus name and the corpus directory path. When
-/// no name is given, the caller derives it from the directory's file name.
 fn parse_corpus_spec(spec: &str) -> (Option<String>, PathBuf) {
     match spec.split_once('=') {
         Some((name, path)) if !name.is_empty() => (Some(name.to_string()), PathBuf::from(path)),

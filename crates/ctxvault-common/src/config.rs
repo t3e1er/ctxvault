@@ -277,6 +277,120 @@ impl EdgeClass {
     }
 }
 
+use std::path::PathBuf;
+
+/// Global ctxvault client/daemon configuration (persisted at `${CTXV_CACHE_DIR}/config.toml`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalConfig {
+    /// Whether to auto-index new corpora on startup.
+    #[serde(default = "default_true")]
+    pub auto_index: bool,
+    /// Default indexing mode for new corpora.
+    #[serde(default)]
+    pub index_mode: IndexMode,
+    /// Idle daemon timeout in minutes before graceful shutdown (0 = disabled).
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_mins: u64,
+    /// Daemon log level.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    /// Custom cache directory override.
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+}
+
+fn default_idle_timeout() -> u64 {
+    30
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            auto_index: true,
+            index_mode: IndexMode::Full,
+            idle_timeout_mins: 30,
+            log_level: "info".to_string(),
+            cache_dir: None,
+        }
+    }
+}
+
+/// Get the central cache directory `${CTXV_CACHE_DIR}`.
+///
+/// Precedence:
+/// 1. `CTXV_CACHE_DIR` environment variable
+/// 2. Windows: `%LOCALAPPDATA%\ctxvault\cache`
+/// 3. Unix: `$XDG_CACHE_HOME/ctxvault` or `~/.cache/ctxvault`
+pub fn get_cache_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CTXV_CACHE_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data).join("ctxvault").join("cache");
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            return PathBuf::from(user_profile).join(".cache").join("ctxvault");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+            return PathBuf::from(xdg).join("ctxvault");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".cache").join("ctxvault");
+        }
+    }
+    PathBuf::from(".cache").join("ctxvault")
+}
+
+/// Directory where central multi-corpus indices are stored: `${CTXV_CACHE_DIR}/corpora`.
+pub fn get_corpora_cache_dir() -> PathBuf {
+    get_cache_dir().join("corpora")
+}
+
+/// Directory where daemon logs are stored: `${CTXV_CACHE_DIR}/logs`.
+pub fn get_logs_cache_dir() -> PathBuf {
+    get_cache_dir().join("logs")
+}
+
+/// Path to global configuration file: `${CTXV_CACHE_DIR}/config.toml`.
+pub fn get_config_path() -> PathBuf {
+    get_cache_dir().join("config.toml")
+}
+
+/// Load global configuration or return defaults.
+pub fn load_global_config() -> GlobalConfig {
+    let path = get_config_path();
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = toml::from_str(&content) {
+                return cfg;
+            }
+        }
+    }
+    GlobalConfig::default()
+}
+
+/// Save global configuration to `${CTXV_CACHE_DIR}/config.toml`.
+pub fn save_global_config(cfg: &GlobalConfig) -> std::io::Result<()> {
+    let path = get_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string_pretty(cfg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(&path, content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

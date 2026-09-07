@@ -86,10 +86,7 @@ async fn test_mcp_http_server_and_client_e2e() {
     let local_addr = listener.local_addr().expect("local addr");
 
     // 4. Start HTTP Server in background
-    let state = MultiCorpusServerState {
-        manager: Arc::new(RwLock::new(manager)),
-        registry: Arc::new(registry),
-    };
+    let state = MultiCorpusServerState::new(Arc::new(RwLock::new(manager)), Arc::new(registry));
 
     let app = Router::new()
         .route("/mcp", post(handle_jsonrpc_test))
@@ -201,10 +198,7 @@ async fn test_mcp_http_server_sse_and_proxy() {
     let server_url = format!("http://{local_addr}");
 
     let _server_handle = tokio::spawn(async move {
-        let state = MultiCorpusServerState {
-            manager: Arc::new(RwLock::new(manager)),
-            registry: Arc::new(registry),
-        };
+        let state = MultiCorpusServerState::new(Arc::new(RwLock::new(manager)), Arc::new(registry));
         let app = Router::new()
             .route("/mcp", post(handle_jsonrpc_test).get(ctxvault_mcp::transport::http::handle_sse))
             .route(
@@ -263,10 +257,7 @@ async fn test_concurrent_reads_and_health_during_write() {
     let manager = build_manager("concurrent-corpus", &corpus_path);
     let registry = MultiCorpusToolRegistry::new();
 
-    let state = MultiCorpusServerState {
-        manager: Arc::new(RwLock::new(manager)),
-        registry: Arc::new(registry),
-    };
+    let state = MultiCorpusServerState::new(Arc::new(RwLock::new(manager)), Arc::new(registry));
 
     // 1. Simulate active write lock in a background task
     let manager_lock = state.manager.clone();

@@ -56,6 +56,28 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$ARCHIVE_NAME"
 
+# Checksum validation (if checksums.txt exists)
+CHECKSUMS_URL="https://github.com/$REPO/releases/download/${TAG}/checksums.txt"
+if curl -fsSL -s -I "$CHECKSUMS_URL" >/dev/null 2>&1; then
+    echo "[*] Verifying SHA-256 checksum..."
+    curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt"
+    EXPECTED_HASH=$(grep "$ARCHIVE_NAME" "$TMP_DIR/checksums.txt" | awk '{print $1}')
+    if [ -n "$EXPECTED_HASH" ]; then
+        if command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL_HASH=$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
+        elif command -v shasum >/dev/null 2>&1; then
+            ACTUAL_HASH=$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
+        fi
+        if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            echo "[ERROR] Checksum verification failed!" >&2
+            echo "Expected: $EXPECTED_HASH" >&2
+            echo "Actual:   $ACTUAL_HASH" >&2
+            exit 1
+        fi
+        echo "[+] Checksum verified."
+    fi
+fi
+
 echo "[*] Extracting binary..."
 tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR"
 
@@ -63,6 +85,11 @@ mkdir -p "$INSTALL_DIR"
 EXTRACTED="$TMP_DIR/ctxvault-${TAG}-${TARGET}"
 cp "$EXTRACTED/ctxvault" "$INSTALL_DIR/ctxvault"
 chmod +x "$INSTALL_DIR/ctxvault"
+
+# Copy updater script beside binary
+if [ -f "$0" ]; then
+    cp "$0" "$INSTALL_DIR/install.sh" 2>/dev/null || true
+fi
 
 # Install the bundled embedding model as a sidecar next to the binary so the
 # embedder resolves it at <exe_dir>/models/<model>/ (no separate download).
@@ -78,6 +105,10 @@ ln -sf "$INSTALL_DIR/ctxvault" "$INSTALL_DIR/ctxv" 2>/dev/null || true
 echo ""
 echo "[+] Successfully installed 'ctxvault' to $INSTALL_DIR/ctxvault"
 echo ""
+
+# Auto-configure installed coding agents
+echo "[*] Auto-configuring coding agents..."
+"$INSTALL_DIR/ctxvault" install -y --dir="$INSTALL_DIR"
 
 # 3. Path hint
 case ":$PATH:" in

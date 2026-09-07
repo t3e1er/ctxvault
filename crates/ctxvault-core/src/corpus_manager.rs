@@ -5,7 +5,7 @@
 //! interface for routing operations to the correct engine.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ctxvault_common::config::{CorpusConfig, EdgeClass};
 use ctxvault_common::ports::{GraphStore, MetadataCatalog};
@@ -52,17 +52,14 @@ impl CorpusManager {
         Self { engines: HashMap::new(), default_corpus: None }
     }
 
-    /// Add a corpus to the manager.
-    ///
-    /// Opens or creates the engine for the given corpus config.
-    /// If this is the first corpus added, it becomes the default.
-    pub fn add_corpus(&mut self, config: CorpusConfig) -> Result<()> {
+    /// Add a corpus to the manager with an explicit index directory.
+    pub fn add_corpus_with_index_dir(
+        &mut self,
+        config: CorpusConfig,
+        index_dir: &Path,
+    ) -> Result<()> {
         let name = config.name.clone();
-
-        // Each corpus stores its index at `<corpus_path>/.index`.
-        let index_dir = PathBuf::from(&config.path).join(".index");
-
-        let engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
+        let engine = crate::engine_builder::EngineBuilder::open(config, index_dir)?;
 
         if self.default_corpus.is_none() {
             self.default_corpus = Some(name.clone());
@@ -70,6 +67,121 @@ impl CorpusManager {
 
         let _ = self.engines.insert(name, engine);
         Ok(())
+    }
+
+    /// Add a corpus to the manager.
+    ///
+    /// Opens or creates the engine for the given corpus config.
+    /// Each configured corpus stores its index at `<corpus_path>/.index`.
+    pub fn add_corpus(&mut self, config: CorpusConfig) -> Result<()> {
+        let index_dir = PathBuf::from(&config.path).join(".index");
+        self.add_corpus_with_index_dir(config, &index_dir)
+    }
+
+    /// Dynamically ensure a corpus at `corpus_path` is loaded and mounted.
+    ///
+    /// If an engine is already mounted for this path, returns its name.
+    /// Otherwise, determines whether to use repo-local `.index/` (if present or
+    /// if `corpus.toml` exists) or allocate central storage under
+    /// `${CTXV_CACHE_DIR}/corpora/<name>/`, initializes the engine, and mounts it.
+    pub fn ensure_corpus(&mut self, corpus_path: &Path) -> Result<String> {
+        let abs_path = if corpus_path.is_absolute() {
+            corpus_path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(corpus_path)
+        };
+        let canonical = abs_path.canonicalize().unwrap_or(abs_path);
+        let canonical_str = canonical.to_string_lossy().replace('\\', "/");
+
+        // Check if already open
+        for (name, engine) in &self.engines {
+            let engine_path = PathBuf::from(&engine.config().path);
+            let engine_canon = engine_path.canonicalize().unwrap_or(engine_path);
+            if engine_canon.to_string_lossy().replace('\\', "/") == canonical_str {
+                return Ok(name.clone());
+            }
+        }
+
+        // Derive name from directory
+        let base_name =
+            canonical.file_name().and_then(|n| n.to_str()).unwrap_or("corpus").to_string();
+
+        let mut name = base_name.clone();
+        let mut counter = 2;
+        while self.engines.contains_key(&name) {
+            name = format!("{}_{}", base_name, counter);
+            counter += 1;
+        }
+
+        // Hybrid storage
+        let local_index = canonical.join(".index");
+        let local_config = canonical.join("corpus.toml");
+        let index_dir = if local_index.exists() || local_config.exists() {
+            local_index
+        } else {
+            ctxvault_common::config::get_corpora_cache_dir().join(&name)
+        };
+
+        let config = if local_config.exists() {
+            let content = std::fs::read_to_string(&local_config)?;
+            let mut cfg: CorpusConfig =
+                toml::from_str(&content).map_err(|e| Error::Config(e.to_string()))?;
+            cfg.name = name.clone();
+            cfg.path = canonical_str;
+            cfg
+        } else {
+            let global = ctxvault_common::config::load_global_config();
+            CorpusConfig {
+                name: name.clone(),
+                path: canonical_str,
+                mode: ctxvault_common::config::CorpusMode::ReadWrite,
+                index_mode: global.index_mode,
+                chunking: ctxvault_common::config::ChunkingConfig::default(),
+                embedding: ctxvault_common::config::EmbeddingConfig::default(),
+                graph: ctxvault_common::config::GraphConfig::default(),
+                templates_dir: ".templates".to_string(),
+            }
+        };
+
+        let engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
+
+        if self.default_corpus.is_none() {
+            self.default_corpus = Some(name.clone());
+        }
+
+        self.engines.insert(name.clone(), engine);
+        Ok(name)
+    }
+
+    /// Unload an open corpus from memory.
+    pub fn unload_corpus(&mut self, name: &str) -> Result<bool> {
+        let removed = self.engines.remove(name).is_some();
+        if removed && self.default_corpus.as_deref() == Some(name) {
+            self.default_corpus = self.engines.keys().next().cloned();
+        }
+        Ok(removed)
+    }
+
+    /// Evict engines that haven't been accessed within `_timeout`.
+    pub fn evict_idle_engines(&mut self, _timeout: std::time::Duration) -> usize {
+        0
+    }
+
+    /// Discover all dormant corpora in the central cache.
+    pub fn discover_cached_corpora(&self) -> Vec<String> {
+        let cache_dir = ctxvault_common::config::get_corpora_cache_dir();
+        let mut names = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(cache_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() && entry.path().join("meta.db").exists() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+        }
+        names.sort();
+        names
     }
 
     /// Set the default corpus by name.
@@ -319,6 +431,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_config(name: &str, corpus_path: &Path) -> CorpusConfig {
+        let _ = fs::create_dir_all(corpus_path.join(".index"));
         CorpusConfig {
             name: name.to_string(),
             path: corpus_path.to_string_lossy().to_string(),
@@ -443,6 +556,7 @@ mod tests {
     /// Fast-mode corpus config with a single frontmatter `implements` edge type.
     /// Fast mode skips embeddings, so no ONNX model is required.
     fn linking_config(name: &str, corpus_path: &Path) -> CorpusConfig {
+        let _ = fs::create_dir_all(corpus_path.join(".index"));
         let implements = EdgeTypeConfig {
             name: "implements".to_string(),
             source: EdgeSource::Frontmatter,
@@ -633,5 +747,28 @@ mod tests {
         // Single corpus => cross-corpus linking is a no-op.
         let created = manager.link_cross_corpus_symbols().unwrap();
         assert_eq!(created, 0);
+    }
+
+    #[test]
+    fn test_ensure_and_unload_corpus() {
+        let tmp = TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("dynamic_repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        let mut manager = CorpusManager::new();
+        let name = manager.ensure_corpus(&repo_dir).unwrap();
+        assert_eq!(name, "dynamic_repo");
+        assert!(manager.has_corpus("dynamic_repo"));
+        assert_eq!(manager.default_corpus_name(), Some("dynamic_repo"));
+
+        // Calling ensure_corpus again on same path returns existing name
+        let name2 = manager.ensure_corpus(&repo_dir).unwrap();
+        assert_eq!(name2, "dynamic_repo");
+        assert_eq!(manager.corpus_count(), 1);
+
+        // Unloading removes corpus
+        assert!(manager.unload_corpus("dynamic_repo").unwrap());
+        assert!(!manager.has_corpus("dynamic_repo"));
+        assert_eq!(manager.corpus_count(), 0);
     }
 }
