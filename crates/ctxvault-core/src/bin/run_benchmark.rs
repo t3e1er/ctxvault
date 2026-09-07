@@ -32,6 +32,7 @@ fn bench_query(
         edge_types: None,
         edge_class: None,
         decompose,
+        snippets: None,
     }
 }
 

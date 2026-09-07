@@ -67,36 +67,12 @@ pub enum ToolProfile {
 }
 
 /// Tools exposed under the `scout` profile (minimal retrieve/navigate set).
-const SCOUT_TOOLS: [&str; 9] = [
-    "search",
-    "search_related",
-    "get_snippet",
-    "read_note",
-    "read_code_file",
-    "read_multiple",
-    "list_notes",
-    "get_frontmatter",
-    "status",
-];
+const SCOUT_TOOLS: [&str; 6] =
+    ["search", "search_related", "get_snippet", "read_file", "list_notes", "status"];
 
 /// Read-only tools added by the `analysis` profile on top of `scout`.
-const ANALYSIS_ONLY_TOOLS: [&str; 15] = [
-    "graph_match",
-    "graph_communities",
-    "get_symbol_definition",
-    "get_architecture",
-    "validate_note",
-    "validate_corpus",
-    "list_templates",
-    "validate_taxonomy",
-    "analyze_density",
-    "find_semantic_gaps",
-    "suggest_splits",
-    "coverage_report",
-    "check_index_coverage",
-    "corpus_list",
-    "list_corpora",
-];
+const ANALYSIS_ONLY_TOOLS: [&str; 5] =
+    ["graph_match", "graph_communities", "validate", "list_templates", "list_corpora"];
 
 impl ToolProfile {
     /// Parse a profile from its lowercase name, defaulting to [`ToolProfile::All`]
@@ -175,8 +151,7 @@ impl ToolRegistry {
 
     /// Read tools that are corpus-scoped or manager-level and therefore must NOT
     /// accept the fan-out `corpus`/`corpora` discrimination args.
-    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 3] =
-        ["status", "corpus_list", "list_corpora"];
+    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 2] = ["status", "list_corpora"];
 
     /// Write tools that operate at the manager level and don't accept corpus arg.
     const MANAGER_WRITE_TOOLS: [&'static str; 2] = ["index_corpus", "unload_corpus"];
@@ -228,27 +203,42 @@ impl ToolRegistry {
     pub fn register_all(&mut self) {
         // Read tools
         self.register_read(
-            "read_note",
-            "Tier 3 (last resort): full-file read of a markdown note's content and frontmatter. Prefer search → get_snippet first; only read the whole note when you truly need full document context.",
+            "read_file",
+            "Tier 3 (last resort): read one or more markdown or source code files. Accepts a single path string or an array of path strings ('paths' or 'path'). Supports start_line, end_line, max_lines. Prefer search → get_snippet first.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note within the corpus" }
+                    "path": {
+                        "description": "Relative path to a file, OR an array of relative paths to read in batch.",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" } }
+                        ]
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Alternative batch paths argument."
+                    },
+                    "start_line": { "type": "integer", "description": "Optional 1-based start line (applies when reading a single file)" },
+                    "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive, applies when reading a single file)" },
+                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 1000 for single file, 500 per file in batch)" }
                 },
-                "required": ["path"]
+                "required": []
             }),
-            handle_read_note,
+            handle_read_file,
         );
 
         self.register_read(
             "get_snippet",
-            "Tier 2 fetch: retrieve exactly one code symbol's source (by qualified_name) or one doc chunk (by path+chunk_index), bounded by max_lines. Call this for the specific handles a search returned — do NOT read whole files unless necessary.",
+            "Tier 2 fetch: retrieve exactly one code symbol's source (by qualified_name or name) or one doc chunk (by path+chunk_index), bounded by max_lines. Call this for the specific handles a search returned — do NOT read whole files unless necessary.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "name": { "type": "string", "description": "Symbol name to look up definition for" },
+                    "qualified_name": { "type": "string", "description": "Code symbol scope_path (exact) or name (fuzzy) to fetch one symbol's source" },
                     "path": { "type": "string", "description": "Relative path — for a DOC chunk fetch (with chunk_index) or a code FILE hint" },
                     "chunk_index": { "type": "integer", "description": "With path, fetch that specific doc chunk (zero-based)" },
-                    "qualified_name": { "type": "string", "description": "Code symbol scope_path (exact) or name (fuzzy) to fetch one symbol's source" },
                     "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 500)" },
                     "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code callers/callees as handles, or adjacent doc chunks (default false)" }
                 },
@@ -258,45 +248,12 @@ impl ToolRegistry {
         );
 
         self.register_read(
-            "read_code_file",
-            "Tier 3 (last resort): read a whole source file (or a line range). Prefer search → get_snippet first.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path to the source file within the corpus" },
-                    "start_line": { "type": "integer", "description": "Optional 1-based start line to bound the read" },
-                    "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive) to bound the read" },
-                    "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 1000)" }
-                },
-                "required": ["path"]
-            }),
-            handle_read_code_file,
-        );
-
-        self.register_read(
-            "read_multiple",
-            "Batch Tier-3 read of multiple files in one call (token-efficient). For markdown returns parsed note; for source returns raw content. Prefer search + get_snippet first.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "paths": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Relative paths to files within the corpus"
-                    },
-                    "max_lines_per_file": { "type": "integer", "description": "Optional hard cap on returned lines per file" }
-                },
-                "required": ["paths"]
-            }),
-            handle_read_multiple,
-        );
-
-        self.register_read(
             "list_notes",
-            "List all indexed notes with metadata (path, title, template, content_hash).",
+            "List indexed notes with metadata (path, title, template, content_hash), or inspect a single note's frontmatter and metadata by passing 'path'.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "path": { "type": "string", "description": "Optional relative path to inspect a specific note's parsed YAML frontmatter and metadata" },
                     "limit": { "type": "number", "description": "Maximum number of notes to return (default 100)" },
                     "offset": { "type": "number", "description": "Offset for pagination (default 0)" }
                 },
@@ -305,36 +262,24 @@ impl ToolRegistry {
             handle_list_notes,
         );
 
-        self.register_read(
-            "get_frontmatter",
-            "Get the parsed YAML frontmatter of a note as JSON.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note within the corpus" }
-                },
-                "required": ["path"]
-            }),
-            handle_get_frontmatter,
-        );
-
         // Search tools
         self.register_read(
             "search",
-            "Tier 1 retrieval: returns handles (paths/qualified names + line ranges), not bodies; fetch source with get_snippet, read whole files only as a last resort. One search tool with a `mode` param: bm25 (exact identifiers/tokens), semantic (dense vector, natural-language intent), hybrid (default; BM25 + vector + graph RRF fusion), graph (typed graph traversal from query matches), explain (hybrid with a per-result BM25/vector/graph score breakdown).",
+            "Tier 1 retrieval with Turn 1 hybrid snippets: returns handles across docs and code, with source snippets inlined for the top K results (configured via `snippets`, default 3). Modes: bm25, semantic, hybrid (default), graph, explain.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query" },
-                    "mode": { "type": "string", "enum": ["bm25", "semantic", "hybrid", "graph", "explain"], "description": "Retrieval mode (default: hybrid). bm25 = keyword; semantic = dense vector; hybrid = 3-way RRF fusion; graph = typed traversal; explain = hybrid + score breakdown." },
+                    "mode": { "type": "string", "enum": ["bm25", "semantic", "hybrid", "graph", "explain"], "description": "Retrieval mode (default: hybrid)." },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
+                    "snippets": { "type": "number", "description": "Number of top results across docs and code to inline source snippets for in Turn 1 (default: 3). Set to 0 for pure handles." },
                     "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Semantic mode only: retrieval depth — precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
                     "graph_depth": { "type": "number", "description": "hybrid/graph/explain modes: max graph traversal depth (default 2 for hybrid/explain, 3 for graph)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "hybrid/graph/explain modes: filter graph traversal by edge types" },
                     "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "hybrid/graph/explain modes: filter graph traversal by edge class (default: semantic for hybrid/explain, structural for graph)" },
                     "decompose": { "type": "boolean", "description": "hybrid mode only: enable query decomposition for multi-hop queries (default: false)" },
                     "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus top-K snippets." }
                 },
                 "required": ["query"]
             }),
@@ -350,7 +295,7 @@ impl ToolRegistry {
                     "seeds": { "type": "array", "items": { "type": "string" }, "description": "Seed document paths to find related notes for" },
                     "limit": { "type": "number", "description": "Maximum results to return (default 10)" },
                     "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
-                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet. Never returns full bodies — use get_snippet to fetch source." }
+                    "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus a short snippet." }
                 },
                 "required": ["seeds"]
             }),
@@ -393,12 +338,13 @@ impl ToolRegistry {
 
         self.register_read(
             "graph_communities",
-            "Detect communities in the knowledge graph. Defaults to Leiden (Louvain partition refined so every community is internally connected); pass algorithm='louvain' for the raw modularity partition. Returns community assignments with modularity scores.",
+            "Detect communities in the knowledge graph. Defaults to Leiden partition. Pass view='architecture' for a high-level subsystem component overview with top key nodes, or view='raw' for raw community assignments.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" },
-                    "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" }
+                    "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" },
+                    "view": { "type": "string", "enum": ["architecture", "raw"], "description": "View mode: 'architecture' for high-level components with top key nodes, 'raw' for raw community clusters (default: 'raw')" },
+                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
                 },
                 "required": []
             }),
@@ -407,34 +353,20 @@ impl ToolRegistry {
 
         // Write tools
         self.register_write(
-            "create_note",
-            "Create a new note with optional frontmatter and content.",
+            "write_note",
+            "Create or update a markdown note. Supports modes: 'create' (fails if note already exists), 'overwrite', 'append', or 'prepend' (default: 'create'). Automatically keeps all indices in sync.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path for the new note (e.g. 'projects/my-note.md')" },
+                    "path": { "type": "string", "description": "Relative path for the note (e.g. 'projects/my-note.md')" },
                     "content": { "type": "string", "description": "Body content of the note (markdown)" },
+                    "mode": { "type": "string", "enum": ["create", "overwrite", "append", "prepend"], "description": "Write mode: 'create' (default, fails if file exists), 'overwrite', 'append', or 'prepend'" },
                     "frontmatter": { "type": "object", "description": "YAML frontmatter fields as key-value pairs" },
-                    "template": { "type": "string", "description": "Template name to set in frontmatter" }
-                },
-                "required": ["path"]
-            }),
-            handle_create_note,
-        );
-
-        self.register_write(
-            "update_note",
-            "Update an existing note's content (overwrite, append, or prepend).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note to update" },
-                    "content": { "type": "string", "description": "New content to apply" },
-                    "mode": { "type": "string", "enum": ["overwrite", "append", "prepend"], "description": "How to apply the content (default: overwrite)" }
+                    "template": { "type": "string", "description": "Template schema to associate in frontmatter" }
                 },
                 "required": ["path", "content"]
             }),
-            handle_update_note,
+            handle_write_note,
         );
 
         self.register_write(
@@ -464,49 +396,20 @@ impl ToolRegistry {
             handle_move_note,
         );
 
-        self.register_write(
-            "promote_concept",
-            "Crystallize fluid memory notes into a consolidated, templated concept note. Validates schema before writing and indexing, with atomic rollback on validation failure.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "source_notes": { "type": "array", "items": { "type": "string" }, "description": "Source note paths being consolidated" },
-                    "target_path": { "type": "string", "description": "Relative path for the new consolidated concept note" },
-                    "template": { "type": "string", "description": "Template schema to apply (e.g. 'concept', 'adr')" },
-                    "frontmatter": { "type": "object", "description": "YAML frontmatter fields as key-value pairs" },
-                    "content": { "type": "string", "description": "Markdown body content of the consolidated note" },
-                    "archive_sources": { "type": "boolean", "description": "Whether to archive the source notes (default false)" }
-                },
-                "required": ["source_notes", "target_path", "content"]
-            }),
-            handle_promote_concept,
-        );
-
         // Validation tools
         self.register_read(
-            "validate_note",
-            "Validate a note against its declared template (checks required fields, types, sections).",
+            "validate",
+            "Validate a single note schema (if 'path' provided) or the entire corpus against declared templates and structural graph integrity (broken wikilinks, DAG cycles, orphan ADRs).",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note within the corpus" }
-                },
-                "required": ["path"]
-            }),
-            handle_validate_note,
-        );
-
-        self.register_read(
-            "validate_corpus",
-            "Validate all templated notes in the corpus, returning only those with issues.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "number", "description": "Maximum number of results to return (default: all)" }
+                    "path": { "type": "string", "description": "Optional relative path to validate a single note. If omitted, validates the entire corpus." },
+                    "check_taxonomy": { "type": "boolean", "description": "When validating corpus, also check structural graph taxonomy: broken links, cycles, orphan ADRs (default true)" },
+                    "limit": { "type": "number", "description": "Maximum issues to return when validating corpus" }
                 },
                 "required": []
             }),
-            handle_validate_corpus,
+            handle_validate,
         );
 
         self.register_read(
@@ -520,103 +423,20 @@ impl ToolRegistry {
             handle_list_templates,
         );
 
-        self.register_read(
-            "validate_taxonomy",
-            "Ontology & structural graph integrity linter: checks for broken wikilinks, circular dependencies in DAG relations (supersedes, depends_on), orphan ADRs, and template constraints.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "check_broken": { "type": "boolean", "description": "Check for broken links (default true)" },
-                    "check_cycles": { "type": "boolean", "description": "Check for circular dependencies in DAG relations (default true)" },
-                    "check_orphans": { "type": "boolean", "description": "Check for orphan ADR notes (default true)" }
-                },
-                "required": []
-            }),
-            handle_validate_taxonomy,
-        );
-
-        // Analytics tools
-        self.register_read(
-            "analyze_density",
-            "Analyze graph density: orphans, hubs, edge distribution, overall connectivity.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "top_hubs": { "type": "number", "description": "Number of top hub nodes to return (default 10)" }
-                },
-                "required": []
-            }),
-            handle_analyze_density,
-        );
-
-        self.register_read(
-            "find_semantic_gaps",
-            "Find queries where BM25 and vector search disagree — potential embedding blind spots.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "queries": { "type": "array", "items": { "type": "string" }, "description": "Test queries to evaluate" },
-                    "top_k": { "type": "number", "description": "Number of results to compare per query (default 10)" }
-                },
-                "required": ["queries"]
-            }),
-            handle_find_semantic_gaps,
-        );
-
-        self.register_read(
-            "suggest_splits",
-            "Identify chunks with low coherence that may benefit from splitting.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "max_chunk_chars": { "type": "number", "description": "Character threshold for 'too long' chunks (default 2000)" }
-                },
-                "required": []
-            }),
-            handle_suggest_splits,
-        );
-
-        self.register_read(
-            "coverage_report",
-            "For a set of test queries, identify which notes are never retrieved (dead zones).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "queries": { "type": "array", "items": { "type": "string" }, "description": "Test queries to evaluate coverage" },
-                    "top_k": { "type": "number", "description": "Number of results per query (default 10)" }
-                },
-                "required": ["queries"]
-            }),
-            handle_coverage_report,
-        );
-
-        self.register_read(
-            "check_index_coverage",
-            "Report index coverage + parse status for the given paths or path prefixes: which are indexed, chunk/symbol counts, and parse gaps (indexed but empty).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "paths": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Relative paths or path prefixes/scopes to check for index coverage"
-                    }
-                },
-                "required": ["paths"]
-            }),
-            handle_check_index_coverage,
-        );
-
         // System tools
         self.register_read(
-            "corpus_list",
-            "List all configured corpora with their modes, file counts, and index stats.",
+            "status",
+            "Corpus, indexing, graph topology, and coverage status in one tool via `scope`: corpus = per-corpus statistics and configuration; indexing = progress/throughput; graph = topology stats, density, and orphans; coverage = path-level index and parse status (requires 'paths'); all (default) = combined. When no specific corpus is targeted the multi-corpus overview is returned.",
             serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "coverage", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats & density; coverage = path-level index & parse status; all (default) = combined." },
+                    "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Scope 'coverage' only: paths or path prefixes to check for index coverage and parse status." }
+                },
                 "required": []
             }),
-            handle_corpus_list,
+            handle_status,
         );
 
         self.register_read(
@@ -630,6 +450,24 @@ impl ToolRegistry {
                 "required": []
             }),
             handle_list_corpora_dummy,
+        );
+
+        self.register_write(
+            "sync_corpus",
+            "Corpus index maintenance. Mode 'delta' (default) syncs filesystem changes incrementally; mode 'full' forces a full reindex with checkpoint resumption; mode 'reembed' recomputes dense embeddings.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mode": { "type": "string", "enum": ["delta", "full", "reembed"], "description": "Sync mode: 'delta' (default, incremental sync), 'full' (full reindex), 'reembed' (recompute embeddings)" },
+                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" },
+                    "docs_embed": { "type": "boolean", "description": "Enable DocsEmbed Mode: compute embeddings for markdown doc anchors only, skipping code" },
+                    "index_mode": { "type": "string", "enum": ["full", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'docs-embed', 'fast')" },
+                    "batch_size": { "type": "number", "description": "Batch size for commits / intermediate checkpoints (default 50)" },
+                    "resume": { "type": "boolean", "description": "For mode 'full': resume from last indexing checkpoint if available (default true)" }
+                },
+                "required": []
+            }),
+            handle_sync_corpus,
         );
 
         self.register_write(
@@ -661,92 +499,6 @@ impl ToolRegistry {
                 "required": ["name"]
             }),
             handle_unload_corpus_dummy,
-        );
-
-        self.register_write(
-            "reembed_corpus",
-            "Re-embed all chunks with the current embedding model. Use after changing models to update vectors without losing data.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            handle_reembed_corpus,
-        );
-
-        self.register_write(
-            "sync_corpus",
-            "Delta sync: compare filesystem against the index, add new files, update modified files, remove deleted files in configurable batches.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "batch_size": { "type": "number", "description": "Batch size for commits (default 50)" },
-                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" },
-                    "docs_embed": { "type": "boolean", "description": "Enable DocsEmbed Mode: compute embeddings for markdown doc anchors only, skipping code" },
-                    "index_mode": { "type": "string", "enum": ["full", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'docs-embed', 'fast')" }
-                },
-                "required": []
-            }),
-            handle_sync_corpus,
-        );
-
-        self.register_write(
-            "reindex_corpus",
-            "Full reindex: re-index corpus files in configurable batches with automatic resumption support.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "batch_size": { "type": "number", "description": "Batch size for intermediate checkpoints (default 50)" },
-                    "resume": { "type": "boolean", "description": "Resume from last indexing checkpoint if available (default true)" },
-                    "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" },
-                    "docs_embed": { "type": "boolean", "description": "Enable DocsEmbed Mode: compute embeddings for markdown doc anchors only, skipping code" },
-                    "index_mode": { "type": "string", "enum": ["full", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'docs-embed', 'fast')" }
-                },
-                "required": []
-            }),
-            handle_reindex_corpus,
-        );
-
-        self.register_read(
-            "status",
-            "Corpus, indexing, and graph topology status in one tool via `scope`: corpus = per-corpus statistics, document counts, and configuration; indexing = current indexing progress, throughput, and estimated time remaining; graph = topology counts, edge distribution, and orphans; all (default) = combined. When no specific corpus is targeted the multi-corpus overview (all configured corpora) is included.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats; all (default) = combined." },
-                    "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." }
-                },
-                "required": []
-            }),
-            handle_status,
-        );
-
-        // Code Intelligence & Architecture Tools
-        self.register_read(
-            "get_symbol_definition",
-            "Find code symbol definition (function, method, struct, class, trait, interface) with exact source lines, docstrings, and incoming caller count.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Symbol name to look up" },
-                    "file_path": { "type": "string", "description": "Optional file path to disambiguate symbols with the same name" }
-                },
-                "required": ["name"]
-            }),
-            handle_get_symbol_definition,
-        );
-
-        self.register_read(
-            "get_architecture",
-            "Get high-level architectural component overview via Louvain community clustering across the cross-modal knowledge graph.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "resolution": { "type": "number", "description": "Community detection resolution parameter (default 1.0)" }
-                },
-                "required": []
-            }),
-            handle_get_architecture,
         );
 
         // Inject corpus/corpora discrimination args into tool schemas.
@@ -1379,191 +1131,122 @@ fn handle_unload_corpus_dummy(_engine: &mut Engine, _args: Value) -> Result<Valu
 // Parameter structs
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct ReadNoteParams {
-    path: String,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum PathOrPaths {
+    Single(String),
+    Multiple(Vec<String>),
 }
 
-#[derive(Deserialize)]
-struct ReadMultipleParams {
-    paths: Vec<String>,
-    max_lines_per_file: Option<usize>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReadFileParams {
+    pub path: Option<PathOrPaths>,
+    pub paths: Option<Vec<String>>,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub max_lines: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct CheckIndexCoverageParams {
-    paths: Vec<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListNotesParams {
+    pub path: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct ListNotesParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct GetFrontmatterParams {
-    path: String,
-}
-
-#[derive(Deserialize)]
-struct GetSnippetParams {
-    path: Option<String>,
-    chunk_index: Option<usize>,
-    qualified_name: Option<String>,
-    max_lines: Option<usize>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct GetSnippetParams {
+    pub name: Option<String>,
+    pub path: Option<String>,
+    pub chunk_index: Option<usize>,
+    pub qualified_name: Option<String>,
+    pub max_lines: Option<usize>,
     #[serde(default)]
-    include_neighbors: bool,
+    pub include_neighbors: bool,
 }
 
-#[derive(Deserialize)]
-struct ReadCodeFileParams {
-    path: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
-    max_lines: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct SearchParams {
-    query: String,
+#[derive(Debug, Deserialize)]
+pub(crate) struct SearchParams {
+    pub query: String,
     #[serde(default)]
-    mode: Option<String>,
-    limit: Option<usize>,
-    depth: Option<String>,
-    graph_depth: Option<usize>,
-    edge_types: Option<Vec<String>>,
-    edge_class: Option<String>,
-    decompose: Option<bool>,
-    modality: Option<String>,
-    detail: Option<String>,
+    pub mode: Option<String>,
+    pub limit: Option<usize>,
+    pub depth: Option<String>,
+    pub graph_depth: Option<usize>,
+    pub edge_types: Option<Vec<String>>,
+    pub edge_class: Option<String>,
+    pub decompose: Option<bool>,
+    pub modality: Option<String>,
+    pub detail: Option<String>,
+    pub snippets: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct SearchRelatedParams {
-    seeds: Vec<String>,
-    limit: Option<usize>,
-    modality: Option<String>,
-    detail: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct SearchRelatedParams {
+    pub seeds: Vec<String>,
+    pub limit: Option<usize>,
+    pub modality: Option<String>,
+    pub detail: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct StatusParams {
-    scope: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct StatusParams {
+    pub scope: Option<String>,
+    pub paths: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
-struct GraphMatchParams {
-    pattern: String,
-    edge_class: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct GraphMatchParams {
+    pub pattern: String,
+    pub edge_class: Option<String>,
     #[serde(rename = "where")]
-    where_clause: Option<String>,
-    limit: Option<usize>,
-    max_depth: Option<usize>,
+    pub where_clause: Option<String>,
+    pub limit: Option<usize>,
+    pub max_depth: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct GraphCommunitiesParams {
-    include_density: Option<bool>,
-    /// Community detection algorithm: `leiden` (default, connectivity-refined)
-    /// or `louvain` (raw modularity partition).
-    algorithm: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct GraphCommunitiesParams {
+    pub algorithm: Option<String>,
+    pub view: Option<String>,
+    pub include_density: Option<bool>,
 }
 
-// Write tool params
-
-#[derive(Deserialize)]
-struct CreateNoteParams {
-    path: String,
-    content: Option<String>,
-    frontmatter: Option<Value>,
-    template: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct WriteNoteParams {
+    pub path: String,
+    pub content: String,
+    pub mode: Option<String>,
+    pub frontmatter: Option<Value>,
+    pub template: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct UpdateNoteParams {
-    path: String,
-    content: String,
-    mode: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeleteNoteParams {
+    pub path: String,
 }
 
-#[derive(Deserialize)]
-struct DeleteNoteParams {
-    path: String,
+#[derive(Debug, Deserialize)]
+pub(crate) struct MoveNoteParams {
+    pub from: String,
+    pub to: String,
 }
 
-#[derive(Deserialize)]
-struct MoveNoteParams {
-    from: String,
-    to: String,
+#[derive(Debug, Deserialize)]
+pub(crate) struct ValidateParams {
+    pub path: Option<String>,
+    pub check_taxonomy: Option<bool>,
+    pub limit: Option<usize>,
 }
 
-#[derive(Deserialize)]
-struct ValidateNoteParams {
-    path: String,
-}
-
-#[derive(Deserialize)]
-struct ValidateCorpusParams {
-    limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct PromoteConceptParams {
-    source_notes: Vec<String>,
-    target_path: String,
-    template: Option<String>,
-    frontmatter: Option<Value>,
-    content: String,
-    archive_sources: Option<bool>,
-}
-
-#[derive(Deserialize)]
-struct ValidateTaxonomyParams {
-    check_broken: Option<bool>,
-    check_cycles: Option<bool>,
-    check_orphans: Option<bool>,
-}
-
-// Analytics tool params
-
-#[derive(Deserialize)]
-struct AnalyzeDensityParams {
-    top_hubs: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct FindSemanticGapsParams {
-    queries: Vec<String>,
-    top_k: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct SuggestSplitsParams {
-    max_chunk_chars: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct CoverageReportParams {
-    queries: Vec<String>,
-    top_k: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct SyncCorpusParams {
-    batch_size: Option<usize>,
-    fast: Option<bool>,
-    docs_embed: Option<bool>,
-    index_mode: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ReindexCorpusParams {
-    batch_size: Option<usize>,
-    resume: Option<bool>,
-    fast: Option<bool>,
-    docs_embed: Option<bool>,
-    index_mode: Option<String>,
+#[derive(Debug, Deserialize)]
+pub(crate) struct SyncCorpusParams {
+    pub mode: Option<String>,
+    pub batch_size: Option<usize>,
+    pub resume: Option<bool>,
+    pub fast: Option<bool>,
+    pub docs_embed: Option<bool>,
+    pub index_mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,48 +1254,11 @@ struct ReindexCorpusParams {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct NoteResponse {
-    path: String,
-    title: Option<String>,
-    frontmatter: Option<Value>,
-    content: String,
-    content_hash: String,
-}
-
-#[derive(Serialize)]
 struct NoteListItem {
     path: String,
     title: Option<String>,
     template: Option<String>,
     content_hash: String,
-}
-
-// ---------------------------------------------------------------------------
-// Tool handlers
-// ---------------------------------------------------------------------------
-
-/// Read a note's full content + frontmatter.
-fn handle_read_note(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ReadNoteParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let corpus_path = PathBuf::from(&engine.config().path);
-    let full_path = corpus_path.join(&params.path);
-
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
-
-    let doc = ctxvault_core::parser::parse_document(Path::new(&params.path), &content)?;
-
-    let response = NoteResponse {
-        path: params.path,
-        title: doc.title,
-        frontmatter: doc.frontmatter,
-        content: doc.content,
-        content_hash: doc.content_hash,
-    };
-
-    serde_json::to_value(response).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 /// Detect a source language from a file extension. Returns `"text"` when unknown.
@@ -1656,6 +1302,105 @@ fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
     })
 }
 
+/// Read a single file for [`handle_read_file`].
+fn read_single_file(
+    corpus_root: &Path,
+    path: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    max_lines: usize,
+) -> Result<Value> {
+    let full_path = corpus_root.join(path);
+    let raw = std::fs::read_to_string(&full_path)
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
+
+    let is_markdown = matches!(language_from_path(path), "markdown");
+    if is_markdown && start_line.is_none() && end_line.is_none() {
+        let doc = ctxvault_core::parser::parse_document(Path::new(path), &raw)?;
+        let lines: Vec<&str> = doc.content.lines().collect();
+        let (content, truncated) = cap_lines(&lines, max_lines);
+        return Ok(serde_json::json!({
+            "kind": "markdown_note",
+            "path": path,
+            "title": doc.title,
+            "frontmatter": doc.frontmatter,
+            "content": content,
+            "truncated": truncated,
+            "content_hash": doc.content_hash,
+        }));
+    }
+
+    let file_lines: Vec<&str> = raw.lines().collect();
+    let total_lines = file_lines.len();
+    let start = start_line.unwrap_or(1).max(1);
+    let end = end_line.unwrap_or(total_lines).min(total_lines);
+
+    if start > total_lines {
+        return Ok(serde_json::json!({
+            "kind": if is_markdown { "markdown_note" } else { "code_file" },
+            "path": path,
+            "start_line": start,
+            "end_line": end,
+            "total_lines": total_lines,
+            "content": "",
+            "truncated": false,
+        }));
+    }
+
+    let slice_start = start - 1;
+    let slice_end = end.max(slice_start);
+    let slice = &file_lines[slice_start..slice_end];
+    let (content, truncated) = cap_lines(slice, max_lines);
+
+    Ok(serde_json::json!({
+        "kind": if is_markdown { "markdown_note" } else { "code_file" },
+        "path": path,
+        "start_line": start,
+        "end_line": end,
+        "total_lines": total_lines,
+        "language": language_from_path(path),
+        "content": content,
+        "truncated": truncated,
+    }))
+}
+
+/// Tier 3 read of one or more files (markdown or source code).
+fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ReadFileParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    let corpus_root = PathBuf::from(&engine.config().path);
+
+    let target_paths = if let Some(paths) = params.paths {
+        PathOrPaths::Multiple(paths)
+    } else if let Some(p) = params.path {
+        p
+    } else {
+        return Err(Error::Config("read_file requires 'path' or 'paths'".to_string()));
+    };
+
+    match target_paths {
+        PathOrPaths::Single(p) => {
+            let max_lines = params.max_lines.unwrap_or(1000).max(1);
+            read_single_file(&corpus_root, &p, params.start_line, params.end_line, max_lines)
+        }
+        PathOrPaths::Multiple(paths) => {
+            let max_lines = params.max_lines.unwrap_or(500).max(1);
+            let results: Vec<Value> = paths
+                .iter()
+                .map(|p| match read_single_file(&corpus_root, p, None, None, max_lines) {
+                    Ok(val) => val,
+                    Err(e) => serde_json::json!({ "path": p, "error": e.to_string() }),
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "count": results.len(),
+                "results": results,
+            }))
+        }
+    }
+}
+
 /// Tier 2 fetch: return exactly one code symbol's source or one doc chunk,
 /// bounded by `max_lines`, with optional neighbor expansion.
 fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
@@ -1665,7 +1410,8 @@ fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
     let max_lines = params.max_lines.unwrap_or(500).max(1);
     let corpus_root = Path::new(&engine.config().path);
 
-    if let Some(qualified_name) = params.qualified_name.as_deref() {
+    let target_name = params.qualified_name.or(params.name);
+    if let Some(ref qualified_name) = target_name {
         return fetch_code_symbol(
             engine,
             corpus_root,
@@ -1681,12 +1427,12 @@ fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
         }
         return Err(Error::Config(format!(
             "get_snippet needs a chunk_index for a doc fetch on '{path}'. \
-             For a whole file use Tier 3: read_note (docs) or read_code_file (code).",
+             For a whole file use Tier 3: read_file.",
         )));
     }
 
     Err(Error::Config(
-        "get_snippet requires either `qualified_name` (code) or `path`+`chunk_index` (doc)."
+        "get_snippet requires either `name`/`qualified_name` (code) or `path`+`chunk_index` (doc)."
             .to_string(),
     ))
 }
@@ -1863,131 +1609,14 @@ fn fetch_doc_chunk(
     Ok(out)
 }
 
-/// Tier 3 fetch: read a whole source file (or a bounded line range) as raw text.
-fn handle_read_code_file(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ReadCodeFileParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let corpus_root = Path::new(&engine.config().path);
-    let full_path = corpus_root.join(&params.path);
-    let content = fs::read_to_string(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
-
-    let all_lines: Vec<&str> = content.lines().collect();
-    let total_line_count = all_lines.len();
-    let max_lines = params.max_lines.unwrap_or(1000).max(1);
-
-    // Resolve an optional 1-based inclusive line window.
-    let start_idx =
-        params.start_line.map(|s| s.saturating_sub(1).min(total_line_count)).unwrap_or(0);
-    let end_idx =
-        params.end_line.map(|e| e.min(total_line_count)).unwrap_or(total_line_count).max(start_idx);
-
-    let windowed = &all_lines[start_idx..end_idx];
-    let (body, truncated) = cap_lines(windowed, max_lines);
-
-    Ok(serde_json::json!({
-        "path": params.path,
-        "language": language_from_path(&params.path),
-        "total_line_count": total_line_count,
-        "start_line": start_idx + 1,
-        "end_line": start_idx + windowed.len().min(max_lines),
-        "content": body,
-        "truncated": truncated,
-    }))
-}
-
-/// Batch Tier-3 read of multiple files in one call.
-///
-/// For markdown files each result mirrors [`handle_read_note`]'s shape
-/// (`path`, `title`, `frontmatter`, `content`, `content_hash`); for source
-/// files it returns raw `content` (like `read_code_file`). Per-path failures
-/// become an entry with an `error` field rather than aborting the whole call.
-fn handle_read_multiple(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ReadMultipleParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let corpus_root = PathBuf::from(&engine.config().path);
-    let results: Vec<Value> = params
-        .paths
-        .iter()
-        .map(|path| read_one_file(&corpus_root, path, params.max_lines_per_file))
-        .collect();
-
-    Ok(serde_json::json!({
-        "count": results.len(),
-        "results": results,
-    }))
-}
-
-/// Read a single file for [`handle_read_multiple`], returning either the
-/// file payload or an `{ "path", "error" }` entry on failure.
-fn read_one_file(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Value {
-    match read_one_file_inner(corpus_root, path, max_lines) {
-        Ok(value) => value,
-        Err(e) => serde_json::json!({ "path": path, "error": e.to_string() }),
-    }
-}
-
-/// Fallible core of [`read_one_file`].
-fn read_one_file_inner(corpus_root: &Path, path: &str, max_lines: Option<usize>) -> Result<Value> {
-    let full_path = corpus_root.join(path);
-    let content = fs::read_to_string(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
-
-    let is_markdown = matches!(language_from_path(path), "markdown");
-
-    if is_markdown {
-        let doc = ctxvault_core::parser::parse_document(Path::new(path), &content)?;
-        let body = match max_lines {
-            Some(cap) => {
-                let lines: Vec<&str> = doc.content.lines().collect();
-                cap_lines(&lines, cap.max(1)).0
-            }
-            None => doc.content,
-        };
-        Ok(serde_json::json!({
-            "path": path,
-            "kind": "note",
-            "title": doc.title,
-            "frontmatter": doc.frontmatter,
-            "content": body,
-            "content_hash": doc.content_hash,
-        }))
-    } else {
-        let all_lines: Vec<&str> = content.lines().collect();
-        let total_line_count = all_lines.len();
-        let (body, truncated) = match max_lines {
-            Some(cap) => cap_lines(&all_lines, cap.max(1)),
-            None => (content, false),
-        };
-        Ok(serde_json::json!({
-            "path": path,
-            "kind": "code",
-            "language": language_from_path(path),
-            "total_line_count": total_line_count,
-            "content": body,
-            "truncated": truncated,
-        }))
-    }
-}
-
 /// Report index coverage + parse status for the given paths or path prefixes.
-///
-/// For each requested path or prefix, consults the catalog to report whether
-/// any file record matches (`indexed`), the chunk and symbol counts, and
-/// whether it parsed (indexed but zero chunks signals a parse gap).
-fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
-    let params: CheckIndexCoverageParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
+fn check_index_coverage_inner(engine: &Engine, paths: &[String]) -> Result<Value> {
     let all_files = engine.store().list_files()?;
 
-    let mut reports = Vec::with_capacity(params.paths.len());
+    let mut reports = Vec::with_capacity(paths.len());
     let mut covered = 0usize;
 
-    for scope in &params.paths {
-        // A scope matches a file record either exactly or as a path prefix.
+    for scope in paths {
         let matched: Vec<&str> = all_files
             .iter()
             .map(|f| f.path.as_str())
@@ -2002,8 +1631,6 @@ fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
             symbol_count += engine.store().get_code_symbols_for_file(file_path).map(|s| s.len())?;
         }
 
-        // Parsed means the scope produced content: indexed but zero chunks and
-        // zero symbols is a parse gap.
         let parsed = indexed && (chunk_count > 0 || symbol_count > 0);
         if indexed {
             covered += 1;
@@ -2022,7 +1649,7 @@ fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
         }));
     }
 
-    let total = params.paths.len();
+    let total = paths.len();
     Ok(serde_json::json!({
         "reports": reports,
         "summary": {
@@ -2033,10 +1660,24 @@ fn handle_check_index_coverage(engine: &Engine, args: Value) -> Result<Value> {
     }))
 }
 
-/// List all indexed notes with metadata.
+/// List all indexed notes with metadata, or inspect single note's frontmatter and metadata if `path` is provided.
 fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
     let params: ListNotesParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    if let Some(path) = params.path {
+        let corpus_path = PathBuf::from(&engine.config().path);
+        let full_path = corpus_path.join(&path);
+        let content = std::fs::read_to_string(&full_path)
+            .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
+        let doc = ctxvault_core::parser::parse_document(Path::new(&path), &content)?;
+        return Ok(serde_json::json!({
+            "path": path,
+            "title": doc.title,
+            "frontmatter": doc.frontmatter,
+            "content_hash": doc.content_hash,
+        }));
+    }
 
     let limit = params.limit.unwrap_or(100);
     let offset = params.offset.unwrap_or(0);
@@ -2056,24 +1697,6 @@ fn handle_list_notes(engine: &Engine, args: Value) -> Result<Value> {
         .collect();
 
     serde_json::to_value(items).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Get parsed frontmatter as JSON.
-fn handle_get_frontmatter(engine: &Engine, args: Value) -> Result<Value> {
-    let params: GetFrontmatterParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let corpus_path = PathBuf::from(&engine.config().path);
-    let full_path = corpus_path.join(&params.path);
-
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
-
-    let doc = ctxvault_core::parser::parse_document(Path::new(&params.path), &content)?;
-
-    let frontmatter = doc.frontmatter.unwrap_or(Value::Null);
-
-    Ok(frontmatter)
 }
 
 /// Full-text BM25 keyword search.
@@ -2097,6 +1720,67 @@ fn apply_detail(
         }
     }
     results
+}
+
+/// Inlines bounded source text for the top K results across a partition.
+fn populate_top_snippets(
+    engine: &Engine,
+    results: &mut [ctxvault_common::types::SearchResult],
+    k: usize,
+    max_lines: usize,
+) {
+    let corpus_root = Path::new(&engine.config().path);
+    for (i, item) in results.iter_mut().enumerate() {
+        if i >= k {
+            item.snippet = None;
+            continue;
+        }
+
+        if let Some(ref s) = item.snippet {
+            if s.len() > 120 {
+                let lines: Vec<&str> = s.lines().collect();
+                if lines.len() > max_lines {
+                    let (capped, _) = cap_lines(&lines, max_lines);
+                    item.snippet = Some(capped);
+                }
+                continue;
+            }
+        }
+
+        if let Some(chunk_index) = item.chunk_index {
+            if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
+                if let Some(chunk) = chunks.iter().find(|c| c.chunk_index == chunk_index) {
+                    let lines: Vec<&str> = chunk.text.lines().collect();
+                    let (capped, _) = cap_lines(&lines, max_lines);
+                    item.snippet = Some(capped);
+                    continue;
+                }
+            }
+        }
+
+        if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
+            if let Some(sym) = symbols.first() {
+                let full_path = corpus_root.join(&sym.file_path);
+                if let Ok(content) = fs::read_to_string(&full_path) {
+                    let file_lines: Vec<&str> = content.lines().collect();
+                    if sym.start_line > 0 && sym.start_line <= file_lines.len() {
+                        let start_idx = sym.start_line - 1;
+                        let end_idx = sym.end_line.min(file_lines.len());
+                        let (capped, _) = cap_lines(&file_lines[start_idx..end_idx], max_lines);
+                        item.snippet = Some(capped);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let full_path = corpus_root.join(&item.path);
+        if let Ok(content) = fs::read_to_string(&full_path) {
+            let lines: Vec<&str> = content.lines().collect();
+            let (capped, _) = cap_lines(&lines, max_lines);
+            item.snippet = Some(capped);
+        }
+    }
 }
 
 /// Consolidated search tool: dispatches to a retrieval mode selected by `mode`
@@ -2148,6 +1832,7 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
         edge_types: params.edge_types,
         edge_class: params.edge_class,
         decompose: params.decompose,
+        snippets: params.snippets,
     };
 
     if is_explain {
@@ -2181,6 +1866,12 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
                 docs_items.push(r);
             }
         }
+
+        let k =
+            if params.detail.as_deref() == Some("ids") { 0 } else { params.snippets.unwrap_or(3) };
+
+        populate_top_snippets(engine, &mut docs_items, k, 40);
+        populate_top_snippets(engine, &mut code_items, k, 40);
 
         let docs_partition =
             if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {
@@ -2282,21 +1973,66 @@ fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
     serde_json::to_value(match_result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
-/// Detect communities via Louvain algorithm.
+/// Detect communities via Leiden or Louvain, or architectural components overview.
 fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
     let params: GraphCommunitiesParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
-    let include_density = params.include_density.unwrap_or(false);
+    let view = params.view.as_deref().unwrap_or("raw");
+    if view == "architecture" {
+        let result = engine.graph().detect_communities_leiden();
+        let densities = engine.graph().community_densities();
+        let density_map: HashMap<usize, f64> =
+            densities.into_iter().map(|d| (d.community_id, d.density)).collect();
 
-    // Default to the connectivity-refined Leiden partition; `louvain` selects the
-    // raw modularity partition.
-    let result = match params.algorithm.as_deref() {
-        Some("louvain") => engine.graph().detect_communities(),
+        let mut clusters = Vec::new();
+        let edges = engine.graph().get_all_edges();
+
+        for comm in &result.communities {
+            let comm_id = comm.id;
+            let mut nodes = comm.members.clone();
+            nodes.sort();
+            let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
+
+            let mut node_degree: HashMap<String, usize> = HashMap::new();
+            for edge in &edges {
+                if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
+                    *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
+                    *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
+                }
+            }
+            let mut key_nodes: Vec<_> = nodes
+                .iter()
+                .filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg)))
+                .collect();
+            key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
+            let top_key_nodes: Vec<String> =
+                key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
+
+            clusters.push(serde_json::json!({
+                "component_id": comm_id,
+                "node_count": nodes.len(),
+                "internal_density": density,
+                "top_nodes": top_key_nodes,
+                "members": nodes,
+            }));
+        }
+
+        return Ok(serde_json::json!({
+            "algorithm": "leiden",
+            "component_count": clusters.len(),
+            "modularity": result.modularity,
+            "components": clusters,
+        }));
+    }
+
+    let algo = params.algorithm.as_deref().unwrap_or("leiden");
+    let result = match algo {
+        "louvain" => engine.graph().detect_communities(),
         _ => engine.graph().detect_communities_leiden(),
     };
 
-    if include_density {
+    if params.include_density.unwrap_or(false) {
         let densities = engine.graph().community_densities();
         let response = serde_json::json!({
             "communities": result.communities,
@@ -2308,45 +2044,6 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
     } else {
         serde_json::to_value(result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
     }
-}
-
-// ---------------------------------------------------------------------------
-// Analytics tool handlers
-// ---------------------------------------------------------------------------
-
-/// Corpus list: reports on the current engine as a corpus.
-fn handle_corpus_list(engine: &Engine, _args: Value) -> Result<Value> {
-    let file_count = engine.store().list_files().map(|f| f.len()).unwrap_or(0);
-    let info = serde_json::json!([{
-        "name": engine.config().name,
-        "path": engine.config().path,
-        "mode": format!("{:?}", engine.config().mode),
-        "index_mode": format!("{:?}", engine.config().index_mode),
-        "file_count": file_count,
-        "embedder_active": engine.embedder_active(),
-        "vector_count": engine.vector_count(),
-        "graph_node_count": engine.graph().node_count(),
-    }]);
-
-    Ok(info)
-}
-
-/// Re-embed all chunks with the current embedding model.
-fn handle_reembed_corpus(engine: &mut Engine, _args: Value) -> Result<Value> {
-    let was_stale = engine.vectors_stale();
-    let old_version = engine.stored_model_version().map(|s| s.to_string());
-
-    let chunks_reembedded = engine.reembed()?;
-
-    let new_version = engine.stored_model_version().unwrap_or("unknown").to_string();
-
-    Ok(serde_json::json!({
-        "status": "complete",
-        "chunks_reembedded": chunks_reembedded,
-        "was_stale": was_stale,
-        "previous_model_version": old_version,
-        "current_model_version": new_version,
-    }))
 }
 
 /// Helper to apply index_mode overrides dynamically on an engine.
@@ -2377,37 +2074,10 @@ fn apply_index_mode_override(
     Ok(())
 }
 
-/// Delta sync: index new/modified files, remove deleted files in configurable batches.
+/// Sync or reindex corpus in configurable batches. Supports mode: "delta" | "full" | "reembed".
 fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: SyncCorpusParams = serde_json::from_value(args).unwrap_or(SyncCorpusParams {
-        batch_size: None,
-        fast: None,
-        docs_embed: None,
-        index_mode: None,
-    });
-    apply_index_mode_override(
-        engine,
-        params.index_mode.as_deref(),
-        params.docs_embed,
-        params.fast,
-    )?;
-    let batch_size = params.batch_size.unwrap_or(50);
-    let result = engine.delta_scan_paginated(batch_size)?;
-
-    Ok(serde_json::json!({
-        "status": "complete",
-        "new_files": result.new_files.len(),
-        "modified_files": result.modified_files.len(),
-        "deleted_files": result.deleted_files.len(),
-        "new": result.new_files,
-        "modified": result.modified_files,
-        "deleted": result.deleted_files,
-    }))
-}
-
-/// Full reindex: clear all indices and rebuild from scratch or resume in configurable batches.
-fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: ReindexCorpusParams = serde_json::from_value(args).unwrap_or(ReindexCorpusParams {
+        mode: None,
         batch_size: None,
         resume: None,
         fast: None,
@@ -2420,16 +2090,49 @@ fn handle_reindex_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
         params.docs_embed,
         params.fast,
     )?;
-    let batch_size = params.batch_size.unwrap_or(50);
-    let resume = params.resume.unwrap_or(true);
-    let count = engine.full_reindex_paginated(batch_size, resume)?;
 
-    Ok(serde_json::json!({
-        "status": "complete",
-        "files_indexed": count,
-        "batch_size": batch_size,
-        "resumed": resume,
-    }))
+    match params.mode.as_deref().unwrap_or("delta") {
+        "reembed" => {
+            let was_stale = engine.vectors_stale();
+            let old_version = engine.stored_model_version().map(|s| s.to_string());
+            let chunks_reembedded = engine.reembed()?;
+            let new_version = engine.stored_model_version().unwrap_or("unknown").to_string();
+            Ok(serde_json::json!({
+                "status": "complete",
+                "mode": "reembed",
+                "chunks_reembedded": chunks_reembedded,
+                "was_stale": was_stale,
+                "previous_model_version": old_version,
+                "current_model_version": new_version,
+            }))
+        }
+        "full" => {
+            let batch_size = params.batch_size.unwrap_or(50);
+            let resume = params.resume.unwrap_or(true);
+            let count = engine.full_reindex_paginated(batch_size, resume)?;
+            Ok(serde_json::json!({
+                "status": "complete",
+                "mode": "full",
+                "files_indexed": count,
+                "batch_size": batch_size,
+                "resumed": resume,
+            }))
+        }
+        _ => {
+            let batch_size = params.batch_size.unwrap_or(50);
+            let result = engine.delta_scan_paginated(batch_size)?;
+            Ok(serde_json::json!({
+                "status": "complete",
+                "mode": "delta",
+                "new_files": result.new_files.len(),
+                "modified_files": result.modified_files.len(),
+                "deleted_files": result.deleted_files.len(),
+                "new": result.new_files,
+                "modified": result.modified_files,
+                "deleted": result.deleted_files,
+            }))
+        }
+    }
 }
 
 /// Per-corpus statistics (document counts, mode, chunking, embedding model).
@@ -2449,11 +2152,11 @@ fn corpus_stats(engine: &Engine) -> Result<Value> {
     }))
 }
 
-/// Consolidated status tool (engine-level): combines per-corpus statistics and
-/// indexing progress, selected by `scope` (`corpus` | `indexing` | `all`,
-/// default `all`).
+/// Consolidated status tool (engine-level): combines per-corpus statistics,
+/// indexing progress, graph topology/density, and coverage inspection.
 fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
-    let params: StatusParams = serde_json::from_value(args).unwrap_or(StatusParams { scope: None });
+    let params: StatusParams =
+        serde_json::from_value(args).unwrap_or(StatusParams { scope: None, paths: None });
     let scope = params.scope.as_deref().unwrap_or("all");
 
     match scope {
@@ -2465,84 +2168,32 @@ fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
         }
         "graph" => {
             let stats = engine.graph().stats();
-            serde_json::to_value(stats)
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+            let density = engine.analyze_density(10);
+            Ok(serde_json::json!({
+                "stats": stats,
+                "density": density,
+            }))
+        }
+        "coverage" => {
+            let paths = params.paths.unwrap_or_default();
+            check_index_coverage_inner(engine, &paths)
         }
         _ => {
             let corpus = corpus_stats(engine)?;
             let indexing = serde_json::to_value(engine.get_indexing_status()?)
                 .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
-            let graph = serde_json::to_value(engine.graph().stats())
-                .map_err(|e| Error::Config(format!("serialize error: {}", e)))?;
+            let stats = engine.graph().stats();
+            let density = engine.analyze_density(10);
             Ok(serde_json::json!({
                 "corpus": corpus,
                 "indexing": indexing,
-                "graph": graph,
+                "graph": {
+                    "stats": stats,
+                    "density": density,
+                },
             }))
         }
     }
-}
-
-/// Graph density analysis.
-fn handle_analyze_density(engine: &Engine, args: Value) -> Result<Value> {
-    let params: AnalyzeDensityParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let top_hubs = params.top_hubs.unwrap_or(10);
-    let report = engine.analyze_density(top_hubs);
-
-    serde_json::to_value(report).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Find semantic gaps between BM25 and vector search.
-fn handle_find_semantic_gaps(engine: &Engine, args: Value) -> Result<Value> {
-    if engine.is_fast_mode() || !engine.has_vector_index() {
-        return Err(Error::Index(
-            "Semantic gap analysis is unavailable in fast mode. Re-index with index_mode = 'full' to enable vector search.".to_string(),
-        ));
-    }
-
-    let params: FindSemanticGapsParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let top_k = params.top_k.unwrap_or(10);
-    let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
-
-    // The engine runs the analysis over its own backends. `Ok(None)` signals the
-    // embedder was unavailable or some queries failed to embed.
-    match engine.find_semantic_gaps(&query_refs, top_k)? {
-        Some(gaps) => {
-            serde_json::to_value(gaps).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-        }
-        None => Ok(serde_json::json!({
-            "error": "embedder not available or some queries failed to embed",
-            "gaps": []
-        })),
-    }
-}
-
-/// Suggest chunks that may benefit from splitting.
-fn handle_suggest_splits(engine: &Engine, args: Value) -> Result<Value> {
-    let params: SuggestSplitsParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let max_chunk_chars = params.max_chunk_chars.unwrap_or(2000);
-    let suggestions = engine.suggest_splits(max_chunk_chars)?;
-
-    serde_json::to_value(suggestions).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Coverage report: which notes are never retrieved.
-fn handle_coverage_report(engine: &Engine, args: Value) -> Result<Value> {
-    let params: CoverageReportParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let top_k = params.top_k.unwrap_or(10);
-
-    let query_refs: Vec<&str> = params.queries.iter().map(|s| s.as_str()).collect();
-    let report = engine.coverage_report(&query_refs, top_k)?;
-
-    serde_json::to_value(report).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2577,18 +2228,86 @@ fn build_note_content(frontmatter: Option<&Value>, template: Option<&str>, body:
     content
 }
 
-/// Create a new note on disk and index it.
-fn handle_create_note(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: CreateNoteParams = serde_json::from_value(args)
+/// Write a note to disk (create, overwrite, append, or prepend) and index it.
+fn handle_write_note(engine: &mut Engine, args: Value) -> Result<Value> {
+    let params: WriteNoteParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    if engine.config().mode == CorpusMode::ReadOnly {
+        return Err(Error::Config(format!("corpus '{}' is read-only", engine.config().name)));
+    }
 
     let corpus_path = PathBuf::from(&engine.config().path);
     let full_path = corpus_path.join(&params.path);
 
-    // Don't overwrite existing files.
-    if full_path.exists() {
-        return Err(Error::Config(format!("file already exists: {}", params.path)));
-    }
+    let mode = params.mode.as_deref().unwrap_or("create");
+
+    let new_content = match mode {
+        "create" => {
+            if full_path.exists() {
+                return Err(Error::Config(format!("file already exists: {}", params.path)));
+            }
+            build_note_content(
+                params.frontmatter.as_ref(),
+                params.template.as_deref(),
+                &params.content,
+            )
+        }
+        "overwrite" => {
+            if params.frontmatter.is_some() || params.template.is_some() {
+                build_note_content(
+                    params.frontmatter.as_ref(),
+                    params.template.as_deref(),
+                    &params.content,
+                )
+            } else {
+                let mut s = params.content.clone();
+                if !s.ends_with('\n') {
+                    s.push('\n');
+                }
+                s
+            }
+        }
+        "append" => {
+            if !full_path.exists() {
+                return Err(Error::NotFound(format!("file not found: {}", params.path)));
+            }
+            let mut existing = fs::read_to_string(&full_path).map_err(|e| {
+                Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot read {}: {}", params.path, e),
+                ))
+            })?;
+            if !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            existing.push_str(&params.content);
+            if !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            existing
+        }
+        "prepend" => {
+            if !full_path.exists() {
+                return Err(Error::NotFound(format!("file not found: {}", params.path)));
+            }
+            let existing = fs::read_to_string(&full_path).map_err(|e| {
+                Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot read {}: {}", params.path, e),
+                ))
+            })?;
+            let mut s = params.content.clone();
+            if !s.ends_with('\n') {
+                s.push('\n');
+            }
+            s.push_str(&existing);
+            s
+        }
+        other => {
+            return Err(Error::Config(format!("unrecognized write mode: '{}'", other)));
+        }
+    };
 
     // Ensure parent directory exists.
     if let Some(parent) = full_path.parent() {
@@ -2600,73 +2319,7 @@ fn handle_create_note(engine: &mut Engine, args: Value) -> Result<Value> {
         })?;
     }
 
-    let body = params.content.as_deref().unwrap_or("");
-    let content = build_note_content(params.frontmatter.as_ref(), params.template.as_deref(), body);
-
-    // Write file atomically-ish (write then sync).
-    fs::write(&full_path, &content).map_err(|e| {
-        Error::Io(std::io::Error::new(e.kind(), format!("cannot write {}: {}", params.path, e)))
-    })?;
-
-    // Index the new file.
-    engine.index_file(&params.path, &content)?;
-    engine.commit()?;
-
-    debug!("Created note: {}", params.path);
-
-    Ok(serde_json::json!({
-        "path": params.path,
-        "created": true
-    }))
-}
-
-/// Update an existing note's content.
-fn handle_update_note(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: UpdateNoteParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    let corpus_path = PathBuf::from(&engine.config().path);
-    let full_path = corpus_path.join(&params.path);
-
-    if !full_path.exists() {
-        return Err(Error::NotFound(format!("file not found: {}", params.path)));
-    }
-
-    let existing = fs::read_to_string(&full_path).map_err(|e| {
-        Error::Io(std::io::Error::new(e.kind(), format!("cannot read {}: {}", params.path, e)))
-    })?;
-
-    let mode = params.mode.as_deref().unwrap_or("overwrite");
-    let new_content = match mode {
-        "append" => {
-            let mut s = existing;
-            if !s.ends_with('\n') {
-                s.push('\n');
-            }
-            s.push_str(&params.content);
-            if !s.ends_with('\n') {
-                s.push('\n');
-            }
-            s
-        }
-        "prepend" => {
-            let mut s = params.content.clone();
-            if !s.ends_with('\n') {
-                s.push('\n');
-            }
-            s.push_str(&existing);
-            s
-        }
-        _ => {
-            // "overwrite" or any unrecognized mode defaults to overwrite.
-            let mut s = params.content.clone();
-            if !s.ends_with('\n') {
-                s.push('\n');
-            }
-            s
-        }
-    };
-
+    // Write file atomically-ish.
     fs::write(&full_path, &new_content).map_err(|e| {
         Error::Io(std::io::Error::new(e.kind(), format!("cannot write {}: {}", params.path, e)))
     })?;
@@ -2675,11 +2328,12 @@ fn handle_update_note(engine: &mut Engine, args: Value) -> Result<Value> {
     engine.index_file(&params.path, &new_content)?;
     engine.commit()?;
 
-    debug!("Updated note: {} (mode={})", params.path, mode);
+    debug!("Written note: {} (mode={})", params.path, mode);
 
     Ok(serde_json::json!({
         "path": params.path,
-        "updated": true
+        "mode": mode,
+        "written": true
     }))
 }
 
@@ -2687,6 +2341,10 @@ fn handle_update_note(engine: &mut Engine, args: Value) -> Result<Value> {
 fn handle_delete_note(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: DeleteNoteParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    if engine.config().mode == CorpusMode::ReadOnly {
+        return Err(Error::Config(format!("corpus '{}' is read-only", engine.config().name)));
+    }
 
     let corpus_path = PathBuf::from(&engine.config().path);
     let full_path = corpus_path.join(&params.path);
@@ -2716,6 +2374,10 @@ fn handle_delete_note(engine: &mut Engine, args: Value) -> Result<Value> {
 fn handle_move_note(engine: &mut Engine, args: Value) -> Result<Value> {
     let params: MoveNoteParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
+
+    if engine.config().mode == CorpusMode::ReadOnly {
+        return Err(Error::Config(format!("corpus '{}' is read-only", engine.config().name)));
+    }
 
     let corpus_path = PathBuf::from(&engine.config().path);
     let from_full = corpus_path.join(&params.from);
@@ -2858,19 +2520,18 @@ fn load_corpus_templates(engine: &Engine) -> Result<HashMap<String, Template>> {
 }
 
 /// Validate a single note against its declared template.
-fn handle_validate_note(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ValidateNoteParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
+fn validate_single_note(
+    engine: &Engine,
+    path: &str,
+) -> Result<ctxvault_core::template::ValidationResult> {
     let corpus_path = PathBuf::from(&engine.config().path);
-    let full_path = corpus_path.join(&params.path);
+    let full_path = corpus_path.join(path);
 
     let content = fs::read_to_string(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", params.path, e)))?;
+        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
 
-    let doc = ctxvault_core::parser::parse_document(Path::new(&params.path), &content)?;
+    let doc = ctxvault_core::parser::parse_document(Path::new(path), &content)?;
 
-    // Determine which template the note declares.
     let template_name = doc.template.clone();
 
     let (valid, issues, tmpl_name) = if let Some(ref name) = template_name {
@@ -2881,7 +2542,6 @@ fn handle_validate_note(engine: &Engine, args: Value) -> Result<Value> {
                 !issues.iter().any(|i| i.severity == ctxvault_core::template::Severity::Error);
             (valid, issues, Some(name.clone()))
         } else {
-            // Template declared but not found — report as warning.
             let issues = vec![ctxvault_core::template::ValidationIssue {
                 severity: ctxvault_core::template::Severity::Warning,
                 message: format!("template '{}' not found in templates directory", name),
@@ -2890,25 +2550,22 @@ fn handle_validate_note(engine: &Engine, args: Value) -> Result<Value> {
             (true, issues, Some(name.clone()))
         }
     } else {
-        // No template declared — nothing to validate.
         (true, Vec::new(), None)
     };
 
-    let result = ctxvault_core::template::ValidationResult {
-        path: params.path,
+    Ok(ctxvault_core::template::ValidationResult {
+        path: path.to_string(),
         template: tmpl_name,
         valid,
         issues,
-    };
-
-    serde_json::to_value(result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    })
 }
 
 /// Validate all templated notes in the corpus.
-fn handle_validate_corpus(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ValidateCorpusParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
+fn validate_corpus_notes(
+    engine: &Engine,
+    limit: Option<usize>,
+) -> Result<Vec<ctxvault_core::template::ValidationResult>> {
     let templates = load_corpus_templates(engine)?;
     let files = engine.store().list_files()?;
     let corpus_path = PathBuf::from(&engine.config().path);
@@ -2916,7 +2573,6 @@ fn handle_validate_corpus(engine: &Engine, args: Value) -> Result<Value> {
     let mut results: Vec<ctxvault_core::template::ValidationResult> = Vec::new();
 
     for file in &files {
-        // Only validate files that declare a template.
         let tmpl_name = match &file.template {
             Some(name) => name.clone(),
             None => continue,
@@ -2943,7 +2599,6 @@ fn handle_validate_corpus(engine: &Engine, args: Value) -> Result<Value> {
             }]
         };
 
-        // Only include notes that have issues.
         if !issues.is_empty() {
             let valid =
                 !issues.iter().any(|i| i.severity == ctxvault_core::template::Severity::Error);
@@ -2955,189 +2610,40 @@ fn handle_validate_corpus(engine: &Engine, args: Value) -> Result<Value> {
             });
         }
 
-        // Respect limit if set.
-        if let Some(limit) = params.limit {
-            if results.len() >= limit {
+        if let Some(limit_val) = limit {
+            if results.len() >= limit_val {
                 break;
             }
         }
     }
 
-    serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    Ok(results)
 }
 
-/// List all available templates.
-fn handle_list_templates(engine: &Engine, _args: Value) -> Result<Value> {
-    let templates = load_corpus_templates(engine)?;
-
-    let mut list: Vec<&Template> = templates.values().collect();
-    list.sort_by(|a, b| a.name.cmp(&b.name));
-
-    serde_json::to_value(list).map_err(|e| Error::Config(format!("serialize error: {}", e)))
-}
-
-/// Promote fluid notes into a consolidated, schema-validated concept note.
-fn handle_promote_concept(engine: &mut Engine, args: Value) -> Result<Value> {
-    let params: PromoteConceptParams = serde_json::from_value(args)
-        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
-
-    if engine.config().mode == CorpusMode::ReadOnly {
-        return Err(Error::Config(format!("corpus '{}' is read-only", engine.config().name)));
-    }
-
-    let corpus_path = PathBuf::from(&engine.config().path);
-    let full_target_path = corpus_path.join(&params.target_path);
-
-    if full_target_path.exists() {
-        return Err(Error::Config(format!("target file already exists: {}", params.target_path)));
-    }
-
-    let mut fm_map = match &params.frontmatter {
-        Some(Value::Object(map)) => map.clone(),
-        _ => serde_json::Map::new(),
-    };
-
-    if let Some(ref tmpl) = params.template {
-        let _ = fm_map.insert("template".to_string(), Value::String(tmpl.clone()));
-    }
-
-    let fm_value = Value::Object(fm_map);
-
-    let mut validation_issues = Vec::new();
-    if let Some(ref tmpl_name) = params.template {
-        let templates = load_corpus_templates(engine)?;
-        if let Some(template) = templates.get(tmpl_name) {
-            let issues = template.validate(&Some(fm_value.clone()), &params.content);
-            let has_error =
-                issues.iter().any(|i| i.severity == ctxvault_core::template::Severity::Error);
-            validation_issues = issues;
-            if has_error {
-                let error_msgs: Vec<String> = validation_issues
-                    .iter()
-                    .filter(|i| i.severity == ctxvault_core::template::Severity::Error)
-                    .map(|i| format!("{}: {}", i.field.as_deref().unwrap_or("general"), i.message))
-                    .collect();
-                return Err(Error::Config(format!(
-                    "concept promotion failed template schema validation for '{}': {}",
-                    tmpl_name,
-                    error_msgs.join("; ")
-                )));
-            }
-        }
-    }
-
-    let content = build_note_content(Some(&fm_value), params.template.as_deref(), &params.content);
-
-    if let Some(parent) = full_target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                e.kind(),
-                format!("cannot create directory for {}: {}", params.target_path, e),
-            ))
-        })?;
-    }
-
-    fs::write(&full_target_path, &content).map_err(|e| {
-        Error::Io(std::io::Error::new(
-            e.kind(),
-            format!("cannot write {}: {}", params.target_path, e),
-        ))
-    })?;
-
-    engine.index_file(&params.target_path, &content)?;
-
-    let mut archived = Vec::new();
-    if params.archive_sources == Some(true) {
-        for src in &params.source_notes {
-            let src_full = corpus_path.join(src);
-            if src_full.exists() {
-                if let Ok(src_content) = fs::read_to_string(&src_full) {
-                    if let Ok(doc) =
-                        ctxvault_core::parser::parse_document(Path::new(src), &src_content)
-                    {
-                        let mut src_fm = match doc.frontmatter {
-                            Some(Value::Object(map)) => map,
-                            _ => serde_json::Map::new(),
-                        };
-                        let _ = src_fm
-                            .insert("status".to_string(), Value::String("archived".to_string()));
-                        let _ = src_fm.insert(
-                            "superseded_by".to_string(),
-                            Value::String(params.target_path.clone()),
-                        );
-
-                        let updated_src_content = build_note_content(
-                            Some(&Value::Object(src_fm)),
-                            doc.template.as_deref(),
-                            &doc.content,
-                        );
-                        if fs::write(&src_full, &updated_src_content).is_ok() {
-                            let _ = engine.index_file(src, &updated_src_content);
-                            archived.push(src.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    engine.commit()?;
-
-    Ok(serde_json::json!({
-        "status": "promoted",
-        "target_path": params.target_path,
-        "source_notes": params.source_notes,
-        "template_applied": params.template,
-        "validation_issues": validation_issues,
-        "archived_sources": archived,
-    }))
-}
-
-/// Validate ontology and graph integrity.
-fn handle_validate_taxonomy(engine: &Engine, args: Value) -> Result<Value> {
-    let params: ValidateTaxonomyParams =
-        serde_json::from_value(args).unwrap_or(ValidateTaxonomyParams {
-            check_broken: Some(true),
-            check_cycles: Some(true),
-            check_orphans: Some(true),
-        });
-
-    let check_broken = params.check_broken.unwrap_or(true);
-    let check_cycles = params.check_cycles.unwrap_or(true);
-    let check_orphans = params.check_orphans.unwrap_or(true);
-
+/// Validate structural ontology and graph integrity (broken links, cycle detection, orphan ADRs).
+fn run_taxonomy_validation(engine: &Engine) -> Result<Value> {
     let files = engine.store().list_files()?;
     let existing_paths: HashSet<String> = files.iter().map(|f| f.path.clone()).collect();
 
-    let broken_links =
-        if check_broken { engine.graph().detect_broken_links(&existing_paths) } else { Vec::new() };
+    let broken_links = engine.graph().detect_broken_links(&existing_paths);
+    let circular_dependencies = engine.graph().detect_circular_dependencies(&[
+        "supersedes",
+        "depends_on",
+        "implements",
+        "parent_of",
+    ]);
 
-    let circular_dependencies = if check_cycles {
-        engine.graph().detect_circular_dependencies(&[
-            "supersedes",
-            "depends_on",
-            "implements",
-            "parent_of",
-        ])
-    } else {
-        Vec::new()
-    };
-
-    let orphan_adrs = if check_orphans {
-        let adr_paths: Vec<String> = files
-            .iter()
-            .filter(|f| {
-                f.template.as_deref() == Some("adr")
-                    || f.template.as_deref() == Some("decision-record")
-                    || f.path.starts_with("docs/adrs/")
-                    || f.path.starts_with("adrs/")
-            })
-            .map(|f| f.path.clone())
-            .collect();
-        engine.graph().detect_orphan_adrs(&adr_paths)
-    } else {
-        Vec::new()
-    };
+    let adr_paths: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            f.template.as_deref() == Some("adr")
+                || f.template.as_deref() == Some("decision-record")
+                || f.path.starts_with("docs/adrs/")
+                || f.path.starts_with("adrs/")
+        })
+        .map(|f| f.path.clone())
+        .collect();
+    let orphan_adrs = engine.graph().detect_orphan_adrs(&adr_paths);
 
     let valid =
         broken_links.is_empty() && circular_dependencies.is_empty() && orphan_adrs.is_empty();
@@ -3153,123 +2659,55 @@ fn handle_validate_taxonomy(engine: &Engine, args: Value) -> Result<Value> {
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Structural Code Tools Handlers
-// ---------------------------------------------------------------------------
+/// Unified validation tool: validates a single note, entire corpus notes against templates, and/or graph taxonomy.
+fn handle_validate(engine: &Engine, args: Value) -> Result<Value> {
+    let params: ValidateParams = serde_json::from_value(args)
+        .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
-fn handle_get_symbol_definition(engine: &Engine, params: Value) -> Result<Value> {
-    let name = params["name"]
-        .as_str()
-        .ok_or_else(|| Error::Config("missing required parameter: name".to_string()))?;
-    let file_path_filter = params["file_path"].as_str();
-
-    let symbols = engine.store().find_symbols_by_name(name)?;
-    let filtered: Vec<_> = symbols
-        .into_iter()
-        .filter(|s| {
-            if let Some(fp) = file_path_filter {
-                s.file_path == fp
-            } else {
-                s.name == name || s.scope_path.ends_with(name)
-            }
-        })
-        .collect();
-
-    let mut results = Vec::new();
-    let corpus_root = Path::new(&engine.config().path);
-
-    for sym in &filtered {
-        let full_path = corpus_root.join(&sym.file_path);
-        let snippet = if let Ok(content) = fs::read_to_string(&full_path) {
-            let lines: Vec<&str> = content.lines().collect();
-            if sym.start_line > 0 && sym.start_line <= lines.len() {
-                let start_idx = sym.start_line - 1;
-                let end_idx = sym.end_line.min(lines.len());
-                Some(lines[start_idx..end_idx].join("\n"))
-            } else {
-                None
-            }
+    if let Some(path) = &params.path {
+        let note_res = validate_single_note(engine, path)?;
+        if params.check_taxonomy == Some(true) {
+            let tax_res = run_taxonomy_validation(engine)?;
+            let valid = note_res.valid && tax_res["valid"].as_bool().unwrap_or(true);
+            Ok(serde_json::json!({
+                "valid": valid,
+                "note": note_res,
+                "taxonomy": tax_res,
+            }))
         } else {
-            None
-        };
+            serde_json::to_value(note_res)
+                .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+        }
+    } else {
+        let check_taxonomy = params.check_taxonomy.unwrap_or(true);
+        let note_issues = validate_corpus_notes(engine, params.limit)?;
+        let notes_valid = note_issues.is_empty() || note_issues.iter().all(|r| r.valid);
 
-        let edges = engine.graph().get_all_edges();
-        let callers_count = edges
-            .iter()
-            .filter(|e| {
-                e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
-            })
-            .count();
-
-        results.push(serde_json::json!({
-            "name": sym.name,
-            "scope_path": sym.scope_path,
-            "symbol_type": sym.symbol_type,
-            "language": sym.language,
-            "file_path": sym.file_path,
-            "start_line": sym.start_line,
-            "end_line": sym.end_line,
-            "signature": sym.signature,
-            "docstring": sym.docstring,
-            "snippet": snippet,
-            "incoming_callers_count": callers_count,
-        }));
+        if check_taxonomy {
+            let tax_res = run_taxonomy_validation(engine)?;
+            let tax_valid = tax_res["valid"].as_bool().unwrap_or(true);
+            Ok(serde_json::json!({
+                "valid": notes_valid && tax_valid,
+                "notes_with_issues": note_issues,
+                "taxonomy": tax_res,
+            }))
+        } else {
+            Ok(serde_json::json!({
+                "valid": notes_valid,
+                "notes_with_issues": note_issues,
+            }))
+        }
     }
-
-    Ok(serde_json::json!({
-        "symbol_name": name,
-        "matches_count": results.len(),
-        "definitions": results,
-    }))
 }
 
-fn handle_get_architecture(engine: &Engine, _params: Value) -> Result<Value> {
-    let result = engine.graph().detect_communities_leiden();
-    let densities = engine.graph().community_densities();
-    let density_map: HashMap<usize, f64> =
-        densities.into_iter().map(|d| (d.community_id, d.density)).collect();
+/// List all available templates.
+fn handle_list_templates(engine: &Engine, _args: Value) -> Result<Value> {
+    let templates = load_corpus_templates(engine)?;
 
-    let mut clusters = Vec::new();
-    let edges = engine.graph().get_all_edges();
+    let mut list: Vec<&Template> = templates.values().collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
 
-    for comm in &result.communities {
-        let comm_id = comm.id;
-        let mut nodes = comm.members.clone();
-        nodes.sort();
-        let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
-
-        let mut node_degree: HashMap<String, usize> = HashMap::new();
-        for edge in &edges {
-            if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
-                *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
-                *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
-            }
-        }
-        let mut key_nodes: Vec<_> =
-            nodes.iter().filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg))).collect();
-        key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
-        let top_key_nodes: Vec<String> = key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
-
-        clusters.push(serde_json::json!({
-            "community_id": comm_id,
-            "node_count": nodes.len(),
-            "density": density,
-            "key_nodes": top_key_nodes,
-            "nodes": nodes,
-        }));
-    }
-
-    clusters.sort_by(|a, b| {
-        b["node_count"].as_u64().unwrap_or(0).cmp(&a["node_count"].as_u64().unwrap_or(0))
-    });
-
-    Ok(serde_json::json!({
-        "total_nodes": engine.graph().node_count(),
-        "total_edges": engine.graph().edge_count(),
-        "modularity": result.modularity,
-        "clusters_count": clusters.len(),
-        "clusters": clusters,
-    }))
+    serde_json::to_value(list).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -3330,47 +2768,30 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 34, "Expected 34 tools registered");
+        assert_eq!(tools.len(), 17, "Expected 17 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
-            "read_note",
+            "read_file",
             "get_snippet",
-            "read_code_file",
-            "read_multiple",
             "list_notes",
-            "get_frontmatter",
             "search",
             "search_related",
             "graph_match",
             "graph_communities",
-            "create_note",
-            "update_note",
+            "write_note",
             "delete_note",
             "move_note",
-            "promote_concept",
-            "validate_note",
-            "validate_corpus",
+            "validate",
             "list_templates",
-            "validate_taxonomy",
-            "analyze_density",
-            "find_semantic_gaps",
-            "suggest_splits",
-            "coverage_report",
-            "check_index_coverage",
-            "corpus_list",
+            "status",
             "list_corpora",
+            "sync_corpus",
             "index_corpus",
             "unload_corpus",
-            "reembed_corpus",
-            "sync_corpus",
-            "reindex_corpus",
-            "status",
-            "get_symbol_definition",
-            "get_architecture",
         ];
 
-        assert_eq!(expected.len(), 34, "expected-name list must match the 34-tool count");
+        assert_eq!(expected.len(), 17, "expected-name list must match the 17-tool count");
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
@@ -3378,6 +2799,26 @@ mod tests {
 
         // The consolidated / deleted legacy tools must not be registered.
         for gone in [
+            "read_note",
+            "read_code_file",
+            "read_multiple",
+            "get_frontmatter",
+            "create_note",
+            "update_note",
+            "promote_concept",
+            "validate_note",
+            "validate_corpus",
+            "validate_taxonomy",
+            "analyze_density",
+            "find_semantic_gaps",
+            "suggest_splits",
+            "coverage_report",
+            "check_index_coverage",
+            "corpus_list",
+            "reembed_corpus",
+            "reindex_corpus",
+            "get_symbol_definition",
+            "get_architecture",
             "search_bm25",
             "search_semantic",
             "search_hybrid",
@@ -3400,21 +2841,23 @@ mod tests {
         }
 
         // Verify read-only classification
-        assert!(registry.is_read_only("read_note"));
-        assert!(registry.is_read_only("search"));
-        assert!(registry.is_read_only("status"));
-        assert!(registry.is_read_only("get_symbol_definition"));
-        assert!(registry.is_read_only("graph_match"));
-        assert!(registry.is_read_only("get_architecture"));
+        assert!(registry.is_read_only("read_file"));
         assert!(registry.is_read_only("get_snippet"));
-        assert!(registry.is_read_only("read_code_file"));
-        assert!(registry.is_read_only("read_multiple"));
-        assert!(registry.is_read_only("check_index_coverage"));
+        assert!(registry.is_read_only("list_notes"));
+        assert!(registry.is_read_only("search"));
+        assert!(registry.is_read_only("search_related"));
+        assert!(registry.is_read_only("graph_match"));
+        assert!(registry.is_read_only("graph_communities"));
+        assert!(registry.is_read_only("validate"));
+        assert!(registry.is_read_only("list_templates"));
+        assert!(registry.is_read_only("status"));
         assert!(registry.is_read_only("list_corpora"));
+        assert!(!registry.is_read_only("write_note"));
+        assert!(!registry.is_read_only("delete_note"));
+        assert!(!registry.is_read_only("move_note"));
+        assert!(!registry.is_read_only("sync_corpus"));
         assert!(!registry.is_read_only("index_corpus"));
         assert!(!registry.is_read_only("unload_corpus"));
-        assert!(!registry.is_read_only("create_note"));
-        assert!(!registry.is_read_only("reindex_corpus"));
     }
 
     #[test]
@@ -3430,29 +2873,32 @@ mod tests {
         // scout ⊂ analysis ⊂ all.
         assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
         assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
-        assert_eq!(all_count, 34, "all profile advertises every registered tool");
-        assert_eq!(analysis_count, 24, "analysis profile advertises scout + analysis tools");
-        assert_eq!(scout_count, 9, "scout profile advertises the minimal set");
+        assert_eq!(all_count, 17, "all profile advertises every registered tool");
+        assert_eq!(analysis_count, 11, "analysis profile advertises scout + analysis tools");
+        assert_eq!(scout_count, 6, "scout profile advertises the minimal set");
 
         // scout includes core retrieval/fetch but not writes or analysis-only tools.
         let scout_names: HashSet<&str> = scout.list().iter().map(|t| t.name.as_str()).collect();
         assert!(scout_names.contains("search"));
         assert!(scout_names.contains("get_snippet"));
+        assert!(scout_names.contains("read_file"));
         assert!(scout_names.contains("status"));
-        assert!(!scout_names.contains("create_note"));
+        assert!(!scout_names.contains("write_note"));
         assert!(!scout_names.contains("graph_match"));
 
-        // Hidden tools still execute (advertise-only filtering): create_note is
+        // Hidden tools still execute (advertise-only filtering): write_note is
         // registered even though scout does not advertise it.
-        assert!(scout.registry().get("create_note").is_some());
+        assert!(scout.registry().get("write_note").is_some());
 
         // analysis adds read-only tools but still hides writes.
         let analysis_names: HashSet<&str> =
             analysis.list().iter().map(|t| t.name.as_str()).collect();
         assert!(analysis_names.contains("graph_match"));
-        assert!(analysis_names.contains("corpus_list"));
-        assert!(!analysis_names.contains("create_note"));
-        assert!(!analysis_names.contains("reindex_corpus"));
+        assert!(analysis_names.contains("graph_communities"));
+        assert!(analysis_names.contains("validate"));
+        assert!(analysis_names.contains("list_corpora"));
+        assert!(!analysis_names.contains("write_note"));
+        assert!(!analysis_names.contains("sync_corpus"));
     }
 
     #[test]
@@ -3468,8 +2914,11 @@ mod tests {
         assert!(notes.is_empty());
 
         // Calling mutating tool with execute_read should return error
-        let err =
-            registry.execute_read("create_note", &engine, serde_json::json!({ "path": "fail.md" }));
+        let err = registry.execute_read(
+            "write_note",
+            &engine,
+            serde_json::json!({ "path": "fail.md", "content": "hello" }),
+        );
         assert!(err.is_err());
     }
 
@@ -3521,7 +2970,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_note_tool() {
+    fn test_write_note_create() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3529,7 +2978,7 @@ mod tests {
 
         let result = registry
             .execute(
-                "create_note",
+                "write_note",
                 &mut engine,
                 serde_json::json!({
                     "path": "new-note.md",
@@ -3540,7 +2989,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["path"], "new-note.md");
-        assert_eq!(result["created"], true);
+        assert_eq!(result["written"], true);
+        assert_eq!(result["mode"], "create");
 
         // Verify file exists on disk.
         let corpus_dir = tmp.path().join("corpus");
@@ -3562,7 +3012,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_note_with_template() {
+    fn test_write_note_with_template() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3570,7 +3020,7 @@ mod tests {
 
         let result = registry
             .execute(
-                "create_note",
+                "write_note",
                 &mut engine,
                 serde_json::json!({
                     "path": "templated.md",
@@ -3580,7 +3030,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result["created"], true);
+        assert_eq!(result["written"], true);
 
         let corpus_dir = tmp.path().join("corpus");
         let file_content = fs::read_to_string(corpus_dir.join("templated.md")).unwrap();
@@ -3588,7 +3038,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_note_already_exists() {
+    fn test_write_note_already_exists() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3598,16 +3048,16 @@ mod tests {
         fs::write(corpus_dir.join("existing.md"), "# Existing").unwrap();
 
         let result = registry.execute(
-            "create_note",
+            "write_note",
             &mut engine,
-            serde_json::json!({ "path": "existing.md", "content": "overwrite?" }),
+            serde_json::json!({ "path": "existing.md", "content": "overwrite?", "mode": "create" }),
         );
 
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_update_note_overwrite() {
+    fn test_write_note_overwrite() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3621,16 +3071,18 @@ mod tests {
 
         let result = registry
             .execute(
-                "update_note",
+                "write_note",
                 &mut engine,
                 serde_json::json!({
                     "path": "update-me.md",
-                    "content": "# Replaced\n\nNew content."
+                    "content": "# Replaced\n\nNew content.",
+                    "mode": "overwrite"
                 }),
             )
             .unwrap();
 
-        assert_eq!(result["updated"], true);
+        assert_eq!(result["written"], true);
+        assert_eq!(result["mode"], "overwrite");
 
         let file_content = fs::read_to_string(corpus_dir.join("update-me.md")).unwrap();
         assert!(file_content.contains("New content"));
@@ -3638,7 +3090,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_note_append() {
+    fn test_write_note_append() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3652,7 +3104,7 @@ mod tests {
 
         let result = registry
             .execute(
-                "update_note",
+                "write_note",
                 &mut engine,
                 serde_json::json!({
                     "path": "append.md",
@@ -3662,7 +3114,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result["updated"], true);
+        assert_eq!(result["written"], true);
+        assert_eq!(result["mode"], "append");
 
         let file_content = fs::read_to_string(corpus_dir.join("append.md")).unwrap();
         assert!(file_content.contains("First line."));
@@ -3670,7 +3123,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_note_prepend() {
+    fn test_write_note_prepend() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let mut registry = ToolRegistry::new();
@@ -3684,7 +3137,7 @@ mod tests {
 
         let result = registry
             .execute(
-                "update_note",
+                "write_note",
                 &mut engine,
                 serde_json::json!({
                     "path": "prepend.md",
@@ -3694,7 +3147,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result["updated"], true);
+        assert_eq!(result["written"], true);
+        assert_eq!(result["mode"], "prepend");
 
         let file_content = fs::read_to_string(corpus_dir.join("prepend.md")).unwrap();
         // Prepended text should appear before original content.
@@ -3832,8 +3286,7 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 34 tools.
-        assert_eq!(tools.len(), 34, "Expected 34 tools in multi-corpus registry");
+        assert_eq!(tools.len(), 17, "Expected 17 tools in multi-corpus registry");
         assert!(
             registry.registry().get("status").is_some(),
             "consolidated status tool should be registered"
@@ -4157,91 +3610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_promote_concept_tool_success() {
-        let tmp = TempDir::new().unwrap();
-        let mut engine = create_test_engine(&tmp);
-        let corpus_dir = tmp.path().join("corpus");
-
-        // Create raw source notes
-        fs::write(corpus_dir.join("scratch1.md"), "# Scratch 1\nIdea 1").unwrap();
-        fs::write(corpus_dir.join("scratch2.md"), "# Scratch 2\nIdea 2").unwrap();
-        engine.index_file("scratch1.md", "# Scratch 1\nIdea 1").unwrap();
-        engine.index_file("scratch2.md", "# Scratch 2\nIdea 2").unwrap();
-        engine.commit().unwrap();
-
-        let mut registry = ToolRegistry::new();
-        registry.register_all();
-
-        let result = registry
-            .execute(
-                "promote_concept",
-                &mut engine,
-                serde_json::json!({
-                    "source_notes": ["scratch1.md", "scratch2.md"],
-                    "target_path": "concepts/unified_architecture.md",
-                    "content": "# Unified Architecture\n\nSynthesized content here.",
-                    "frontmatter": { "status": "active", "confidence": "high" },
-                    "archive_sources": true
-                }),
-            )
-            .unwrap();
-
-        assert_eq!(result["status"], "promoted");
-        assert_eq!(result["target_path"], "concepts/unified_architecture.md");
-
-        // Target note created
-        assert!(corpus_dir.join("concepts/unified_architecture.md").exists());
-
-        // Source notes archived
-        let s1 = fs::read_to_string(corpus_dir.join("scratch1.md")).unwrap();
-        assert!(s1.contains("status: archived"));
-        assert!(s1.contains("superseded_by: concepts/unified_architecture.md"));
-    }
-
-    #[test]
-    fn test_promote_concept_tool_rollback_on_schema_error() {
-        let tmp = TempDir::new().unwrap();
-        let mut engine = create_test_engine(&tmp);
-        let corpus_dir = tmp.path().join("corpus");
-
-        // Create a template directory with strict schema
-        let templates_dir = corpus_dir.join(".templates");
-        fs::create_dir_all(&templates_dir).unwrap();
-        let tmpl_toml = r#"
-            name = "adr"
-            description = "Architecture Decision Record"
-
-            [fields.status]
-            type = "enum"
-            required = true
-            allowed_values = ["proposed", "accepted", "rejected"]
-        "#;
-        fs::write(templates_dir.join("adr.toml"), tmpl_toml).unwrap();
-
-        let mut registry = ToolRegistry::new();
-        registry.register_all();
-
-        // Attempt promotion with invalid status field value
-        let result = registry.execute(
-            "promote_concept",
-            &mut engine,
-            serde_json::json!({
-                "source_notes": ["raw.md"],
-                "target_path": "adrs/001.md",
-                "template": "adr",
-                "content": "# ADR 001\nDecision content",
-                "frontmatter": { "status": "invalid_status" }
-            }),
-        );
-
-        assert!(result.is_err(), "Schema error must reject promotion transaction");
-
-        // Target note must NOT exist on disk (rolled back)
-        assert!(!corpus_dir.join("adrs/001.md").exists());
-    }
-
-    #[test]
-    fn test_validate_taxonomy_tool() {
+    fn test_validate_tool() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
 
@@ -4276,12 +3645,13 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        let result =
-            registry.execute("validate_taxonomy", &mut engine, serde_json::json!({})).unwrap();
+        let result = registry
+            .execute("validate", &mut engine, serde_json::json!({ "check_taxonomy": true }))
+            .unwrap();
 
         assert_eq!(result["valid"], false);
-        assert!(result["broken_links_count"].as_u64().unwrap() >= 1);
-        assert!(result["circular_dependencies_count"].as_u64().unwrap() >= 1);
+        assert!(result["taxonomy"]["broken_links_count"].as_u64().unwrap() >= 1);
+        assert!(result["taxonomy"]["circular_dependencies_count"].as_u64().unwrap() >= 1);
     }
 
     #[test]
@@ -4311,20 +3681,15 @@ pub fn tokenize(input: &str) -> Vec<String> {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        // 1. Test get_symbol_definition
+        // 1. Test get_snippet (absorbed get_symbol_definition)
         let def_res = registry
-            .execute_read(
-                "get_symbol_definition",
-                &engine,
-                serde_json::json!({ "name": "parse_query" }),
-            )
+            .execute_read("get_snippet", &engine, serde_json::json!({ "name": "parse_query" }))
             .unwrap();
 
-        assert_eq!(def_res["matches_count"], 1);
-        let def = &def_res["definitions"][0];
-        assert_eq!(def["name"], "parse_query");
-        assert_eq!(def["file_path"], "parser.rs");
-        assert!(def["snippet"].as_str().unwrap().contains("tokenize(raw)"));
+        assert_eq!(def_res["kind"], "code_symbol");
+        assert_eq!(def_res["name"], "parse_query");
+        assert_eq!(def_res["path"], "parser.rs");
+        assert!(def_res["source"].as_str().unwrap().contains("tokenize(raw)"));
 
         // 2. Test callers via graph_match
         let callers_res = registry
@@ -4339,16 +3704,21 @@ pub fn tokenize(input: &str) -> Vec<String> {
         assert_eq!(match_res.total_matches, 1);
         assert_eq!(match_res.matches[0].node, "tokenize");
 
-        // 3. Test get_architecture
-        let arch_res =
-            registry.execute_read("get_architecture", &engine, serde_json::json!({})).unwrap();
+        // 3. Test graph_communities view='architecture' (absorbed get_architecture)
+        let arch_res = registry
+            .execute_read(
+                "graph_communities",
+                &engine,
+                serde_json::json!({ "view": "architecture" }),
+            )
+            .unwrap();
 
-        assert!(arch_res["total_nodes"].as_u64().unwrap() >= 1);
-        assert!(arch_res["clusters_count"].as_u64().unwrap() >= 1);
+        assert!(arch_res["component_count"].as_u64().unwrap() >= 1);
+        assert!(!arch_res["components"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn test_read_multiple_tool() {
+    fn test_read_file_tool() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let corpus_dir = tmp.path().join("corpus");
@@ -4365,10 +3735,18 @@ pub fn tokenize(input: &str) -> Vec<String> {
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        // Two existing files + one missing -> 3 entries, one carrying an error.
+        // Single file read
+        let single = registry
+            .execute_read("read_file", &engine, serde_json::json!({ "path": "design.md" }))
+            .unwrap();
+        assert_eq!(single["kind"], "markdown_note");
+        assert_eq!(single["title"], "Design Note");
+        assert!(single["content"].as_str().unwrap().contains("markdown content"));
+
+        // Batch file read: Two existing files + one missing -> 3 entries, one carrying an error.
         let res = registry
             .execute_read(
-                "read_multiple",
+                "read_file",
                 &engine,
                 serde_json::json!({ "paths": ["design.md", "lib.rs", "nope.md"] }),
             )
@@ -4378,13 +3756,13 @@ pub fn tokenize(input: &str) -> Vec<String> {
         let results = res["results"].as_array().unwrap();
 
         let note = results.iter().find(|r| r["path"] == "design.md").unwrap();
-        assert_eq!(note["kind"], "note");
+        assert_eq!(note["kind"], "markdown_note");
         assert_eq!(note["title"], "Design Note");
         assert!(note["content"].as_str().unwrap().contains("markdown content"));
         assert!(note.get("error").is_none());
 
         let code = results.iter().find(|r| r["path"] == "lib.rs").unwrap();
-        assert_eq!(code["kind"], "code");
+        assert_eq!(code["kind"], "code_file");
         assert_eq!(code["language"], "rust");
         assert!(code["content"].as_str().unwrap().contains("helper"));
 
@@ -4393,7 +3771,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
     }
 
     #[test]
-    fn test_check_index_coverage_tool() {
+    fn test_status_coverage_scope() {
         let tmp = TempDir::new().unwrap();
         let mut engine = create_test_engine(&tmp);
         let corpus_dir = tmp.path().join("corpus");
@@ -4412,9 +3790,9 @@ pub fn indexed_fn() -> u32 {
 
         let res = registry
             .execute_read(
-                "check_index_coverage",
+                "status",
                 &engine,
-                serde_json::json!({ "paths": ["covered.rs", "does_not_exist.rs"] }),
+                serde_json::json!({ "scope": "coverage", "paths": ["covered.rs", "does_not_exist.rs"] }),
             )
             .unwrap();
 
@@ -4488,17 +3866,7 @@ pub fn indexed_fn() -> u32 {
         assert_eq!(hyb_docs.results.len(), 1);
         assert_eq!(hyb_docs.results[0].path, "guide.md");
 
-        // 3. Find semantic gaps must fail in fast mode
-        let gaps_err = registry
-            .execute_read(
-                "find_semantic_gaps",
-                &engine,
-                serde_json::json!({ "queries": ["architecture"] }),
-            )
-            .unwrap_err();
-        assert!(gaps_err.to_string().contains("unavailable in fast mode"));
-
-        // 4. Sync corpus with fast: true maintains fast mode
+        // 3. Sync corpus with fast: true maintains fast mode
         let sync_res = registry
             .execute("sync_corpus", &mut engine, serde_json::json!({ "fast": true }))
             .unwrap();
@@ -4542,12 +3910,7 @@ pub fn indexed_fn() -> u32 {
             .unwrap();
         assert_eq!(status_res["index_mode"], "DocsEmbed");
 
-        // 2. Corpus list reflects DocsEmbed mode
-        let list_res =
-            registry.execute_read("corpus_list", &engine, serde_json::json!({})).unwrap();
-        assert_eq!(list_res[0]["index_mode"], "DocsEmbed");
-
-        // 3. BM25 search finds both doc and code
+        // 2. BM25 search finds both doc and code
         let bm25_res = registry
             .execute_read(
                 "search",
@@ -4559,7 +3922,7 @@ pub fn indexed_fn() -> u32 {
             serde_json::from_value(bm25_res).unwrap();
         assert!(bm25_resp.code.is_some());
 
-        // 4. Hybrid search executes cleanly
+        // 3. Hybrid search executes cleanly
         let hyb_res = registry
             .execute_read(
                 "search",
@@ -4571,12 +3934,12 @@ pub fn indexed_fn() -> u32 {
             serde_json::from_value(hyb_res).unwrap();
         assert!(hyb_resp.docs.is_some());
 
-        // 5. Reindex with index_mode override preserves DocsEmbed
+        // 4. Reindex with index_mode override preserves DocsEmbed
         let reindex_res = registry
             .execute(
-                "reindex_corpus",
+                "sync_corpus",
                 &mut engine,
-                serde_json::json!({ "index_mode": "docs-embed" }),
+                serde_json::json!({ "mode": "full", "index_mode": "docs-embed" }),
             )
             .unwrap();
         assert_eq!(reindex_res["status"], "complete");
@@ -4742,12 +4105,12 @@ pub fn normalize(input: &str) -> Vec<String> {
 
         // Tier 3 (code): read the whole file raw.
         let file_res = registry
-            .execute_read("read_code_file", &engine, serde_json::json!({ "path": "router.rs" }))
+            .execute_read("read_file", &engine, serde_json::json!({ "path": "router.rs" }))
             .unwrap();
         assert_eq!(file_res["language"], "rust");
         assert!(file_res["content"].as_str().unwrap().contains("pub struct Router;"));
         assert!(file_res["content"].as_str().unwrap().contains("pub fn normalize"));
-        assert!(file_res["total_line_count"].as_u64().unwrap() >= 5);
+        assert!(file_res["total_lines"].as_u64().unwrap() >= 5);
 
         // A bare path (no chunk_index / qualified_name) is redirected to Tier 3.
         let hint = registry.execute_read(
@@ -5048,5 +4411,45 @@ pub fn compute_hash(data: &[u8]) -> u64 {
             )
             .unwrap_err();
         assert!(err.to_string().contains("no code symbol"));
+    }
+
+    #[test]
+    fn test_search_inlines_top_snippets() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        let doc_content =
+            "# Architecture\n\nCtxvault is a high performance semantic context server.\n";
+        fs::write(corpus_dir.join("arch.md"), doc_content).unwrap();
+        engine.index_file("arch.md", doc_content).unwrap();
+
+        let rust_code = "pub fn execute_search() -> bool { true }\n";
+        fs::write(corpus_dir.join("search.rs"), rust_code).unwrap();
+        engine.index_file("search.rs", rust_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // Search with snippets = 2
+        let res = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "semantic context server", "mode": "bm25", "snippets": 2 }),
+            )
+            .unwrap();
+
+        let resp: ctxvault_common::types::SearchResponse = serde_json::from_value(res).unwrap();
+        let docs = resp.docs.unwrap();
+        assert!(!docs.results.is_empty());
+        let top_hit = &docs.results[0];
+        assert_eq!(top_hit.path, "arch.md");
+        assert!(top_hit.snippet.is_some(), "Turn 1 snippet must be populated");
+        assert!(top_hit.snippet.as_ref().unwrap().contains("high performance semantic"));
     }
 }

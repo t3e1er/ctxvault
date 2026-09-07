@@ -74,6 +74,7 @@ async fn test_mcp_http_server_and_client_e2e() {
             edge_types: None,
             edge_class: None,
             decompose: None,
+            snippets: None,
         };
         let direct_bm25 = engine.search_service().search(&query).expect("direct bm25");
         println!("direct_bm25 count: {}, items: {:?}", direct_bm25.len(), direct_bm25);
@@ -129,16 +130,16 @@ async fn test_mcp_http_server_and_client_e2e() {
     println!("search_bm25 response text:\n{bm25_text}");
     assert!(bm25_text.contains("architecture.md"));
 
-    // Test read_note
-    let read_res = client.read_note("architecture.md").await.expect("read_note");
+    // Test read_file
+    let read_res = client.read_file("architecture.md").await.expect("read_file");
     assert!(read_res["content"][0]["text"].as_str().unwrap().contains("Architecture Overview"));
 
-    // Test create_note
+    // Test write_note
     let create_res = client
-        .create_note("roadmap.md", "# Roadmap\nUpcoming releases.", None)
+        .write_note("roadmap.md", "# Roadmap\nUpcoming releases.", Some("create"), None)
         .await
-        .expect("create_note");
-    assert!(create_res["content"][0]["text"].as_str().unwrap().contains("created"));
+        .expect("write_note");
+    assert!(create_res["content"][0]["text"].as_str().unwrap().contains("written"));
 
     // Verify created file on disk
     let roadmap_path = corpus_path.join("roadmap.md");

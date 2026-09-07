@@ -1,5 +1,5 @@
 ---
-title: "The 39 MCP Tools: Complete Functional Catalog"
+title: "The 17 MCP Tools: Complete Functional Catalog"
 category: "mcp-modes"
 status: "active"
 tags: ["tools", "catalog", "mcp", "api-reference", "tools-registry"]
@@ -11,41 +11,32 @@ related:
   - "[[docs/mcp-modes/decisions/adr-011-readonly-readwrite-handler-model]]"
 ---
 
-# The 39 MCP Tools: Complete Functional Catalog
+# The 17 MCP Tools: Complete Functional Catalog
 
-The authoritative tool registry lives in `crates/ctxvault-mcp/src/tools/mod.rs` (`ToolRegistry`). All 39 tools are partitioned across 8 functional domains.
+The authoritative tool registry lives in `crates/ctxvault-mcp/src/tools/mod.rs` (`ToolRegistry`). All 17 tools are partitioned across 5 functional domains.
 
 ---
 
-## 1. Registered Tool Inventory
+## 1. Registered Tool Inventory (17 Tools)
 
 ```
 ┌──────────────────────────────┬────────┬────────────────────────────────────────────────────────────────────────┐
 │ Domain                       │ Count  │ Registered Tools                                                       │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 1. Read                      │ 6      │ `read_note`, `read_code_file`, `read_multiple`, `get_snippet`,         │
-│                              │        │ `list_notes`, `get_frontmatter`                                        │
+│ 1. Read                      │ 3      │ `read_file`, `get_snippet`, `list_notes`                               │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 2. Search                    │ 2      │ `search` (unified tool), `search_related`                              │
+│ 2. Search                    │ 2      │ `search` (unified tool with Turn 1 hybrid snippets), `search_related`  │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 3. Graph                     │ 8      │ `backlinks`, `forwardlinks`, `graph_path`, `graph_stats`,              │
-│                              │        │ `graph_subgraph`, `graph_communities`, `list_edge_types`,              │
-│                              │        │ `traverse_lineage`                                                     │
+│ 3. Graph                     │ 2      │ `graph_match`, `graph_communities` (view="architecture"|"raw")         │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 4. Write (Mutating)          │ 5      │ `create_note`, `update_note`, `delete_note`, `move_note`,               │
-│                              │        │ `promote_concept`                                                      │
+│ 4. Write (Mutating)          │ 3      │ `write_note` (mode="create"|"overwrite"|"append"|"prepend"),           │
+│                              │        │ `delete_note`, `move_note`                                             │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 5. Template & Validation     │ 4      │ `validate_note`, `validate_corpus`, `list_templates`,                  │
-│                              │        │ `validate_taxonomy`                                                    │
+│ 5. Template & Validation     │ 2      │ `validate` (note template & corpus taxonomy check), `list_templates`   │
 ├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 6. Corpus Analysis           │ 5      │ `analyze_density`, `find_semantic_gaps`, `suggest_splits`,             │
-│                              │        │ `coverage_report`, `check_index_coverage`                              │
-├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 7. Code Intelligence         │ 4      │ `get_symbol_definition`, `find_callers`, `get_architecture`,           │
-│                              │        │ `detect_changes` (mutating)                                            │
-├──────────────────────────────┼────────┼────────────────────────────────────────────────────────────────────────┤
-│ 8. System & Corpus Admin     │ 5      │ `status` (unified tool), `corpus_list`, `reindex_corpus` (mutating),   │
-│                              │        │ `sync_corpus` (mutating), `reembed_corpus` (mutating)                  │
+│ 6. System & Corpus Admin     │ 5      │ `status` (unified scope tool: corpus, indexing, graph, coverage, all), │
+│                              │        │ `list_corpora`, `sync_corpus` (mode="delta"|"full"|"reembed"),         │
+│                              │        │ `index_corpus` (mutating), `unload_corpus` (mutating)                  │
 └──────────────────────────────┴────────┴────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -61,8 +52,9 @@ Every tool is bound to one of two execution paths:
 
 ## 3. High-Value Specialist Tools
 
-* **`read_multiple`**: Tier-3 batch reader. Fetches $N$ file paths in a single round-trip. Per-file missing paths return error entries within the JSON array rather than failing the entire invocation.
-* **`check_index_coverage`**: Audits whether specified directories or file paths are indexed, reporting symbol counts and flag parse gaps (empty files).
-* **`detect_changes`**: Fast SHA-256 hash comparison across the filesystem computing the downstream symbol blast radius before code is committed.
+* **`read_file`**: Tier-3 reader. Supports single path string or array of paths (`paths`), with line slicing (`start_line`, `end_line`) and `max_lines` bounds.
+* **`get_snippet`**: Tier-2 fetch. Retrieves exact code symbol sources (by `name` or `qualified_name`) or bounded doc chunks (by `path` + `chunk_index`), with optional neighbor expansion.
+* **`status(scope="coverage")`**: Audits whether specified directories or file paths are indexed and parsed.
+* **`graph_communities(view="architecture")`**: Generates a high-level subsystem component map with top key nodes and cluster density.
 
 See [[docs/mcp-modes/decisions/adr-011-readonly-readwrite-handler-model]] for concurrency details.

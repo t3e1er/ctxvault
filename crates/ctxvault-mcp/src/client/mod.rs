@@ -154,39 +154,28 @@ impl<T: McpTransport> McpClient<T> {
         self.call_tool("search", args).await
     }
 
-    /// Read the complete content and parsed frontmatter of a note.
-    pub async fn read_note(&self, path: &str) -> Result<Value> {
-        self.call_tool("read_note", serde_json::json!({ "path": path })).await
+    /// Read the complete content of a note or source file via `read_file`.
+    pub async fn read_file(&self, path: &str) -> Result<Value> {
+        self.call_tool("read_file", serde_json::json!({ "path": path })).await
     }
 
-    /// List all notes in the corpus with their metadata.
+    /// Read multiple files in batch via `read_file`.
+    pub async fn read_files(&self, paths: &[&str]) -> Result<Value> {
+        self.call_tool("read_file", serde_json::json!({ "paths": paths })).await
+    }
+
+    /// List notes in the corpus with their metadata.
     pub async fn list_notes(&self) -> Result<Value> {
         self.call_tool("list_notes", serde_json::json!({})).await
     }
 
-    /// Create a new markdown note validated against a template.
-    pub async fn create_note(
-        &self,
-        path: &str,
-        content: &str,
-        template: Option<&str>,
-    ) -> Result<Value> {
-        let mut args = serde_json::json!({
-            "path": path,
-            "content": content
-        });
-        if let Some(t) = template {
-            args["template"] = t.into();
-        }
-        self.call_tool("create_note", args).await
-    }
-
-    /// Update an existing note with patch, append, prepend, or overwrite modes.
-    pub async fn update_note(
+    /// Create or update a note via `write_note`.
+    pub async fn write_note(
         &self,
         path: &str,
         content: &str,
         mode: Option<&str>,
+        template: Option<&str>,
     ) -> Result<Value> {
         let mut args = serde_json::json!({
             "path": path,
@@ -195,33 +184,15 @@ impl<T: McpTransport> McpClient<T> {
         if let Some(m) = mode {
             args["mode"] = m.into();
         }
-        self.call_tool("update_note", args).await
-    }
-
-    /// Delete a note and prune all associated graph edges and vector indices.
-    pub async fn delete_note(&self, path: &str, confirm: bool) -> Result<Value> {
-        self.call_tool("delete_note", serde_json::json!({ "path": path, "confirm": confirm })).await
-    }
-
-    /// Formalize an episodic trace into a typed concept note (Principle 3).
-    pub async fn promote_concept(
-        &self,
-        title: &str,
-        summary: &str,
-        template: &str,
-        target_path: &str,
-        lineage: Option<Value>,
-    ) -> Result<Value> {
-        let mut args = serde_json::json!({
-            "title": title,
-            "summary": summary,
-            "template": template,
-            "target_path": target_path
-        });
-        if let Some(l) = lineage {
-            args["lineage"] = l;
+        if let Some(t) = template {
+            args["template"] = t.into();
         }
-        self.call_tool("promote_concept", args).await
+        self.call_tool("write_note", args).await
+    }
+
+    /// Delete a note and remove it from disk and all indices.
+    pub async fn delete_note(&self, path: &str) -> Result<Value> {
+        self.call_tool("delete_note", serde_json::json!({ "path": path })).await
     }
 
     /// Retrieve corpus index status and document statistics via the consolidated
@@ -230,9 +201,20 @@ impl<T: McpTransport> McpClient<T> {
         self.call_tool("status", serde_json::json!({})).await
     }
 
-    /// Validate a note schema against its declared template.
-    pub async fn validate_note(&self, path: &str) -> Result<Value> {
-        self.call_tool("validate_note", serde_json::json!({ "path": path })).await
+    /// Validate note schema conformance or corpus taxonomy via `validate`.
+    pub async fn validate(
+        &self,
+        path: Option<&str>,
+        check_taxonomy: Option<bool>,
+    ) -> Result<Value> {
+        let mut args = serde_json::json!({});
+        if let Some(p) = path {
+            args["path"] = p.into();
+        }
+        if let Some(t) = check_taxonomy {
+            args["check_taxonomy"] = t.into();
+        }
+        self.call_tool("validate", args).await
     }
 
     /// List all templates registered in the corpus.
