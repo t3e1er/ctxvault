@@ -27,17 +27,149 @@ use ort::session::Session;
 use tokenizers::Tokenizer;
 
 /// Automatically select the most appropriate DirectML GPU device ID across all Windows systems:
-/// 1. Checks `CTX_DEVICE_ID` environment variable for explicit user override.
-/// 2. Queries Windows system video controllers to discover available GPUs and their dedicated video memory (VRAM).
-/// 3. Selects the adapter with the highest dedicated VRAM (e.g. dedicated NVIDIA/AMD dGPU over integrated Intel/AMD iGPU).
-/// 4. Gracefully falls back to Device ID 0 if enumeration is unavailable or on single-GPU systems.
+/// Helper struct representing a detected display adapter on Windows.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone)]
+struct DetectedAdapter {
+    device_id: i32,
+    name: String,
+    vram_mb: usize,
+    is_discrete: bool,
+}
+
+fn is_discrete_gpu_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    (lower.contains("nvidia")
+        || lower.contains("geforce")
+        || lower.contains("rtx")
+        || lower.contains("gtx")
+        || lower.contains("radeon")
+        || lower.contains("arc"))
+        && !lower.contains("basic")
+        && !lower.contains("remote")
+        && !lower.contains("virtual")
+}
+
+/// Discover available Windows display adapters using native Display Driver Registry keys
+/// (matching true DXGI adapter numbering and 64-bit VRAM capacity) with WMI fallback.
+#[cfg(target_os = "windows")]
+fn discover_windows_gpu_adapters() -> Vec<DetectedAdapter> {
+    // Strategy A: Query display driver registry keys.
+    // DXGI adapter indexes correspond directly to driver instance keys (0000 -> 0, etc.).
+    // HardwareInformation.qwMemorySize provides un-truncated 64-bit VRAM size.
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\000*' | \
+             Where-Object { $_.DriverDesc -and $_.DriverDesc -notmatch 'Basic|Remote|Virtual' } | \
+             Select-Object @{N='Index'; E={[int]$_.PSChildName}}, DriverDesc, @{N='MemoryBytes'; E={if ($_.'HardwareInformation.qwMemorySize') { [uint64]$_.'HardwareInformation.qwMemorySize' } else { 0 }}} | \
+             ConvertTo-Json -Compress",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                let items = if let Some(arr) = val.as_array() {
+                    arr.clone()
+                } else if val.is_object() {
+                    vec![val]
+                } else {
+                    Vec::new()
+                };
+
+                let mut adapters = Vec::new();
+                for item in items {
+                    let idx = item.get("Index").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let name = item
+                        .get("DriverDesc")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let mem_bytes = item.get("MemoryBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let vram_mb = (mem_bytes / (1024 * 1024)) as usize;
+                    let is_discrete = is_discrete_gpu_name(&name);
+
+                    adapters.push(DetectedAdapter {
+                        device_id: idx,
+                        name,
+                        vram_mb,
+                        is_discrete,
+                    });
+                }
+
+                if !adapters.is_empty() {
+                    return adapters;
+                }
+            }
+        }
+    }
+
+    // Strategy B: Fallback to WMI Win32_VideoController
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json -Compress",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                let items = if let Some(arr) = val.as_array() {
+                    arr.clone()
+                } else if val.is_object() {
+                    vec![val]
+                } else {
+                    Vec::new()
+                };
+
+                let mut adapters = Vec::new();
+                for (wmi_idx, item) in items.iter().enumerate() {
+                    let name = item
+                        .get("Name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let ram = item.get("AdapterRAM").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let vram_mb = (ram / (1024 * 1024)) as usize;
+                    let is_discrete = is_discrete_gpu_name(&name);
+
+                    // Discrete GPUs on desktop Windows are almost universally DXGI Adapter 0
+                    let device_id = if is_discrete { 0 } else { wmi_idx as i32 };
+
+                    adapters.push(DetectedAdapter {
+                        device_id,
+                        name,
+                        vram_mb,
+                        is_discrete,
+                    });
+                }
+
+                if !adapters.is_empty() {
+                    return adapters;
+                }
+            }
+        }
+    }
+
+    vec![DetectedAdapter {
+        device_id: 0,
+        name: "Default Graphics Adapter".to_string(),
+        vram_mb: 1024,
+        is_discrete: false,
+    }]
+}
+
 #[cfg(target_os = "windows")]
 static DETECTED_GPU: std::sync::OnceLock<(i32, usize)> = std::sync::OnceLock::new();
 
 /// Automatically select the most appropriate DirectML GPU device ID across all Windows systems:
 /// 1. Checks `CTX_DEVICE_ID` environment variable for explicit user override.
-/// 2. Queries Windows system video controllers to discover available GPUs and their dedicated video memory (VRAM).
-/// 3. Selects the adapter with the highest dedicated VRAM (e.g. dedicated NVIDIA/AMD dGPU over integrated Intel/AMD iGPU).
+/// 2. Queries Windows display driver registry keys to discover true DXGI adapter indexes and 64-bit VRAM.
+/// 3. Prioritizes dedicated high-performance discrete GPUs (NVIDIA/AMD) over integrated graphics.
 /// 4. Gracefully falls back to Device ID 0 if enumeration is unavailable or on single-GPU systems.
 #[cfg(target_os = "windows")]
 pub fn select_directml_device_id() -> i32 {
@@ -50,64 +182,65 @@ pub fn select_directml_device_id() -> i32 {
     }
 
     let (device_id, _) = *DETECTED_GPU.get_or_init(|| {
-        if let Ok(output) = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                    let list = if let Some(arr) = val.as_array() {
-                        arr.clone()
-                    } else if val.is_object() {
-                        vec![val]
-                    } else {
-                        Vec::new()
-                    };
+        let mut adapters = discover_windows_gpu_adapters();
 
-                    let mut best_id: i32 = 0;
-                    let mut max_ram: u64 = 0;
-                    let mut best_name = String::new();
-
-                    for (idx, item) in list.iter().enumerate() {
-                        let name = item.get("Name").and_then(|v| v.as_str()).unwrap_or("Unknown");
-                        let ram = item.get("AdapterRAM").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                        tracing::debug!(
-                            device_id = idx,
-                            name = %name,
-                            vram_mb = ram / (1024 * 1024),
-                            "Detected GPU adapter"
-                        );
-
-                        if ram > max_ram {
-                            max_ram = ram;
-                            best_id = idx as i32;
-                            best_name = name.to_string();
-                        }
-                    }
-
-                    if max_ram > 0 {
-                        let vram_mb = (max_ram / (1024 * 1024)) as usize;
-                        tracing::info!(
-                            device_id = best_id,
-                            name = %best_name,
-                            vram_mb,
-                            "Automatically selected high-performance DirectML GPU adapter"
-                        );
-                        return (best_id, vram_mb);
-                    }
-                }
-            }
+        for adapter in &adapters {
+            tracing::debug!(
+                device_id = adapter.device_id,
+                name = %adapter.name,
+                vram_mb = adapter.vram_mb,
+                is_discrete = adapter.is_discrete,
+                "Detected GPU adapter"
+            );
         }
-        (0, 1024)
+
+        // Sort preference:
+        // 1. Discrete GPU (dGPU over iGPU)
+        // 2. Highest VRAM
+        // 3. Adapter index 0 preference
+        adapters.sort_by(|a, b| {
+            b.is_discrete
+                .cmp(&a.is_discrete)
+                .then_with(|| b.vram_mb.cmp(&a.vram_mb))
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
+
+        if let Some(best) = adapters.first() {
+            tracing::info!(
+                device_id = best.device_id,
+                name = %best.name,
+                vram_mb = best.vram_mb,
+                "Automatically selected high-performance DirectML GPU adapter"
+            );
+            (best.device_id, best.vram_mb)
+        } else {
+            (0, 1024)
+        }
     });
 
     device_id
+}
+
+/// Ordered list of candidate DirectML device IDs to configure for hardware acceleration.
+/// If `CTX_DEVICE_ID` is set, only that specific device is returned.
+/// Otherwise, returns the detected primary adapter followed by device ID 0/1 fallbacks.
+#[cfg(target_os = "windows")]
+pub fn directml_device_candidates() -> Vec<i32> {
+    if let Ok(val) = std::env::var("CTX_DEVICE_ID") {
+        if let Ok(id) = val.parse::<i32>() {
+            return vec![id];
+        }
+    }
+
+    let detected = select_directml_device_id();
+    let mut candidates = vec![detected];
+    if !candidates.contains(&0) {
+        candidates.push(0);
+    }
+    if !candidates.contains(&1) {
+        candidates.push(1);
+    }
+    candidates
 }
 
 /// Detect dedicated VRAM in megabytes for the primary GPU adapter on Windows.
@@ -645,48 +778,93 @@ impl Embedder {
             Error::Index(format!("failed to load tokenizer from {}: {e}", tokenizer_path.display()))
         })?;
 
-        let create_builder = || -> Result<ort::session::builder::SessionBuilder> {
-            // `mut` is only needed on platforms that reassign `builder` to attach a
-            // hardware execution provider below (Windows/DirectML, macOS/CoreML).
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            let mut builder = Session::builder()
-                .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
-                .with_optimization_level(GraphOptimizationLevel::Level1)
-                .map_err(|e| {
-                    Error::Index(format!("failed to set graph optimization level: {e}"))
-                })?;
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            let builder = Session::builder()
-                .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
-                .with_optimization_level(GraphOptimizationLevel::Level1)
-                .map_err(|e| {
-                    Error::Index(format!("failed to set graph optimization level: {e}"))
-                })?;
-
-            #[cfg(target_os = "windows")]
-            {
-                let device_id = select_directml_device_id();
-                builder = builder
-                    .with_execution_providers([DirectML::default()
-                        .with_device_id(device_id)
-                        .build()])
+        let create_builder =
+            |_target_device: Option<i32>| -> Result<ort::session::builder::SessionBuilder> {
+                // `mut` is only needed on platforms that reassign `builder` to attach a
+                // hardware execution provider below (Windows/DirectML, macOS/CoreML).
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                let mut builder = Session::builder()
+                    .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
+                    .with_optimization_level(GraphOptimizationLevel::Level1)
                     .map_err(|e| {
-                        Error::Index(format!("failed to configure DirectML provider: {e}"))
+                        Error::Index(format!("failed to set graph optimization level: {e}"))
                     })?;
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                let builder = Session::builder()
+                    .map_err(|e| Error::Index(format!("failed to create session builder: {e}")))?
+                    .with_optimization_level(GraphOptimizationLevel::Level1)
+                    .map_err(|e| {
+                        Error::Index(format!("failed to set graph optimization level: {e}"))
+                    })?;
+
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(device_id) = _target_device {
+                        builder = builder
+                            .with_execution_providers([DirectML::default()
+                                .with_device_id(device_id)
+                                .build()])
+                            .map_err(|e| {
+                                Error::Index(format!("failed to configure DirectML provider: {e}"))
+                            })?;
+                    }
+                }
+
+                #[cfg(target_os = "macos")]
+                {
+                    builder =
+                        builder.with_execution_providers([CoreML::default().build()]).map_err(
+                            |e| Error::Index(format!("failed to configure CoreML provider: {e}")),
+                        )?;
+                }
+
+                Ok(builder)
+            };
+
+        #[cfg(target_os = "windows")]
+        let (session_0, active_device_id) = {
+            let candidates = directml_device_candidates();
+            let mut last_err = None;
+            let mut result = None;
+
+            for &cand_id in &candidates {
+                match create_builder(Some(cand_id))?.commit_from_file(&model_path) {
+                    Ok(sess) => {
+                        result = Some((sess, Some(cand_id)));
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            device_id = cand_id,
+                            error = %e,
+                            "Failed to initialize DirectML session on candidate adapter; attempting next candidate"
+                        );
+                        last_err = Some(e);
+                    }
+                }
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                builder =
-                    builder.with_execution_providers([CoreML::default().build()]).map_err(|e| {
-                        Error::Index(format!("failed to configure CoreML provider: {e}"))
-                    })?;
+            match result {
+                Some(pair) => pair,
+                None => {
+                    tracing::warn!(
+                        "All DirectML candidate adapters failed; falling back to CPU session"
+                    );
+                    let sess =
+                        create_builder(None)?.commit_from_file(&model_path).map_err(|e| {
+                            Error::Index(format!(
+                                "failed to load ONNX model from {}: {e} (last GPU error: {:?})",
+                                model_path.display(),
+                                last_err
+                            ))
+                        })?;
+                    (sess, None)
+                }
             }
-
-            Ok(builder)
         };
 
-        let session_0 = create_builder()?.commit_from_file(&model_path).map_err(|e| {
+        #[cfg(not(target_os = "windows"))]
+        let session_0 = create_builder(None)?.commit_from_file(&model_path).map_err(|e| {
             Error::Index(format!("failed to load ONNX model from {}: {e}", model_path.display()))
         })?;
 
@@ -701,7 +879,12 @@ impl Embedder {
             cfg!(any(target_os = "windows", target_os = "macos")) && has_sufficient_vram;
 
         if can_use_dual_stream {
-            match create_builder().and_then(|mut b| {
+            #[cfg(target_os = "windows")]
+            let dual_builder = create_builder(active_device_id);
+            #[cfg(not(target_os = "windows"))]
+            let dual_builder = create_builder(None);
+
+            match dual_builder.and_then(|mut b| {
                 b.commit_from_file(&model_path).map_err(|e| {
                     Error::Index(format!(
                         "failed to load dual ONNX session from {}: {e}",
@@ -1345,5 +1528,33 @@ mod tests {
         let device_id = select_directml_device_id();
         println!(">>> Auto-selected DirectML Device ID: {device_id}");
         assert!(device_id >= 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_directml_device_candidates() {
+        let candidates = directml_device_candidates();
+        println!(">>> DirectML Candidates: {candidates:?}");
+        assert!(!candidates.is_empty());
+        assert!(candidates.contains(&0));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_detect_gpu_vram_mb() {
+        let vram = detect_gpu_vram_mb();
+        println!(">>> Detected GPU VRAM: {vram} MB");
+        assert!(vram > 0);
+    }
+
+    #[test]
+    fn test_is_discrete_gpu_name() {
+        assert!(is_discrete_gpu_name("NVIDIA GeForce GTX 1070"));
+        assert!(is_discrete_gpu_name("NVIDIA RTX 4090"));
+        assert!(is_discrete_gpu_name("AMD Radeon RX 7900 XTX"));
+        assert!(is_discrete_gpu_name("Intel(R) Arc(TM) A770 Graphics"));
+        assert!(!is_discrete_gpu_name("Intel(R) HD Graphics 530"));
+        assert!(!is_discrete_gpu_name("Microsoft Basic Display Adapter"));
+        assert!(!is_discrete_gpu_name("Remote Desktop Display Adapter"));
     }
 }
