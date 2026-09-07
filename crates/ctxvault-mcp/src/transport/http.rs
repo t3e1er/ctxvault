@@ -28,8 +28,8 @@ use ctxvault_core::corpus_manager::CorpusManager;
 
 use crate::tools::MultiCorpusToolRegistry;
 use crate::transport::dispatch::{
-    dispatch_multi_read, dispatch_multi_write, format_rpc_response, make_error_response,
-    JsonRpcRequest, PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
+    dispatch_multi_read, dispatch_multi_write, format_rpc_response, is_read_only_request_multi,
+    make_error_response, JsonRpcRequest, PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
 };
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -59,26 +59,6 @@ fn describe_request(req: &JsonRpcRequest) -> String {
     }
 }
 
-/// Check if a multi-corpus JSON-RPC request is read-only.
-fn is_read_only_request_multi(req: &JsonRpcRequest, registry: &MultiCorpusToolRegistry) -> bool {
-    match req.method.as_str() {
-        "initialize" | "server/discover" | "tools/list" | "ping" | "roots/list" => true,
-        "tools/call" => {
-            if let Some(params) = &req.params {
-                if let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) {
-                    registry.is_read_only(tool_name)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        method if method.starts_with("notifications/") || method.starts_with("$/") => true,
-        _ => false,
-    }
-}
-
 /// Options for configuring the HTTP server and background daemon.
 #[derive(Debug, Clone, Default)]
 pub struct ServerOptions {
@@ -86,6 +66,8 @@ pub struct ServerOptions {
     pub daemon: bool,
     /// Idle shutdown timeout (e.g. Duration::from_secs(30 * 60)).
     pub idle_timeout: Option<Duration>,
+    /// Continuously watch corpus directories for changes and incrementally reindex.
+    pub watch: bool,
 }
 
 fn current_timestamp_secs() -> u64 {
@@ -186,7 +168,22 @@ pub async fn run_http_server_multi_with_options(
         local_addr,
         format!("{} configured corpora", corpora_count)
     );
-    info!(addr = %local_addr, daemon = options.daemon, "multi-corpus MCP HTTP server listening");
+    info!(addr = %local_addr, daemon = options.daemon, watch = options.watch, "multi-corpus MCP HTTP server listening");
+
+    if options.watch {
+        let paths = {
+            let mgr = state.manager.read().await;
+            mgr.corpus_paths()
+        };
+        for (name, root_path) in paths {
+            ctxvault_core::watcher::spawn_corpus_watcher(
+                name,
+                root_path,
+                state.manager.clone(),
+                Duration::from_millis(500),
+            );
+        }
+    }
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 

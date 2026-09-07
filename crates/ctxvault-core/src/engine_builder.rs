@@ -75,6 +75,7 @@ impl EngineBuilder {
                 None
             }
             ctxvault_common::config::IndexMode::Full
+            | ctxvault_common::config::IndexMode::Skeleton
             | ctxvault_common::config::IndexMode::DocsEmbed => {
                 let configured_model_name =
                     crate::embedding::ModelName::from_str_name(&config.embedding.model)

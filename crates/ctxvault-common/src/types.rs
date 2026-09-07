@@ -367,6 +367,9 @@ pub struct Chunk {
     /// Embedding policy for this chunk (anchor vs graph-only).
     #[serde(default)]
     pub embed_policy: ChunkEmbedPolicy,
+    /// Compact skeleton text (e.g. signature + docstring + scope) for embedding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton_text: Option<String>,
 }
 
 impl Chunk {
@@ -391,6 +394,7 @@ impl Chunk {
             scope_path: None,
             entity_kind: Some(EntityKind::Documentation),
             embed_policy: ChunkEmbedPolicy::Anchor,
+            skeleton_text: None,
         }
     }
 
@@ -429,6 +433,12 @@ impl Chunk {
     /// Set embedding policy.
     pub fn with_embed_policy(mut self, embed_policy: ChunkEmbedPolicy) -> Self {
         self.embed_policy = embed_policy;
+        self
+    }
+
+    /// Set skeleton text for compact embedding.
+    pub fn with_skeleton_text(mut self, skeleton_text: impl Into<String>) -> Self {
+        self.skeleton_text = Some(skeleton_text.into());
         self
     }
 }

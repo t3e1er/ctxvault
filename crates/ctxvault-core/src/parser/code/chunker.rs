@@ -124,6 +124,12 @@ impl<'a> AstExtractor<'a> {
                 format!("{breadcrumb}{raw_node_text}")
             };
 
+            let skeleton_text = if let Some(ref doc) = docstring {
+                format!("{breadcrumb}{doc}\n{signature}")
+            } else {
+                format!("{breadcrumb}{signature}")
+            };
+
             // Register symbol definition
             self.symbols.push(CodeSymbol {
                 file_path: self.file_path.clone(),
@@ -166,7 +172,8 @@ impl<'a> AstExtractor<'a> {
             let chunk =
                 Chunk::new(&self.file_path, self.chunk_index, emit_text, start_byte, end_byte)
                     .with_code_metadata(lang.name(), &full_scope, start_line, end_line)
-                    .with_embed_policy(embed_policy);
+                    .with_embed_policy(embed_policy)
+                    .with_skeleton_text(skeleton_text);
             self.chunks.push(chunk);
             self.chunk_index += 1;
 

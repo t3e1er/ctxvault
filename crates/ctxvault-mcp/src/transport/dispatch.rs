@@ -72,6 +72,29 @@ pub struct JsonRpcError {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/// Check if a multi-corpus JSON-RPC request is read-only.
+pub fn is_read_only_request_multi(
+    req: &JsonRpcRequest,
+    registry: &MultiCorpusToolRegistry,
+) -> bool {
+    match req.method.as_str() {
+        "initialize" | "server/discover" | "tools/list" | "ping" | "roots/list" => true,
+        "tools/call" => {
+            if let Some(params) = &req.params {
+                if let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) {
+                    registry.is_read_only(tool_name)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        method if method.starts_with("notifications/") || method.starts_with("$/") => true,
+        _ => false,
+    }
+}
+
 /// Route a JSON-RPC request for multi-corpus reading concurrently.
 pub fn dispatch_multi_read(
     request: &JsonRpcRequest,

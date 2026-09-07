@@ -319,7 +319,13 @@ pub fn search_hybrid(
             if hops == 0 {
                 continue;
             }
-            let boost = 1.0 / (hops as f64);
+            // Hub suppression / in-degree penalty to guard against noisy neighbors
+            let affordances = graph.compute_affordances(&neighbor_path);
+            let in_degree = affordances.calls_in.unwrap_or(0)
+                + affordances.wikilinks_in.unwrap_or(0)
+                + affordances.implements.unwrap_or(0);
+            let hub_dampener = 1.0 / (1.0 + (in_degree as f64 / 10.0)).sqrt();
+            let boost = (1.0 / (hops as f64)) * hub_dampener;
             let entry = graph_boost_map.entry(neighbor_path).or_insert((0.0, hops));
             entry.0 += boost;
             if hops < entry.1 {
@@ -353,7 +359,10 @@ pub fn search_hybrid(
                 graph_rank_map.get(&path).copied().unwrap_or((0.0, 0, 0));
 
             let bm25_rrf = if bm25_rank > 0 { 1.0 / (RRF_K + bm25_rank as f64) } else { 0.0 };
-            let graph_rrf = if graph_rank > 0 { 1.0 / (RRF_K + graph_rank as f64) } else { 0.0 };
+            // Pure graph discoveries receive a higher RRF K denominator (120 vs 60)
+            // so they don't displace strong direct keyword matches.
+            let k_factor = if bm25_rank == 0 { RRF_K * 2.0 } else { RRF_K };
+            let graph_rrf = if graph_rank > 0 { 1.0 / (k_factor + graph_rank as f64) } else { 0.0 };
 
             let final_score = bm25_rrf + graph_rrf;
 
@@ -470,7 +479,13 @@ pub fn search_hybrid_full(
             if hops == 0 {
                 continue;
             }
-            let boost = 1.0 / (hops as f64);
+            // Hub suppression / in-degree penalty to guard against noisy neighbors
+            let affordances = graph.compute_affordances(&neighbor_path);
+            let in_degree = affordances.calls_in.unwrap_or(0)
+                + affordances.wikilinks_in.unwrap_or(0)
+                + affordances.implements.unwrap_or(0);
+            let hub_dampener = 1.0 / (1.0 + (in_degree as f64 / 10.0)).sqrt();
+            let boost = (1.0 / (hops as f64)) * hub_dampener;
             let entry = graph_boost_map.entry(neighbor_path).or_insert((0.0, hops));
             entry.0 += boost;
             if hops < entry.1 {
@@ -486,14 +501,16 @@ pub fn search_hybrid_full(
     graph_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     for (rank, (path, boost, hops)) in graph_ranked.iter().enumerate() {
-        let rrf_score = 1.0 / (RRF_K + rank as f64 + 1.0);
+        // Pure graph discoveries receive a higher RRF K denominator (120 vs 60)
+        // so direct keyword or vector matches are not displaced.
+        let is_pure_graph = !rrf_map.contains_key(path);
+        let k_factor = if is_pure_graph { RRF_K * 2.0 } else { RRF_K };
+        let rrf_score = 1.0 / (k_factor + rank as f64 + 1.0);
         let entry = rrf_map.entry(path.clone()).or_insert((0.0, 0.0, 0.0, None, None, 0));
         entry.0 += rrf_score;
         if *hops > 0 && (entry.5 == 0 || *hops < entry.5) {
             entry.5 = *hops;
         }
-        // Store the raw graph boost for the breakdown.
-        // We use a trick: store it by adding to entry if needed.
         let _ = boost; // used indirectly via rank
     }
 

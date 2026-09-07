@@ -198,6 +198,14 @@ impl CorpusManager {
         self.default_corpus.as_deref()
     }
 
+    /// Return `(name, root_path)` pairs for all mounted corpora.
+    pub fn corpus_paths(&self) -> Vec<(String, PathBuf)> {
+        self.engines
+            .iter()
+            .map(|(name, engine)| (name.clone(), PathBuf::from(&engine.config().path)))
+            .collect()
+    }
+
     /// Get a mutable reference to an engine by corpus name.
     pub fn get_engine_mut(&mut self, name: &str) -> Result<&mut Engine> {
         self.engines
@@ -243,6 +251,16 @@ impl CorpusManager {
             Some(name) => self.get_engine_mut(name),
             None => self.default_engine_mut(),
         }
+    }
+
+    /// Incrementally synchronize a specific list of changed or deleted paths for a corpus.
+    pub fn sync_delta_paths(
+        &mut self,
+        corpus: Option<&str>,
+        paths: &[std::path::PathBuf],
+    ) -> Result<crate::engine::DeltaScanResult> {
+        let engine = self.resolve_engine_mut(corpus)?;
+        engine.sync_delta_paths(paths)
     }
 
     /// List all configured corpora with their status.

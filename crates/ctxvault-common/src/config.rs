@@ -42,6 +42,8 @@ pub enum IndexMode {
     /// Full indexing: BM25 + Graph + Embedding/Vector across both code and docs (default).
     #[default]
     Full,
+    /// Skeleton mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown doc anchors and code symbol skeletons (signature + docstring + scope).
+    Skeleton,
     /// Intermediate mode: BM25 + Graph for both code and docs; HNSW Vector embeddings for markdown docs anchors only.
     DocsEmbed,
     /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
@@ -497,5 +499,13 @@ mod tests {
         "#;
         let config_docs_embed: CorpusConfig = toml::from_str(toml_docs_embed).unwrap();
         assert_eq!(config_docs_embed.index_mode, IndexMode::DocsEmbed);
+
+        let toml_skeleton = r#"
+            name = "skeleton-corpus"
+            path = "./src"
+            index_mode = "skeleton"
+        "#;
+        let config_skeleton: CorpusConfig = toml::from_str(toml_skeleton).unwrap();
+        assert_eq!(config_skeleton.index_mode, IndexMode::Skeleton);
     }
 }
