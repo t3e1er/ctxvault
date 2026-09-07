@@ -37,6 +37,7 @@ struct DetectedAdapter {
     is_discrete: bool,
 }
 
+#[cfg(target_os = "windows")]
 fn is_discrete_gpu_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     (lower.contains("nvidia")
@@ -1547,6 +1548,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn test_is_discrete_gpu_name() {
         assert!(is_discrete_gpu_name("NVIDIA GeForce GTX 1070"));
         assert!(is_discrete_gpu_name("NVIDIA RTX 4090"));
