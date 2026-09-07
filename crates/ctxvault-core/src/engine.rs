@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use ctxvault_common::config::CorpusConfig;
+use ctxvault_common::config::{ChunkingConfig, CorpusConfig, IndexMode};
 use ctxvault_common::ports::{GraphStore, MetadataCatalog};
 use ctxvault_common::types::{
     ChunkEmbedPolicy, ChunkRecord, Document, EntityKind, IndexingState, IndexingStatus,
@@ -22,7 +22,10 @@ use ctxvault_common::{Error, Result};
 
 use crate::embedding::Embedder;
 use crate::graph::KnowledgeGraph;
-use crate::index::{pipeline::AsyncEmbeddingPipeline, BM25Index};
+use crate::index::{
+    pipeline::{AsyncEmbeddingPipeline, ParsedFileRecord},
+    BM25Index,
+};
 use crate::parser;
 use crate::parser::chunker;
 use crate::persistence::Store;
@@ -487,12 +490,105 @@ impl Engine {
         self.delta_scan_paginated(50)
     }
 
+    /// Ingest a single parsed file record into SQLite persistence, BM25, graph, and vector index.
+    fn ingest_parsed_record(
+        &mut self,
+        record: ParsedFileRecord,
+        tag_configs: &[ctxvault_common::config::EdgeTypeConfig],
+        all_docs: &mut Vec<Document>,
+    ) -> Result<()> {
+        let path = &record.path;
+        let modified_at = now_unix();
+
+        if record.is_code {
+            let file_title =
+                Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string();
+
+            // 1. SQLite Store
+            self.store.insert_file(path, &record.hash, modified_at, None, Some(&file_title))?;
+
+            // 2. Chunks and symbols
+            self.store.delete_chunks_for_file(path)?;
+            let chunk_records: Vec<ChunkRecord> = record
+                .raw_chunks
+                .iter()
+                .map(|c| ChunkRecord {
+                    chunk_index: c.chunk_index,
+                    start_byte: c.start_byte,
+                    end_byte: c.end_byte,
+                    text: c.text.clone(),
+                })
+                .collect();
+            self.store.insert_chunks(path, &chunk_records)?;
+            self.store.save_code_symbols(path, &record.symbols)?;
+
+            // 3. BM25
+            self.bm25.remove_document(path)?;
+            self.bm25.add_document(path, Some(&file_title), &[], &record.raw_chunks)?;
+
+            // 4. Vector index: clear existing vectors for this doc
+            if let Some(ref mut vi) = self.vector_index {
+                vi.remove_document(path);
+            }
+
+            // 5. Code Graph
+            self.graph.remove_edges_for_node(path);
+            for edge in &record.graph_edges {
+                self.graph.add_code_edge(edge);
+            }
+        } else if let Some(mut doc) = record.doc_metadata {
+            // 1. SQLite Store
+            self.store.insert_file(
+                path,
+                &record.hash,
+                modified_at,
+                doc.template.as_deref(),
+                doc.title.as_deref(),
+            )?;
+
+            // 2. Chunks
+            self.store.delete_chunks_for_file(path)?;
+            let chunk_records: Vec<ChunkRecord> = record
+                .raw_chunks
+                .iter()
+                .map(|c| ChunkRecord {
+                    chunk_index: c.chunk_index,
+                    start_byte: c.start_byte,
+                    end_byte: c.end_byte,
+                    text: c.text.clone(),
+                })
+                .collect();
+            self.store.insert_chunks(path, &chunk_records)?;
+
+            // 3. BM25
+            self.bm25.remove_document(path)?;
+            self.bm25.add_document(path, doc.title.as_deref(), &doc.tags, &record.raw_chunks)?;
+
+            // 4. Vector index: clear existing vectors for this doc
+            if let Some(ref mut vi) = self.vector_index {
+                vi.remove_document(path);
+            }
+
+            // 5. Graph
+            self.graph.remove_edges_for_node(path);
+            self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
+
+            if !tag_configs.is_empty() && !doc.tags.is_empty() {
+                doc.content.clear();
+                doc.wikilinks.clear();
+                all_docs.push(doc);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Perform a paginated delta scan: compare filesystem against stored file records.
     ///
     /// Automatically re-indexes changed files and removes deleted ones with intermediate commits.
     /// Returns a summary of what changed.
     pub fn delta_scan_paginated(&mut self, batch_size: usize) -> Result<DeltaScanResult> {
-        let batch_size = if batch_size == 0 { 50 } else { batch_size };
+        let commit_batch_size = if batch_size == 0 || batch_size == 50 { 500 } else { batch_size };
         let _ = self.ensure_embedder();
 
         // 1. List all files currently in persistence.
@@ -507,63 +603,31 @@ impl Engine {
         let mut new_files = Vec::new();
         let mut modified_files = Vec::new();
         let mut seen_on_disk = HashMap::new();
-        let mut uncommitted_count = 0usize;
-        self.ensure_vector_index();
-        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+        let mut files_to_index = Vec::new();
 
         for (rel_path, full_path) in &disk_files {
-            let content = fs::read_to_string(full_path).map_err(|e| {
-                Error::Io(std::io::Error::new(e.kind(), format!("{}: {}", rel_path, e)))
-            })?;
-            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
             let _ = seen_on_disk.insert(rel_path.clone(), ());
+            let content = match fs::read_to_string(full_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("{}: {}", rel_path, e);
+                    continue;
+                }
+            };
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
             match stored_map.get(rel_path) {
                 None => {
-                    // New file.
-                    let (chunks, _) = self.index_file_staged(rel_path, &content)?;
-                    if let Some(ref pipeline) = embedding_pipeline {
-                        for chunk in chunks {
-                            if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                pipeline.send(chunk)?;
-                            }
-                        }
-                        if let Some(ref mut vi) = self.vector_index {
-                            pipeline.try_recv_completed(vi)?;
-                        }
-                    }
                     new_files.push(rel_path.clone());
-                    uncommitted_count += 1;
+                    files_to_index.push((rel_path.clone(), full_path.clone()));
                 }
                 Some(stored_hash) if *stored_hash != hash => {
-                    // Modified file.
-                    let (chunks, _) = self.index_file_staged(rel_path, &content)?;
-                    if let Some(ref pipeline) = embedding_pipeline {
-                        for chunk in chunks {
-                            if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                pipeline.send(chunk)?;
-                            }
-                        }
-                        if let Some(ref mut vi) = self.vector_index {
-                            pipeline.try_recv_completed(vi)?;
-                        }
-                    }
                     modified_files.push(rel_path.clone());
-                    uncommitted_count += 1;
+                    files_to_index.push((rel_path.clone(), full_path.clone()));
                 }
                 _ => {
-                    // Unchanged, skip.
+                    // Unchanged
                 }
-            }
-
-            if uncommitted_count >= batch_size {
-                if let Some(ref pipeline) = embedding_pipeline {
-                    if let Some(ref mut vi) = self.vector_index {
-                        pipeline.try_recv_completed(vi)?;
-                    }
-                }
-                self.commit()?;
-                uncommitted_count = 0;
             }
         }
 
@@ -573,26 +637,134 @@ impl Engine {
             if !seen_on_disk.contains_key(path) {
                 self.remove_file(path)?;
                 deleted_files.push(path.clone());
-                uncommitted_count += 1;
-            }
-            if uncommitted_count >= batch_size {
-                if let Some(ref pipeline) = embedding_pipeline {
-                    if let Some(ref mut vi) = self.vector_index {
-                        pipeline.try_recv_completed(vi)?;
-                    }
-                }
-                self.commit()?;
-                uncommitted_count = 0;
             }
         }
 
-        // 4. Finish embedding pipeline and commit remaining changes.
+        self.ensure_vector_index();
+        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+
+        let tag_configs: Vec<_> = self
+            .config
+            .graph
+            .edge_types
+            .iter()
+            .filter(|et| et.source == ctxvault_common::config::EdgeSource::Tag)
+            .cloned()
+            .collect();
+        let mut all_docs: Vec<Document> = Vec::new();
+
+        if !files_to_index.is_empty() {
+            let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+            let (work_tx, work_rx) = crossbeam_channel::unbounded::<(String, PathBuf)>();
+            let (ast_tx, ast_rx) = crossbeam_channel::bounded::<ParsedFileRecord>(2048);
+
+            let chunk_tx_opt = embedding_pipeline.as_ref().and_then(|p| p.chunk_sender());
+            let chunking_config = self.config.chunking.clone();
+            let index_mode = self.config.index_mode;
+
+            for file_entry in files_to_index {
+                let _ = work_tx.send(file_entry);
+            }
+            drop(work_tx);
+
+            let mut uncommitted_count = 0usize;
+            let mut last_commit_time = Instant::now();
+            let commit_time_threshold = Duration::from_secs(30);
+
+            std::thread::scope(|s| {
+                for _ in 0..num_cpus {
+                    let work_rx_clone = work_rx.clone();
+                    let ast_tx_clone = ast_tx.clone();
+                    let chunk_tx_clone = chunk_tx_opt.clone();
+                    let chunking_ref = &chunking_config;
+
+                    s.spawn(move || {
+                        while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                            let content = match fs::read_to_string(&full_path) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    warn!("Failed to read {}: {}", rel_path, e);
+                                    continue;
+                                }
+                            };
+                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+                            let record = match parse_file_record(
+                                &rel_path,
+                                &content,
+                                hash,
+                                chunking_ref,
+                                index_mode,
+                            ) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!("Failed to parse {}: {}", rel_path, e);
+                                    continue;
+                                }
+                            };
+
+                            if let Some(ref tx) = chunk_tx_clone {
+                                for chunk in &record.chunks {
+                                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                        if tx.send(chunk.clone()).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if ast_tx_clone.send(record).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+
+                // Drop our local handles so channels disconnect when workers finish
+                drop(chunk_tx_opt);
+                drop(ast_tx);
+
+                while let Ok(record) = ast_rx.recv() {
+                    let path = record.path.clone();
+                    if let Err(e) = self.ingest_parsed_record(record, &tag_configs, &mut all_docs) {
+                        warn!("Failed to ingest {}: {}", path, e);
+                        continue;
+                    }
+
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        if let Some(ref mut vi) = self.vector_index {
+                            let _ = pipeline.try_recv_completed(vi);
+                        }
+                    }
+
+                    uncommitted_count += 1;
+                    if uncommitted_count >= commit_batch_size
+                        || last_commit_time.elapsed() >= commit_time_threshold
+                    {
+                        if let Some(ref pipeline) = embedding_pipeline {
+                            if let Some(ref mut vi) = self.vector_index {
+                                let _ = pipeline.try_recv_completed(vi);
+                            }
+                        }
+                        if let Err(e) = self.commit() {
+                            warn!("Intermediate commit failed: {}", e);
+                        }
+                        let _ = self.store.checkpoint();
+                        uncommitted_count = 0;
+                        last_commit_time = Instant::now();
+                    }
+                }
+            });
+        }
+
+        // Finish embedding pipeline and commit remaining changes.
         if let Some(mut pipeline) = embedding_pipeline {
             if let Some(ref mut vi) = self.vector_index {
                 pipeline.finish(vi)?;
             }
         }
         self.commit()?;
+        let _ = self.store.checkpoint();
 
         info!(
             "Delta scan complete: {} new, {} modified, {} deleted",
@@ -613,12 +785,12 @@ impl Engine {
 
     /// Paginated, resumable full reindex: scans corpus directory in configurable batches.
     ///
-    /// - `batch_size`: Number of documents processed before flushing/checkpointing (default 50).
+    /// - `batch_size`: Number of documents processed before flushing/checkpointing (default 500).
     /// - `resume`: If true, skips files already committed with identical content hash.
     ///
     /// Performs intermediate commits of SQLite, Tantivy, Vectors, Graph, and updates `indexing_state`.
     pub fn full_reindex_paginated(&mut self, batch_size: usize, resume: bool) -> Result<usize> {
-        let batch_size = if batch_size == 0 { 50 } else { batch_size };
+        let commit_batch_size = if batch_size == 0 || batch_size == 50 { 500 } else { batch_size };
         let corpus_id = self.config.name.clone();
         let corpus_path = PathBuf::from(&self.config.path);
         let mut disk_files = walk_markdown_files(&corpus_path)?;
@@ -691,105 +863,163 @@ impl Engine {
             .collect();
         let mut all_docs: Vec<Document> = Vec::new();
         let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
-        let mut processed_in_current_batch = 0usize;
 
-        let mut newly_indexed_count = 0usize;
+        // Stage A: Setup parallel parsing channels and worker pool
+        let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+        let (work_tx, work_rx) = crossbeam_channel::unbounded::<(String, PathBuf)>();
+        let (ast_tx, ast_rx) = crossbeam_channel::bounded::<ParsedFileRecord>(2048);
 
-        for (rel_path, full_path) in &disk_files {
-            let content = match fs::read_to_string(full_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to read {}: {}", rel_path, e);
+        let chunk_tx_opt = embedding_pipeline.as_ref().and_then(|p| p.chunk_sender());
+        let chunking_config = self.config.chunking.clone();
+        let index_mode = self.config.index_mode;
+
+        // Populate work queue
+        for file_entry in disk_files {
+            let _ = work_tx.send(file_entry);
+        }
+        drop(work_tx); // Close producer end of work channel so workers drain and finish
+
+        let mut uncommitted_count = 0usize;
+        let mut last_commit_time = Instant::now();
+        let commit_time_threshold = Duration::from_secs(30);
+
+        std::thread::scope(|s| {
+            // 1. Spawn Stage A Worker Threads
+            for _ in 0..num_cpus {
+                let work_rx_clone = work_rx.clone();
+                let ast_tx_clone = ast_tx.clone();
+                let chunk_tx_clone = chunk_tx_opt.clone();
+                let stored_map_ref = &stored_map;
+                let chunking_ref = &chunking_config;
+
+                s.spawn(move || {
+                    while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                        let content = match fs::read_to_string(&full_path) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("Failed to read {}: {}", rel_path, e);
+                                continue;
+                            }
+                        };
+                        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+                        if resume {
+                            if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
+                                if *stored_hash == hash {
+                                    continue;
+                                }
+                            }
+                        }
+
+                        let record = match parse_file_record(
+                            &rel_path,
+                            &content,
+                            hash,
+                            chunking_ref,
+                            index_mode,
+                        ) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                warn!("Failed to parse {}: {}", rel_path, e);
+                                continue;
+                            }
+                        };
+
+                        // Stream anchor chunks to GPU prefetch worker (Stage B)
+                        if let Some(ref tx) = chunk_tx_clone {
+                            for chunk in &record.chunks {
+                                if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                    if tx.send(chunk.clone()).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Emit parsed record to Stage C storage sink
+                        if ast_tx_clone.send(record).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            // Drop our local handles so channels disconnect when workers finish
+            drop(chunk_tx_opt);
+            drop(ast_tx);
+
+            // 2. Main Thread acts as Dedicated Stage C Storage & Persistence Sink
+            while let Ok(record) = ast_rx.recv() {
+                let path = record.path.clone();
+                if let Err(e) = self.ingest_parsed_record(record, &tag_configs, &mut all_docs) {
+                    warn!("Failed to ingest {}: {}", path, e);
                     continue;
                 }
-            };
-            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-            // If resume is enabled and file is already indexed with matching hash, skip parsing/indexing!
-            if resume {
-                if let Some(stored_hash) = stored_map.get(rel_path) {
-                    if *stored_hash == hash {
-                        // Document already indexed and unchanged
-                        continue;
-                    }
-                }
-            }
-
-            // Staged indexing (handles both markdown and polyglot code files, returning chunks for batched embedding)
-            let (chunks, maybe_doc) = self.index_file_staged(rel_path, &content)?;
-            if let Some(mut doc) = maybe_doc {
-                if !tag_configs.is_empty() && !doc.tags.is_empty() {
-                    doc.content.clear();
-                    doc.wikilinks.clear();
-                    all_docs.push(doc);
-                }
-            }
-
-            // Stream anchor chunks to the async GPU pipeline and poll any completed batches
-            if let Some(ref pipeline) = embedding_pipeline {
-                for chunk in chunks {
-                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                        pipeline.send(chunk)?;
-                    }
-                }
-                if let Some(ref mut vi) = self.vector_index {
-                    pipeline.try_recv_completed(vi)?;
-                }
-            }
-
-            processed_in_current_batch += 1;
-            newly_indexed_count += 1;
-            state.indexed_files += 1;
-            state.last_processed_path = Some(rel_path.clone());
-
-            // Check if batch is full -> commit checkpoint!
-            // Notice: SQLite and Tantivy commit immediately without blocking on GPU forward pass!
-            if processed_in_current_batch >= batch_size {
                 if let Some(ref pipeline) = embedding_pipeline {
                     if let Some(ref mut vi) = self.vector_index {
-                        pipeline.try_recv_completed(vi)?;
+                        let _ = pipeline.try_recv_completed(vi);
                     }
                 }
-                self.commit()?;
-                state.updated_at = now_unix();
-                self.store.update_indexing_state(&state)?;
-                debug!(
-                    "Committed batch of {} files ({}/{} total)",
-                    processed_in_current_batch, state.indexed_files, total_files
-                );
-                processed_in_current_batch = 0;
-            }
-        }
 
-        // Finish embedding pipeline: drains all remaining in-flight batches, joins threads,
-        // and inserts completed embeddings into self.vector_index.
+                uncommitted_count += 1;
+                state.indexed_files += 1;
+                state.last_processed_path = Some(path);
+
+                if uncommitted_count >= commit_batch_size
+                    || last_commit_time.elapsed() >= commit_time_threshold
+                {
+                    if let Some(ref pipeline) = embedding_pipeline {
+                        if let Some(ref mut vi) = self.vector_index {
+                            let _ = pipeline.try_recv_completed(vi);
+                        }
+                    }
+                    if let Err(e) = self.commit() {
+                        warn!("Intermediate commit failed: {}", e);
+                    }
+                    let _ = self.store.checkpoint();
+                    state.updated_at = now_unix();
+                    let _ = self.store.update_indexing_state(&state);
+                    debug!(
+                        "Committed batch of {} files ({}/{} total, elapsed {:.1}s)",
+                        uncommitted_count,
+                        state.indexed_files,
+                        total_files,
+                        last_commit_time.elapsed().as_secs_f32()
+                    );
+                    uncommitted_count = 0;
+                    last_commit_time = Instant::now();
+                }
+            }
+        });
+
+        // 3. Stage B Completion: drain remaining in-flight batches and join GPU threads
         if let Some(mut pipeline) = embedding_pipeline {
             if let Some(ref mut vi) = self.vector_index {
                 pipeline.finish(vi)?;
             }
         }
 
-        // Commit any remaining files in final batch
-        if processed_in_current_batch > 0 {
+        // Commit any remaining uncommitted files
+        if uncommitted_count > 0 {
             self.commit()?;
+            let _ = self.store.checkpoint();
         }
 
-        // Second pass: build tag-based edges with all documents available.
+        // Second pass: build tag-based edges with all documents available
         if !tag_configs.is_empty() && !all_docs.is_empty() {
             self.graph.build_all_tag_edges(&tag_configs, &all_docs);
         }
 
-        // Final commit and update state to Completed
+        // Final commit and mark Completed
         self.commit()?;
+        let _ = self.store.checkpoint();
         state.status = IndexingStatus::Completed;
         state.updated_at = now_unix();
         state.indexed_files = total_files;
         self.store.update_indexing_state(&state)?;
 
-        info!(
-            "Paginated indexing complete: {} new/updated files ({} total files)",
-            newly_indexed_count, total_files
-        );
+        info!("Paginated indexing complete: {} total files indexed/verified", total_files);
 
         Ok(total_files)
     }
@@ -1294,6 +1524,119 @@ impl Engine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Parse a single file (polyglot code or markdown) in a thread-safe, lock-free manner.
+fn parse_file_record(
+    rel_path: &str,
+    content: &str,
+    hash: String,
+    chunking_config: &ChunkingConfig,
+    index_mode: IndexMode,
+) -> Result<ParsedFileRecord> {
+    let path = Path::new(rel_path);
+
+    if crate::parser::code::is_code_file(path) {
+        let parse_res = crate::parser::code::chunker::CodeChunker::parse_and_chunk(
+            path,
+            content,
+            chunking_config,
+        );
+
+        let mut pending = Vec::new();
+        let mut raw_chunks = Vec::new();
+        let mut symbols = Vec::new();
+        let mut graph_edges = Vec::new();
+
+        if let Some(res) = parse_res {
+            for c in &res.chunks {
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
+                let embed_policy = if index_mode == IndexMode::DocsEmbed {
+                    ChunkEmbedPolicy::GraphOnly
+                } else {
+                    c.embed_policy
+                };
+                pending.push(PendingChunk {
+                    doc_path: rel_path.to_string(),
+                    chunk_index: c.chunk_index,
+                    text: c.text.clone(),
+                    embed_policy,
+                    modality,
+                });
+            }
+
+            graph_edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
+                path,
+                content,
+                &res.symbols,
+                &res.symbols,
+            );
+
+            raw_chunks = res.chunks;
+            symbols = res.symbols;
+        }
+
+        Ok(ParsedFileRecord {
+            path: rel_path.to_string(),
+            hash,
+            chunks: pending,
+            raw_chunks,
+            symbols,
+            doc_metadata: None,
+            graph_edges,
+            is_code: true,
+        })
+    } else {
+        // Markdown note
+        let doc = parser::parse_document(path, content)?;
+        let chunks = chunker::chunk_document(rel_path, &doc.content, chunking_config);
+
+        let doc_title = doc.title.as_deref().unwrap_or("").trim();
+        let pending: Vec<PendingChunk> = chunks
+            .iter()
+            .map(|c| {
+                let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                let text = if !doc_title.is_empty() && !section.is_empty() {
+                    format!("{} > {}: {}", doc_title, section, c.text)
+                } else if !doc_title.is_empty() {
+                    format!("{}: {}", doc_title, c.text)
+                } else if !section.is_empty() {
+                    format!("{}: {}", section, c.text)
+                } else {
+                    c.text.clone()
+                };
+                let modality = c
+                    .entity_kind
+                    .as_ref()
+                    .map(EntityKind::modality_tag)
+                    .unwrap_or("docs")
+                    .to_string();
+                PendingChunk {
+                    doc_path: rel_path.to_string(),
+                    chunk_index: c.chunk_index,
+                    text,
+                    embed_policy: c.embed_policy,
+                    modality,
+                }
+            })
+            .collect();
+
+        Ok(ParsedFileRecord {
+            path: rel_path.to_string(),
+            hash,
+            chunks: pending,
+            raw_chunks: chunks,
+            symbols: Vec::new(),
+            doc_metadata: Some(doc),
+            graph_edges: Vec::new(),
+            is_code: false,
+        })
+    }
+}
 
 /// Current Unix timestamp in seconds.
 fn now_unix() -> i64 {

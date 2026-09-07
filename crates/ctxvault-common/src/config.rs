@@ -36,7 +36,7 @@ fn default_templates_dir() -> String {
 }
 
 /// Indexing mode controlling which index backends are populated.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum IndexMode {
     /// Full indexing: BM25 + Graph + Embedding/Vector across both code and docs (default).
@@ -49,7 +49,7 @@ pub enum IndexMode {
 }
 
 /// Corpus access mode.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CorpusMode {
     /// Full read and write access.

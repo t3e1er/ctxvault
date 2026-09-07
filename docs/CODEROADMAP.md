@@ -368,3 +368,46 @@ Tier 3 addresses scenarios where heuristic and syntactic extraction is insuffici
 2. **External LSP Daemon Socket Integration (Zero-Daemon Overhead)**:
    - **No Embedded Daemon Supervision**: Explicitly reject running live LSP daemons (`rust-analyzer`, `pyright`, `gopls`) as child processes within the MCP server process, avoiding 2–6 GB memory overhead, 15–90s cold starts, and host environment failures.
    - **Opt-in Socket Connector**: Provide an opt-in client (`--lsp-socket <lang>:<addr>`) that connects to an *already-running* IDE or editor language server socket over standard JSON-RPC. Allows querying real-time hover documentation and call hierarchies on demand while keeping `ctxvault` ultra-lightweight and immediately available.
+
+---
+
+### 10.4 High-Throughput cAST Optimization & Centrality-Guided Anchoring (Roadmap)
+Identified during the 177k-file multi-corpus benchmark (Kubernetes, Rust, TypeScript) to address dense embedding compute bottlenecks on large codebases and non-Tensor-Core hardware (Pascal, APUs, CPUs):
+
+1. **Two-Pass Centrality-Guided Anchoring (PageRank / Degree Filter)**:
+   - *Architecture*: Parse ASTs and construct the Petgraph code graph upfront in Pass 1 (pure Rust, sub-minute execution). In Pass 2, calculate in-degree and PageRank on all extracted symbols.
+   - *Policy*: Only promote symbols with $\text{in\_degree} \ge K$ or top-level exported trait/interface definitions to `ChunkEmbedPolicy::Anchor`.
+   - *Impact*: Reduces anchor vector density from ~5.6 anchors/file down to ~0.8 anchors/file (**5x–10x reduction in neural embedding volume**), while preserving full multi-hop structural traversal via `graph_match`.
+
+2. **cAST Skeleton & Signature-Only Embedding**:
+   - Strip function/method bodies prior to ONNX tokenization, embedding only `signature + docstring + scope breadcrumbs`.
+   - Compresses sequence length from ~350 tokens down to ~45 tokens, accelerating quadratic transformer attention ($\mathcal{O}(L^2)$) by **4x–5x** on the GPU while retaining full bodies in Tantivy BM25.
+
+3. **File-Level & Module Outline Anchors**:
+   - Synthesize a single outline anchor chunk per source file (file docstring + top-level symbol outline) instead of vectorizing every declared symbol.
+   - Restricts vector index cardinality to exactly 1 vector per file, slashing cold-indexing neural forward passes by 80%+.
+
+---
+
+### 10.5 Storage Footprint Optimization: Zero-Copy File-Offset Architecture & Binary Vectors (Roadmap)
+*Authoritative RFC*: [[docs/RFC-zero-copy-file-offsets-and-binary-vectors]]
+
+Identified during disk footprint profiling on the 14k-file Kubernetes index run (where the `.index/` footprint reached 2.15 GB across SQLite, Tantivy, and JSON vectors):
+
+1. **Binary Vector Serialization (`vectors.bin`)**:
+   - *Problem*: `vectors.json` stores 768-dim `f32` vectors as human-readable ASCII arrays (`[0.02341, ...]`), consuming ~6.8 KB per vector instead of 3.0 KB in raw binary (**~2.2x serialization bloat**; 555 MB for 81k vectors).
+   - *Solution*: Serialize vectors via `safetensors` or raw binary memory-mappable slices (`vectors.bin`).
+   - *Impact*: Cuts vector file size from 555 MB to **249 MB immediately** (55% reduction), while eliminating JSON parse overhead at startup.
+
+2. **Zero-Copy File Pointers (Principle 1 Invariant Alignment)**:
+   - *Problem*: Code text is currently duplicated three times:
+     1. Raw source files on disk (`src/**/*.rs`, `pkg/**/*.go`).
+     2. Stored uncompressed in SQLite `chunks.text` (consuming ~60% of `meta.db`).
+     3. Stored compressed in Tantivy doc store (`body: TEXT | STORED`).
+   - *Solution*: Align strictly with Principle 1 (*"Markdown/source is authoritative ground truth"*).
+     - Store only `(doc_path, start_byte, end_byte, start_line, end_line)` in SQLite `chunks`.
+     - Configure Tantivy `body` as `TEXT` only (indexed in inverted index, but NOT `STORED` in `.store` files).
+     - All snippet fetches (`search`, `get_snippet`, `read_file`) read direct byte-range slices from the authoritative source file on disk. Modern OS page cache keeps hot working files in memory (<50µs read latency).
+   - *Impact*: Slashes SQLite `meta.db` from 1.36 GB down to **~350 MB** and shrinks Tantivy `.store` files by **~60%**, dropping total index footprint on 14k files from 2.15 GB down to **<700 MB** (reducing overall expansion from 7.2x to ~2.3x).
+
+

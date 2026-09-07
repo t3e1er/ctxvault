@@ -29,11 +29,38 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 
 use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
 
-use ctxvault_common::{Error, Result};
+use ctxvault_common::{
+    types::{Chunk, CodeSymbol, Document, Edge},
+    Error, Result,
+};
+
+/// Structural graph edge produced during AST code extraction or markdown linking.
+pub type ASTEdge = Edge;
+
+/// A parsed file record produced by the Stage A parallel parsing pool.
+#[derive(Debug, Clone)]
+pub struct ParsedFileRecord {
+    /// Relative path within the corpus.
+    pub path: String,
+    /// Blake3 content hash.
+    pub hash: String,
+    /// Extracted pending chunks staged for vector embedding.
+    pub chunks: Vec<PendingChunk>,
+    /// Syntactic chunks used for BM25 indexing and SQLite chunk persistence.
+    pub raw_chunks: Vec<Chunk>,
+    /// Extracted code symbols (empty for markdown notes).
+    pub symbols: Vec<CodeSymbol>,
+    /// Parsed markdown document metadata (if markdown).
+    pub doc_metadata: Option<Document>,
+    /// Extracted structural code or markdown edges.
+    pub graph_edges: Vec<ASTEdge>,
+    /// Whether the file is a source code file.
+    pub is_code: bool,
+}
 
 /// A pre-tokenized and padded batch of chunks staged in contiguous host memory arrays.
 pub struct StagedBatch {
@@ -70,13 +97,13 @@ pub struct AsyncEmbeddingPipeline {
 impl AsyncEmbeddingPipeline {
     /// Initialize and launch the asynchronous embedding pipeline worker threads.
     pub fn new(embedder: Arc<Embedder>) -> Self {
-        // Producer -> Prefetch channel: unbounded so main thread parsing never stalls
-        let (chunk_tx, chunk_rx) = unbounded::<PendingChunk>();
+        // Stage A -> Stage B Prefetch channel: high-watermark bounded queue (capacity 4,096)
+        let (chunk_tx, chunk_rx) = bounded::<PendingChunk>(4096);
 
-        // Prefetch -> GPU channel: unbounded staging queue so prefetch worker never stalls
-        let (staged_tx, staged_rx) = unbounded::<StagedBatch>();
+        // Stage B Prefetch -> GPU channel: bounded staging ring buffer (capacity 32 batches)
+        let (staged_tx, staged_rx) = bounded::<StagedBatch>(32);
 
-        // GPU -> Main thread completed channel: unbounded so GPU never stalls on completion
+        // GPU -> Stage C completed channel: unbounded so GPU never stalls on completion
         let (completed_tx, completed_rx) = unbounded::<CompletedBatch>();
 
         let embedder_for_prefetch = Arc::clone(&embedder);
@@ -158,7 +185,11 @@ impl AsyncEmbeddingPipeline {
             })
             .expect("failed to spawn prefetch worker thread");
 
-        // 2. Launch Dedicated GPU Inference Worker Threads (Dual workers when hardware supports multi-stream)
+        // 2. Launch Dedicated GPU Inference Worker Threads
+        // Windows DirectML requires serialized single-stream command submission to avoid DXGI device resets.
+        #[cfg(target_os = "windows")]
+        let num_workers = 1;
+        #[cfg(not(target_os = "windows"))]
         let num_workers = if embedder.session_count() >= 2
             && embedder.governor().total_memory_bytes() >= 4 * 1024 * 1024 * 1024
         {
@@ -356,6 +387,16 @@ impl AsyncEmbeddingPipeline {
         Ok(())
     }
 
+    /// Get a clone of the channel sender for streaming chunks into the GPU prefetch intake.
+    pub fn chunk_sender(&self) -> Option<Sender<PendingChunk>> {
+        self.chunk_tx.clone()
+    }
+
+    /// Close the chunk intake channel so the prefetch worker can begin draining.
+    pub fn close_intake(&mut self) {
+        drop(self.chunk_tx.take());
+    }
+
     /// Non-blocking drain: poll and insert any currently completed batches into the vector index.
     pub fn try_recv_completed(&self, vector_index: &mut VectorIndex) -> Result<usize> {
         let mut total_inserted = 0;
@@ -369,7 +410,7 @@ impl AsyncEmbeddingPipeline {
     /// and insert all remaining embeddings into the vector index.
     pub fn finish(&mut self, vector_index: &mut VectorIndex) -> Result<usize> {
         // 1. Close chunk_tx so prefetch worker terminates after draining
-        drop(self.chunk_tx.take());
+        self.close_intake();
 
         // 2. Wait for prefetch worker thread to terminate
         if let Some(handle) = self.prefetch_handle.take() {
