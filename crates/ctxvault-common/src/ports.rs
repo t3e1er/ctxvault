@@ -237,6 +237,11 @@ pub trait MetadataCatalog {
 
     /// Retrieve all code symbols in the entire catalog.
     fn get_all_code_symbols(&self) -> Result<Vec<CodeSymbol>>;
+
+    /// Flush the database write-ahead log or checkpoint changes to disk.
+    fn checkpoint(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Full-text index port: the BM25 lexical-retrieval contract for a corpus.

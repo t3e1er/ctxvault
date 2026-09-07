@@ -725,13 +725,13 @@ mod tests {
         index.add(&code_vec, "src/engine.rs", Some(0), false, "code").unwrap();
 
         // Code-only returns only the code vector.
-        let code_results = index.search(&base, 10, false, Modality::Code).unwrap();
+        let code_results = index.search(&code_vec, 10, false, Modality::Code).unwrap();
         assert!(!code_results.is_empty());
         assert!(code_results.iter().all(|r| r.modality == "code"));
         assert!(code_results.iter().all(|r| r.doc_path == "src/engine.rs"));
 
         // Docs-only returns only the doc vector.
-        let doc_results = index.search(&base, 10, false, Modality::Docs).unwrap();
+        let doc_results = index.search(&doc_vec, 10, false, Modality::Docs).unwrap();
         assert!(!doc_results.is_empty());
         assert!(doc_results.iter().all(|r| r.modality == "docs"));
         assert!(doc_results.iter().all(|r| r.doc_path == "notes/guide.md"));

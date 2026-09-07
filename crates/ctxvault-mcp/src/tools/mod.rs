@@ -80,7 +80,7 @@ const SCOUT_TOOLS: [&str; 9] = [
 ];
 
 /// Read-only tools added by the `analysis` profile on top of `scout`.
-const ANALYSIS_ONLY_TOOLS: [&str; 14] = [
+const ANALYSIS_ONLY_TOOLS: [&str; 15] = [
     "graph_match",
     "graph_communities",
     "get_symbol_definition",
@@ -95,6 +95,7 @@ const ANALYSIS_ONLY_TOOLS: [&str; 14] = [
     "coverage_report",
     "check_index_coverage",
     "corpus_list",
+    "list_corpora",
 ];
 
 impl ToolProfile {
@@ -174,7 +175,11 @@ impl ToolRegistry {
 
     /// Read tools that are corpus-scoped or manager-level and therefore must NOT
     /// accept the fan-out `corpus`/`corpora` discrimination args.
-    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 2] = ["status", "corpus_list"];
+    const NON_DISCRIMINATED_READ_TOOLS: [&'static str; 3] =
+        ["status", "corpus_list", "list_corpora"];
+
+    /// Write tools that operate at the manager level and don't accept corpus arg.
+    const MANAGER_WRITE_TOOLS: [&'static str; 2] = ["index_corpus", "unload_corpus"];
 
     /// Inject the optional `corpus` and `corpora` discrimination properties into
     /// the JSON input schema of every read tool that supports fan-out.
@@ -197,6 +202,7 @@ impl ToolRegistry {
 
         for tool in self.tools.values_mut() {
             let manager_level = Self::NON_DISCRIMINATED_READ_TOOLS.contains(&tool.name.as_str());
+            let manager_write = Self::MANAGER_WRITE_TOOLS.contains(&tool.name.as_str());
             let Some(props) =
                 tool.input_schema.get_mut("properties").and_then(Value::as_object_mut)
             else {
@@ -210,7 +216,7 @@ impl ToolRegistry {
                     let _ = props.insert("corpora".to_string(), corpora_prop.clone());
                 }
                 // Write tools get only single `corpus` — they never fan out.
-                ToolHandler::ReadWrite(_) => {
+                ToolHandler::ReadWrite(_) if !manager_write => {
                     let _ = props.insert("corpus".to_string(), corpus_prop.clone());
                 }
                 _ => {}
@@ -613,6 +619,50 @@ impl ToolRegistry {
             handle_corpus_list,
         );
 
+        self.register_read(
+            "list_corpora",
+            "List all loaded and discovered corpora in central cache with node/edge/vector statistics.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "include_cached": { "type": "boolean", "description": "Include dormant cached corpora (default true)" }
+                },
+                "required": []
+            }),
+            handle_list_corpora_dummy,
+        );
+
+        self.register_write(
+            "index_corpus",
+            "Dynamically index and mount a new repository by path without restarting the server.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Filesystem path to the repository/corpus directory" },
+                    "sync": { "type": "boolean", "description": "Run delta sync after mounting (default true)" },
+                    "reindex": { "type": "boolean", "description": "Force full reindex from scratch (default false)" },
+                    "fast": { "type": "boolean", "description": "Skip dense vector embedding for instant indexing (default false)" },
+                    "docs_embed": { "type": "boolean", "description": "Compute embeddings for markdown docs anchors only (default false)" },
+                    "batch_size": { "type": "integer", "description": "Batch size for indexing (default 50)" }
+                },
+                "required": ["path"]
+            }),
+            handle_index_corpus_dummy,
+        );
+
+        self.register_write(
+            "unload_corpus",
+            "Free memory by unloading an inactive corpus from the central daemon.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Name of the corpus to unload" }
+                },
+                "required": ["name"]
+            }),
+            handle_unload_corpus_dummy,
+        );
+
         self.register_write(
             "reembed_corpus",
             "Re-embed all chunks with the current embedding model. Use after changing models to update vectors without losing data.",
@@ -833,6 +883,10 @@ impl MultiCorpusToolRegistry {
             return handle_get_status(manager);
         }
 
+        if name == "list_corpora" {
+            return handle_list_corpora_manager(manager, args);
+        }
+
         // Parse both discrimination args out of the call, resolving the target set.
         let (target, clean_args) = resolve_corpus_target(args, manager)?;
 
@@ -995,6 +1049,13 @@ impl MultiCorpusToolRegistry {
         manager: &mut CorpusManager,
         args: Value,
     ) -> Result<Value> {
+        if name == "index_corpus" {
+            return handle_index_corpus_manager(manager, args);
+        }
+        if name == "unload_corpus" {
+            return handle_unload_corpus_manager(manager, args);
+        }
+
         // `status` without an explicit `corpus` returns the manager-level overview.
         if name == "status" && !has_corpus_arg(&args) {
             return handle_get_status(manager);
@@ -1194,6 +1255,124 @@ fn handle_get_status(manager: &CorpusManager) -> Result<Value> {
         "default_corpus": default_name,
         "corpora": corpora_info,
     }))
+}
+
+/// Handle `list_corpora` across active and cached corpora.
+fn handle_list_corpora_manager(manager: &CorpusManager, args: Value) -> Result<Value> {
+    let include_cached = args.get("include_cached").and_then(Value::as_bool).unwrap_or(true);
+    let loaded = manager.list_corpora();
+    let loaded_names: HashSet<String> = loaded.iter().map(|c| c.name.clone()).collect();
+
+    let mut corpora_info: Vec<Value> = loaded
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "path": c.path,
+                "status": "active",
+                "mode": c.mode,
+                "index_mode": c.index_mode,
+                "file_count": c.file_count,
+                "embedder_active": c.embedder_active,
+                "vector_count": c.vector_count,
+                "graph_node_count": c.graph_node_count,
+            })
+        })
+        .collect();
+
+    if include_cached {
+        for cached in manager.discover_cached_corpora() {
+            if !loaded_names.contains(&cached) {
+                corpora_info.push(serde_json::json!({
+                    "name": cached,
+                    "status": "cached",
+                    "path": ctxvault_common::config::get_corpora_cache_dir().join(&cached).to_string_lossy().replace('\\', "/"),
+                }));
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "corpora": corpora_info,
+        "default_corpus": manager.default_corpus_name(),
+        "total_active": manager.corpus_count(),
+    }))
+}
+
+/// Handle `index_corpus` dynamically mounting and indexing a new repository.
+fn handle_index_corpus_manager(manager: &mut CorpusManager, args: Value) -> Result<Value> {
+    let path_str = args
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Config("missing required argument 'path'".to_string()))?;
+
+    let corpus_path = PathBuf::from(path_str);
+    let name = manager.ensure_corpus(&corpus_path)?;
+
+    let do_reindex = args.get("reindex").and_then(Value::as_bool).unwrap_or(false);
+    let do_sync = args.get("sync").and_then(Value::as_bool).unwrap_or(true);
+    let fast = args.get("fast").and_then(Value::as_bool).unwrap_or(false);
+    let docs_embed = args.get("docs_embed").and_then(Value::as_bool).unwrap_or(false);
+    let batch_size =
+        args.get("batch_size").and_then(Value::as_u64).map(|n| n as usize).unwrap_or(50);
+
+    let engine = manager.get_engine_mut(&name)?;
+
+    if fast {
+        engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Fast;
+    } else if docs_embed {
+        engine.config_mut().index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+    }
+
+    let index_stats = if do_reindex {
+        let count = engine.full_reindex_paginated(batch_size, false)?;
+        serde_json::json!({ "reindexed_files": count })
+    } else if do_sync {
+        let delta = engine.delta_scan_paginated(batch_size)?;
+        serde_json::json!({
+            "new_files": delta.new_files.len(),
+            "modified_files": delta.modified_files.len(),
+            "deleted_files": delta.deleted_files.len()
+        })
+    } else {
+        serde_json::json!({ "status": "mounted_without_indexing" })
+    };
+
+    let file_count = engine.store().list_files().map(|f| f.len()).unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "status": "success",
+        "corpus": name,
+        "path": path_str,
+        "file_count": file_count,
+        "indexing": index_stats,
+    }))
+}
+
+/// Handle `unload_corpus` freeing memory from an open engine.
+fn handle_unload_corpus_manager(manager: &mut CorpusManager, args: Value) -> Result<Value> {
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Config("missing required argument 'name'".to_string()))?;
+
+    let unloaded = manager.unload_corpus(name)?;
+    Ok(serde_json::json!({
+        "status": if unloaded { "unloaded" } else { "not_found" },
+        "corpus": name
+    }))
+}
+
+fn handle_list_corpora_dummy(_engine: &Engine, _args: Value) -> Result<Value> {
+    Err(Error::Config("list_corpora is a manager-level tool".to_string()))
+}
+
+fn handle_index_corpus_dummy(_engine: &mut Engine, _args: Value) -> Result<Value> {
+    Err(Error::Config("index_corpus is a manager-level tool".to_string()))
+}
+
+fn handle_unload_corpus_dummy(_engine: &mut Engine, _args: Value) -> Result<Value> {
+    Err(Error::Config("unload_corpus is a manager-level tool".to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -3151,7 +3330,7 @@ mod tests {
         registry.register_all();
 
         let tools = registry.list();
-        assert_eq!(tools.len(), 31, "Expected 31 tools registered");
+        assert_eq!(tools.len(), 34, "Expected 34 tools registered");
 
         // Verify each expected tool exists.
         let expected = [
@@ -3180,6 +3359,9 @@ mod tests {
             "coverage_report",
             "check_index_coverage",
             "corpus_list",
+            "list_corpora",
+            "index_corpus",
+            "unload_corpus",
             "reembed_corpus",
             "sync_corpus",
             "reindex_corpus",
@@ -3188,7 +3370,7 @@ mod tests {
             "get_architecture",
         ];
 
-        assert_eq!(expected.len(), 31, "expected-name list must match the 31-tool count");
+        assert_eq!(expected.len(), 34, "expected-name list must match the 34-tool count");
 
         for name in expected {
             assert!(registry.get(name).is_some(), "Tool '{}' should be registered", name);
@@ -3228,6 +3410,9 @@ mod tests {
         assert!(registry.is_read_only("read_code_file"));
         assert!(registry.is_read_only("read_multiple"));
         assert!(registry.is_read_only("check_index_coverage"));
+        assert!(registry.is_read_only("list_corpora"));
+        assert!(!registry.is_read_only("index_corpus"));
+        assert!(!registry.is_read_only("unload_corpus"));
         assert!(!registry.is_read_only("create_note"));
         assert!(!registry.is_read_only("reindex_corpus"));
     }
@@ -3245,8 +3430,8 @@ mod tests {
         // scout ⊂ analysis ⊂ all.
         assert!(scout_count < analysis_count, "scout must expose fewer tools than analysis");
         assert!(analysis_count < all_count, "analysis must expose fewer tools than all");
-        assert_eq!(all_count, 31, "all profile advertises every registered tool");
-        assert_eq!(analysis_count, 23, "analysis profile advertises scout + analysis tools");
+        assert_eq!(all_count, 34, "all profile advertises every registered tool");
+        assert_eq!(analysis_count, 24, "analysis profile advertises scout + analysis tools");
         assert_eq!(scout_count, 9, "scout profile advertises the minimal set");
 
         // scout includes core retrieval/fetch but not writes or analysis-only tools.
@@ -3647,8 +3832,8 @@ mod tests {
         let registry = MultiCorpusToolRegistry::new();
         let tools = registry.list();
 
-        // Should have 31 tools.
-        assert_eq!(tools.len(), 31, "Expected 31 tools in multi-corpus registry");
+        // Should have 34 tools.
+        assert_eq!(tools.len(), 34, "Expected 34 tools in multi-corpus registry");
         assert!(
             registry.registry().get("status").is_some(),
             "consolidated status tool should be registered"

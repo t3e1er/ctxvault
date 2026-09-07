@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
+use ctxvault_common::ports::MetadataCatalog;
 use ctxvault_common::{Error, Result};
 use ctxvault_core::corpus_manager::CorpusManager;
 
@@ -78,6 +79,22 @@ fn is_read_only_request_multi(req: &JsonRpcRequest, registry: &MultiCorpusToolRe
     }
 }
 
+/// Options for configuring the HTTP server and background daemon.
+#[derive(Debug, Clone, Default)]
+pub struct ServerOptions {
+    /// Whether running in background daemon mode.
+    pub daemon: bool,
+    /// Idle shutdown timeout (e.g. Duration::from_secs(30 * 60)).
+    pub idle_timeout: Option<Duration>,
+}
+
+fn current_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Server State Structs
 // ---------------------------------------------------------------------------
@@ -89,21 +106,54 @@ pub struct MultiCorpusServerState {
     pub manager: Arc<RwLock<CorpusManager>>,
     /// Registered multi-corpus MCP tool handlers.
     pub registry: Arc<MultiCorpusToolRegistry>,
+    /// Timestamp (UNIX epoch seconds) of last incoming request/activity.
+    pub last_activity: Arc<AtomicU64>,
+    /// Number of active SSE/client streams.
+    pub active_sessions: Arc<AtomicU64>,
+}
+
+impl MultiCorpusServerState {
+    /// Create a new server state initialized with current timestamp.
+    pub fn new(
+        manager: Arc<RwLock<CorpusManager>>,
+        registry: Arc<MultiCorpusToolRegistry>,
+    ) -> Self {
+        let now = current_timestamp_secs();
+        Self {
+            manager,
+            registry,
+            last_activity: Arc::new(AtomicU64::new(now)),
+            active_sessions: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Public Server Entry Points
 // ---------------------------------------------------------------------------
 
-/// Start the localhost HTTP MCP server with multi-corpus routing.
+/// Start the localhost HTTP MCP server with default options.
 pub async fn run_http_server_multi(
     bind_addr: &str,
     manager: CorpusManager,
     registry: MultiCorpusToolRegistry,
 ) -> Result<()> {
+    run_http_server_multi_with_options(bind_addr, manager, registry, ServerOptions::default()).await
+}
+
+/// Start the localhost HTTP MCP server with multi-corpus routing and daemon options.
+pub async fn run_http_server_multi_with_options(
+    bind_addr: &str,
+    manager: CorpusManager,
+    registry: MultiCorpusToolRegistry,
+    options: ServerOptions,
+) -> Result<()> {
+    let now = current_timestamp_secs();
     let state = MultiCorpusServerState {
         manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
+        last_activity: Arc::new(AtomicU64::new(now)),
+        active_sessions: Arc::new(AtomicU64::new(0)),
     };
 
     let app = Router::new()
@@ -136,11 +186,50 @@ pub async fn run_http_server_multi(
         local_addr,
         format!("{} configured corpora", corpora_count)
     );
-    info!(addr = %local_addr, "multi-corpus MCP HTTP server listening");
+    info!(addr = %local_addr, daemon = options.daemon, "multi-corpus MCP HTTP server listening");
+
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // If running in daemon mode with idle timeout, spawn background watchdog.
+    if options.daemon {
+        if let Some(timeout) = options.idle_timeout {
+            let last_act = state.last_activity.clone();
+            let active_sess = state.active_sessions.clone();
+            let tx = shutdown_tx.clone();
+            let timeout_secs = timeout.as_secs();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let sessions = active_sess.load(Ordering::Relaxed);
+                    let last = last_act.load(Ordering::Relaxed);
+                    let now = current_timestamp_secs();
+                    if sessions == 0 && now.saturating_sub(last) >= timeout_secs {
+                        info!(timeout_secs, "daemon idle timeout reached, initiating shutdown");
+                        let _ = tx.send(true);
+                        break;
+                    }
+                }
+            });
+        }
+    }
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
         .await
         .map_err(|e| Error::Config(format!("server error: {e}")))?;
+
+    // Flush SQLite WAL checkpoints on clean shutdown.
+    {
+        let mgr = state.manager.read().await;
+        for name in mgr.corpus_names() {
+            if let Ok(engine) = mgr.get_engine(name) {
+                let _ = engine.store().checkpoint();
+            }
+        }
+    }
+    info!("multi-corpus server shutdown complete; SQLite WAL checkpoints flushed");
 
     Ok(())
 }
@@ -246,6 +335,25 @@ async fn handle_jsonrpc_multi(
             }
         };
 
+        state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
+
+        // If client sends initialize with cwd or rootPath, dynamically mount the active repository.
+        if req.method == "initialize" {
+            if let Some(params) = &req.params {
+                let cwd_opt = params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .or_else(|| params.get("rootPath").and_then(Value::as_str));
+                if let Some(cwd) = cwd_opt {
+                    let path = std::path::PathBuf::from(cwd);
+                    let mut mgr = state.manager.write().await;
+                    if let Err(e) = mgr.ensure_corpus(&path) {
+                        warn!(path = %path.display(), error = %e, "failed to ensure corpus on initialize");
+                    }
+                }
+            }
+        }
+
         let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let desc = describe_request(&req);
         info!(req_id, "[REQ #{req_id}] --> {} (multi-corpus)", desc);
@@ -286,8 +394,12 @@ async fn handle_jsonrpc_multi(
 }
 
 /// Server-Sent Events stream for MCP session handshake.
-pub async fn handle_sse() -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+pub async fn handle_sse(
+    State(state): State<MultiCorpusServerState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     use futures_util::StreamExt;
+    state.active_sessions.fetch_add(1, Ordering::SeqCst);
+    state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
     info!("[SSE] --> Client opened SSE event stream handshake");
     let session_event = Event::default().event("endpoint").data("/mcp");
 
@@ -299,6 +411,7 @@ pub async fn handle_sse() -> Sse<impl Stream<Item = std::result::Result<Event, I
 /// Non-blocking liveness health check for multi-corpus server.
 async fn handle_health_multi(State(state): State<MultiCorpusServerState>) -> Json<Value> {
     info!("[HEALTH] --> Multi-corpus health check probe received");
+    state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
     let (corpora_count, status) = match state.manager.try_read() {
         Ok(manager) => (manager.corpus_names().len(), "healthy"),
         Err(_) => (0, "busy"),
