@@ -41,3 +41,12 @@ In safe Rust (`#![forbid(unsafe_code)]`), ctxvault automatically detects the hig
 
 ### Neutral / Trade-offs
 - Pure semantic similarity queries on obscure private helper functions without lexical match rely on graph expansion from their caller or container anchor.
+
+---
+
+## Future Evolutions (Post-Benchmark Insights)
+For ultra-large monorepos (e.g. Kubernetes 37k+ files) and non-Tensor-Core architectures:
+1. **Centrality-Guided Anchoring**: Pre-build the AST relation graph in Pass 1 and compute PageRank/in-degree to only embed true architectural hubs ($\text{in\_degree} \ge K$), dropping anchor volume from ~5.6/file to <1.0/file.
+2. **cAST Skeleton Embedding**: Vectorize `signature + docstring` rather than full implementation bodies, speeding up transformer attention by 4x–5x.
+3. **Module Outline Anchoring**: Generating 1 outline anchor per file to strictly bound vector index cardinality.
+
