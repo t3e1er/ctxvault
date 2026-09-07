@@ -35,8 +35,11 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index INTEGER NOT NULL,
     start_byte INTEGER NOT NULL,
     end_byte INTEGER NOT NULL,
-    text TEXT NOT NULL
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_chunks_file_chunk ON chunks(file_path, chunk_index);
 
 CREATE TABLE IF NOT EXISTS edge_types (
     name TEXT PRIMARY KEY,
@@ -257,8 +260,8 @@ impl Store {
         {
             let mut stmt = tx
                 .prepare(
-                    "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, text)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, start_line, end_line)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )
                 .map_err(|e| Error::Database(e.to_string()))?;
 
@@ -269,7 +272,8 @@ impl Store {
                         chunk.chunk_index as i64,
                         chunk.start_byte as i64,
                         chunk.end_byte as i64,
-                        chunk.text,
+                        chunk.start_line as i64,
+                        chunk.end_line as i64,
                     ])
                     .map_err(|e| Error::Database(e.to_string()))?;
             }
@@ -284,7 +288,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT chunk_index, start_byte, end_byte, text
+                "SELECT chunk_index, start_byte, end_byte, start_line, end_line
                  FROM chunks WHERE file_path = ?1 ORDER BY chunk_index",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -295,12 +299,41 @@ impl Store {
                     chunk_index: row.get::<_, i64>(0)? as usize,
                     start_byte: row.get::<_, i64>(1)? as usize,
                     end_byte: row.get::<_, i64>(2)? as usize,
-                    text: row.get(3)?,
+                    start_line: row.get::<_, i64>(3)? as usize,
+                    end_line: row.get::<_, i64>(4)? as usize,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Retrieve a single chunk for a given file and chunk index.
+    pub fn get_chunk(&self, file_path: &str, chunk_index: usize) -> Result<Option<ChunkRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT chunk_index, start_byte, end_byte, start_line, end_line
+                 FROM chunks WHERE file_path = ?1 AND chunk_index = ?2",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let mut rows = stmt
+            .query_map(params![file_path, chunk_index as i64], |row| {
+                Ok(ChunkRecord {
+                    chunk_index: row.get::<_, i64>(0)? as usize,
+                    start_byte: row.get::<_, i64>(1)? as usize,
+                    end_byte: row.get::<_, i64>(2)? as usize,
+                    start_line: row.get::<_, i64>(3)? as usize,
+                    end_line: row.get::<_, i64>(4)? as usize,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        match rows.next() {
+            Some(res) => res.map(Some).map_err(|e| Error::Database(e.to_string())),
+            None => Ok(None),
+        }
     }
 
     /// Delete all chunks for a given file.
@@ -903,6 +936,10 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         Store::get_chunks_for_file(self, file_path)
     }
 
+    fn get_chunk(&self, file_path: &str, chunk_index: usize) -> Result<Option<ChunkRecord>> {
+        Store::get_chunk(self, file_path, chunk_index)
+    }
+
     fn delete_chunks_for_file(&self, file_path: &str) -> Result<()> {
         Store::delete_chunks_for_file(self, file_path)
     }
@@ -1078,19 +1115,22 @@ mod tests {
                 chunk_index: 0,
                 start_byte: 0,
                 end_byte: 100,
-                text: "First chunk".to_string(),
+                start_line: 1,
+                end_line: 5,
             },
             ChunkRecord {
                 chunk_index: 1,
                 start_byte: 100,
                 end_byte: 250,
-                text: "Second chunk".to_string(),
+                start_line: 6,
+                end_line: 12,
             },
             ChunkRecord {
                 chunk_index: 2,
                 start_byte: 250,
                 end_byte: 400,
-                text: "Third chunk".to_string(),
+                start_line: 13,
+                end_line: 20,
             },
         ];
 
@@ -1099,9 +1139,15 @@ mod tests {
         let retrieved = store.get_chunks_for_file("doc.md").unwrap();
         assert_eq!(retrieved.len(), 3);
         assert_eq!(retrieved[0].chunk_index, 0);
-        assert_eq!(retrieved[0].text, "First chunk");
+        assert_eq!(retrieved[0].start_line, 1);
+        assert_eq!(retrieved[0].end_line, 5);
         assert_eq!(retrieved[1].start_byte, 100);
         assert_eq!(retrieved[2].end_byte, 400);
+
+        let single = store.get_chunk("doc.md", 1).unwrap().unwrap();
+        assert_eq!(single.chunk_index, 1);
+        assert_eq!(single.start_byte, 100);
+        assert_eq!(single.end_byte, 250);
 
         // Delete chunks
         store.delete_chunks_for_file("doc.md").unwrap();
@@ -1171,7 +1217,8 @@ mod tests {
                     chunk_index: 0,
                     start_byte: 0,
                     end_byte: 50,
-                    text: "chunk".to_string(),
+                    start_line: 1,
+                    end_line: 3,
                 }],
             )
             .unwrap();

@@ -233,7 +233,8 @@ impl Engine {
                         chunk_index: c.chunk_index,
                         start_byte: c.start_byte,
                         end_byte: c.end_byte,
-                        text: c.text.clone(),
+                        start_line: c.start_line,
+                        end_line: c.end_line,
                     })
                     .collect();
                 self.store.insert_chunks(rel_path, &chunk_records)?;
@@ -312,7 +313,8 @@ impl Engine {
                 chunk_index: c.chunk_index,
                 start_byte: c.start_byte,
                 end_byte: c.end_byte,
-                text: c.text.clone(),
+                start_line: c.start_line,
+                end_line: c.end_line,
             })
             .collect();
         self.store.insert_chunks(rel_path, &chunk_records)?;
@@ -516,7 +518,8 @@ impl Engine {
                     chunk_index: c.chunk_index,
                     start_byte: c.start_byte,
                     end_byte: c.end_byte,
-                    text: c.text.clone(),
+                    start_line: c.start_line,
+                    end_line: c.end_line,
                 })
                 .collect();
             self.store.insert_chunks(path, &chunk_records)?;
@@ -555,7 +558,8 @@ impl Engine {
                     chunk_index: c.chunk_index,
                     start_byte: c.start_byte,
                     end_byte: c.end_byte,
-                    text: c.text.clone(),
+                    start_line: c.start_line,
+                    end_line: c.end_line,
                 })
                 .collect();
             self.store.insert_chunks(path, &chunk_records)?;
@@ -1034,7 +1038,7 @@ impl Engine {
         // Save vector index (only if it has data and has unpersisted changes).
         if let Some(ref vi) = self.vector_index {
             if vi.is_dirty() && !vi.is_empty() {
-                vi.save(&self.index_dir.join("vectors.json")).unwrap_or_else(|e| {
+                vi.save_binary(&self.index_dir.join("vectors.bin")).unwrap_or_else(|e| {
                     warn!("Failed to save vector index: {}", e);
                 });
             }
@@ -1125,9 +1129,9 @@ impl Engine {
                 crate::embedding::ModelName::from_str_name(&self.config.embedding.model)
                     .unwrap_or_default();
             let configured_dimensions = configured_model_name.dimensions();
-            let vector_path = self.index_dir.join("vectors.json");
+            let vector_path = self.index_dir.join("vectors.bin");
             let vi = if vector_path.exists() {
-                VectorIndex::load(&vector_path)
+                VectorIndex::load_binary(&vector_path)
                     .unwrap_or_else(|_| VectorIndex::new_default(configured_dimensions))
             } else {
                 VectorIndex::new_default(configured_dimensions)
@@ -1360,7 +1364,44 @@ impl Engine {
         &self,
         max_chunk_chars: usize,
     ) -> Result<Vec<crate::analytics::SplitSuggestion>> {
-        crate::analytics::suggest_splits(&self.store, max_chunk_chars)
+        crate::analytics::suggest_splits(
+            &self.store,
+            Some(Path::new(&self.config.path)),
+            max_chunk_chars,
+        )
+    }
+
+    /// Read the exact UTF-8 text slice of a chunk directly from the source file on disk.
+    ///
+    /// Slices bytes `[start_byte..end_byte]` from the file at `rel_path` relative to `self.config.path`.
+    pub fn fetch_chunk_text(
+        &self,
+        rel_path: &str,
+        start_byte: usize,
+        end_byte: usize,
+    ) -> Result<String> {
+        let full_path = Path::new(&self.config.path).join(rel_path);
+        let mut file = fs::File::open(&full_path).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("failed to open '{}': {e}", full_path.display()),
+            ))
+        })?;
+
+        use std::io::{Read, Seek, SeekFrom};
+        file.seek(SeekFrom::Start(start_byte as u64))?;
+        let len = end_byte.saturating_sub(start_byte);
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf)?;
+        String::from_utf8(buf).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid UTF-8 in chunk slice for '{}' [{}..{}]: {e}",
+                    rel_path, start_byte, end_byte
+                ),
+            ))
+        })
     }
 
     /// Generate a coverage report over the given test queries.
@@ -1439,18 +1480,23 @@ impl Engine {
                 (c, t.or_else(|| file.title.clone()))
             } else {
                 let chunk_records = self.store.get_chunks_for_file(&file.path)?;
-                let chunks: Vec<ctxvault_common::types::Chunk> = chunk_records
-                    .into_iter()
-                    .map(|cr| {
+                let mut chunks: Vec<ctxvault_common::types::Chunk> =
+                    Vec::with_capacity(chunk_records.len());
+                for cr in chunk_records {
+                    let text = self
+                        .fetch_chunk_text(&file.path, cr.start_byte, cr.end_byte)
+                        .unwrap_or_default();
+                    chunks.push(
                         ctxvault_common::types::Chunk::new(
                             file.path.clone(),
                             cr.chunk_index,
-                            cr.text,
+                            text,
                             cr.start_byte,
                             cr.end_byte,
                         )
-                    })
-                    .collect();
+                        .with_lines(cr.start_line, cr.end_line),
+                    );
+                }
                 (chunks, file.title.clone())
             };
 
@@ -1991,20 +2037,10 @@ mod tests {
 
         // Create a vector index file with a different model version.
         fs::create_dir_all(&index_dir).unwrap();
-        let fake_data = serde_json::json!({
-            "entries": [{
-                "id": 0,
-                "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 768]
-            }],
-            "next_id": 1,
-            "dimensions": 768,
-            "max_nb_connection": 16,
-            "ef_construction": 200,
-            "model_version": "some-other-model-v99"
-        });
-        fs::write(index_dir.join("vectors.json"), serde_json::to_string(&fake_data).unwrap())
-            .unwrap();
+        let mut vi = VectorIndex::new_default(768);
+        vi.set_model_version("some-other-model-v99");
+        vi.add(&vec![0.1f32; 768], "test.md", Some(0), false, "text").unwrap();
+        vi.save_binary(&index_dir.join("vectors.bin")).unwrap();
 
         let config = test_config(&corpus_dir);
         let engine = Engine::open(config, &index_dir).unwrap();
@@ -2021,26 +2057,16 @@ mod tests {
         fs::create_dir_all(&corpus_dir).unwrap();
         let index_dir = tmp.path().join("index");
 
-        // Create a vector index file WITHOUT model_version (legacy format).
+        // Create a vector index file WITHOUT model_version.
         fs::create_dir_all(&index_dir).unwrap();
-        let fake_data = serde_json::json!({
-            "entries": [{
-                "id": 0,
-                "meta": {"doc_path": "test.md", "chunk_index": 0, "is_doc_level": false},
-                "vector": vec![0.1f32; 768]
-            }],
-            "next_id": 1,
-            "dimensions": 768,
-            "max_nb_connection": 16,
-            "ef_construction": 200
-        });
-        fs::write(index_dir.join("vectors.json"), serde_json::to_string(&fake_data).unwrap())
-            .unwrap();
+        let mut vi = VectorIndex::new_default(768);
+        vi.add(&vec![0.1f32; 768], "test.md", Some(0), false, "text").unwrap();
+        vi.save_binary(&index_dir.join("vectors.bin")).unwrap();
 
         let config = test_config(&corpus_dir);
         let engine = Engine::open(config, &index_dir).unwrap();
 
-        // Legacy vectors (no model_version) with data should be marked stale.
+        // Vectors with no model_version with data should be marked stale.
         assert!(engine.vectors_stale());
     }
 

@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,12 +19,15 @@ use serde::{Deserialize, Serialize};
 /// Default number of dimensions for Jina embeddings (768).
 pub const DEFAULT_DIMENSIONS: usize = 768;
 
-/// A stored vector entry for persistence (metadata + raw vector data).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredVector {
-    id: usize,
-    meta: VectorMeta,
-    vector: Vec<f32>,
+/// Binary metadata trailer serialized via postcard.
+#[derive(Debug, Serialize, Deserialize)]
+struct BinaryMetadata {
+    ids: Vec<usize>,
+    meta: HashMap<usize, VectorMeta>,
+    next_id: usize,
+    max_nb_connection: usize,
+    ef_construction: usize,
+    model_version: Option<String>,
 }
 
 /// HNSW-based vector index for approximate nearest neighbor search.
@@ -32,8 +36,6 @@ pub struct VectorIndex {
     hnsw: Hnsw<'static, f32, DistCosine>,
     /// Mapping from external data ID to vector metadata.
     meta: HashMap<usize, VectorMeta>,
-    /// Stored vectors for persistence and rebuild.
-    vectors: HashMap<usize, Vec<f32>>,
     /// Next available external ID.
     next_id: usize,
     /// Number of dimensions per vector.
@@ -47,19 +49,6 @@ pub struct VectorIndex {
     stale: bool,
     /// Whether the index has unsaved changes.
     dirty: AtomicBool,
-}
-
-/// Persistence format for the entire vector index.
-#[derive(Serialize, Deserialize)]
-struct PersistenceData {
-    entries: Vec<StoredVector>,
-    next_id: usize,
-    dimensions: usize,
-    max_nb_connection: usize,
-    ef_construction: usize,
-    /// Model version that produced these embeddings (added in 3.10).
-    #[serde(default)]
-    model_version: Option<String>,
 }
 
 impl VectorIndex {
@@ -86,7 +75,6 @@ impl VectorIndex {
         Self {
             hnsw,
             meta: HashMap::new(),
-            vectors: HashMap::new(),
             next_id: 0,
             dimensions,
             max_nb_connection,
@@ -195,9 +183,8 @@ impl VectorIndex {
             modality: modality.to_string(),
         };
 
-        // Store metadata and vector data.
+        // Store metadata.
         let _ = self.meta.insert(id, meta);
-        let _ = self.vectors.insert(id, vector.to_vec());
         self.dirty.store(true, Ordering::Relaxed);
 
         Ok(id)
@@ -232,9 +219,9 @@ impl VectorIndex {
 
     /// Remove all vectors for a given document path.
     ///
-    /// Note: HNSW doesn't support true deletion, so we remove from metadata
-    /// and stored vectors. The HNSW graph entries become stale but are filtered
-    /// out during search. A rebuild (save+load) compacts the index.
+    /// Note: HNSW doesn't support true deletion, so we remove from metadata.
+    /// The HNSW graph entries become stale but are filtered out during search.
+    /// A rebuild (save+load) compacts the index.
     pub fn remove_document(&mut self, doc_path: &str) {
         let ids_to_remove: Vec<usize> =
             self.meta.iter().filter(|(_, m)| m.doc_path == doc_path).map(|(&id, _)| id).collect();
@@ -245,7 +232,6 @@ impl VectorIndex {
 
         for id in ids_to_remove {
             let _ = self.meta.remove(&id);
-            let _ = self.vectors.remove(&id);
         }
     }
 
@@ -331,85 +317,215 @@ impl VectorIndex {
         Ok(results)
     }
 
-    /// Save the index to disk as a JSON file with all vectors and metadata.
+    /// Save the index to disk using the packed IEEE 754 binary format (`vectors.bin`)
+    /// with atomic OS replacement.
     ///
-    /// On reload, the HNSW graph is rebuilt from stored vectors.
-    /// This approach avoids lifetime complications with `HnswIo`.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// Header: Magic `b"CTXV"` (4B), version `1u16` (2B), dimensions `u16` (2B),
+    /// vector count `u32` (4B), reserved `[0u8; 20]` (20B).
+    /// Body: Contiguous raw float bytes (`count * dimensions * 4` bytes).
+    /// Tail: Length-prefixed postcard-serialized `BinaryMetadata`.
+    pub fn save_binary(&self, path: &Path) -> Result<()> {
         let parent = path.parent().unwrap_or(Path::new("."));
         fs::create_dir_all(parent)
             .map_err(|e| Error::Index(format!("cannot create vector index dir: {}", e)))?;
 
-        let entries: Vec<StoredVector> = self
-            .meta
-            .iter()
-            .filter_map(|(&id, meta)| {
-                let vector = self.vectors.get(&id)?.clone();
-                Some(StoredVector { id, meta: meta.clone(), vector })
-            })
-            .collect();
+        let tmp_path = path.with_extension("bin.tmp");
+        let file = fs::File::create(&tmp_path).map_err(|e| {
+            Error::Index(format!("cannot create tmp vector index {}: {}", tmp_path.display(), e))
+        })?;
+        let mut writer = std::io::BufWriter::new(file);
 
-        let data = PersistenceData {
-            entries,
+        // Gather active points from PointIndexation
+        let pi = self.hnsw.get_point_indexation();
+        let mut points_to_write = Vec::with_capacity(self.meta.len());
+        for point in pi {
+            let id = point.get_origin_id();
+            if self.meta.contains_key(&id) {
+                points_to_write.push((id, point));
+            }
+        }
+        let count = points_to_write.len();
+
+        // 1. Write Header (32 bytes)
+        writer
+            .write_all(b"CTXV")
+            .map_err(|e| Error::Index(format!("failed to write magic: {e}")))?;
+        writer
+            .write_all(&1u16.to_le_bytes())
+            .map_err(|e| Error::Index(format!("failed to write version: {e}")))?;
+        writer
+            .write_all(&(self.dimensions as u16).to_le_bytes())
+            .map_err(|e| Error::Index(format!("failed to write dimensions: {e}")))?;
+        writer
+            .write_all(&(count as u32).to_le_bytes())
+            .map_err(|e| Error::Index(format!("failed to write count: {e}")))?;
+        writer
+            .write_all(&[0u8; 20])
+            .map_err(|e| Error::Index(format!("failed to write reserved padding: {e}")))?;
+
+        // 2. Write Body: contiguous raw float bytes from active points
+        let mut written_ids = Vec::with_capacity(count);
+        for (id, point) in points_to_write {
+            written_ids.push(id);
+            let bytes: &[u8] = bytemuck::cast_slice(point.get_v());
+            writer
+                .write_all(bytes)
+                .map_err(|e| Error::Index(format!("failed to write vector {id}: {e}")))?;
+        }
+
+        // 3. Write Tail: postcard-serialized metadata
+        let metadata = BinaryMetadata {
+            ids: written_ids,
+            meta: self.meta.clone(),
             next_id: self.next_id,
-            dimensions: self.dimensions,
             max_nb_connection: self.max_nb_connection,
             ef_construction: self.ef_construction,
             model_version: self.model_version.clone(),
         };
 
-        let json = serde_json::to_string(&data)
-            .map_err(|e| Error::Index(format!("cannot serialize vector index: {}", e)))?;
-        fs::write(path, json)
-            .map_err(|e| Error::Index(format!("cannot write vector index: {}", e)))?;
+        let meta_bytes = postcard::to_allocvec(&metadata)
+            .map_err(|e| Error::Index(format!("failed to serialize vector metadata: {e}")))?;
+        writer
+            .write_all(&(meta_bytes.len() as u64).to_le_bytes())
+            .map_err(|e| Error::Index(format!("failed to write meta len: {e}")))?;
+        writer
+            .write_all(&meta_bytes)
+            .map_err(|e| Error::Index(format!("failed to write meta bytes: {e}")))?;
+
+        writer.flush().map_err(|e| Error::Index(format!("failed to flush vector index: {e}")))?;
+        let file = writer
+            .into_inner()
+            .map_err(|e| Error::Index(format!("failed to unwrap writer: {e}")))?;
+        file.sync_all().map_err(|e| Error::Index(format!("failed to sync vector index: {e}")))?;
+        drop(file);
+
+        fs::rename(&tmp_path, path)
+            .map_err(|e| Error::Index(format!("failed to atomically rename vector index: {e}")))?;
 
         self.dirty.store(false, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Load a previously saved index from disk and rebuild the HNSW graph.
-    ///
-    /// Returns a new `VectorIndex` with the restored state.
-    pub fn load(path: &Path) -> Result<Self> {
+    /// Load a previously saved index from a packed binary file (`vectors.bin`)
+    /// and rebuild the HNSW graph.
+    pub fn load_binary(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Err(Error::Index(format!("vector index file not found at {}", path.display())));
         }
 
-        let json = fs::read_to_string(path)
-            .map_err(|e| Error::Index(format!("cannot read vector index: {}", e)))?;
-        let data: PersistenceData = serde_json::from_str(&json)
-            .map_err(|e| Error::Index(format!("cannot parse vector index: {}", e)))?;
+        let file = fs::File::open(path).map_err(|e| {
+            Error::Index(format!("cannot open vector index {}: {}", path.display(), e))
+        })?;
+        let mut reader = std::io::BufReader::new(file);
 
-        let max_elements = data.entries.len().max(100);
+        // 1. Read Header (32 bytes)
+        let mut magic = [0u8; 4];
+        reader
+            .read_exact(&mut magic)
+            .map_err(|e| Error::Index(format!("failed to read magic: {e}")))?;
+        if &magic != b"CTXV" {
+            return Err(Error::Index(format!(
+                "invalid vector index magic: expected b\"CTXV\", got {:?}",
+                magic
+            )));
+        }
+
+        let mut version_bytes = [0u8; 2];
+        reader
+            .read_exact(&mut version_bytes)
+            .map_err(|e| Error::Index(format!("failed to read version: {e}")))?;
+        let version = u16::from_le_bytes(version_bytes);
+        if version != 1 {
+            return Err(Error::Index(format!(
+                "unsupported vector index version: expected 1, got {version}"
+            )));
+        }
+
+        let mut dim_bytes = [0u8; 2];
+        reader
+            .read_exact(&mut dim_bytes)
+            .map_err(|e| Error::Index(format!("failed to read dimensions: {e}")))?;
+        let dimensions = u16::from_le_bytes(dim_bytes) as usize;
+
+        let mut count_bytes = [0u8; 4];
+        reader
+            .read_exact(&mut count_bytes)
+            .map_err(|e| Error::Index(format!("failed to read count: {e}")))?;
+        let count = u32::from_le_bytes(count_bytes) as usize;
+
+        let mut reserved = [0u8; 20];
+        reader
+            .read_exact(&mut reserved)
+            .map_err(|e| Error::Index(format!("failed to read reserved bytes: {e}")))?;
+
+        // 2. Read Body: contiguous raw float bytes into an aligned buffer
+        let total_floats = count
+            .checked_mul(dimensions)
+            .ok_or_else(|| Error::Index("vector float buffer size overflow".to_string()))?;
+        let mut float_buf = vec![0.0f32; total_floats];
+        let byte_slice: &mut [u8] = bytemuck::cast_slice_mut(&mut float_buf);
+        reader
+            .read_exact(byte_slice)
+            .map_err(|e| Error::Index(format!("failed to read vector body: {e}")))?;
+
+        // 3. Read Tail: metadata length + postcard payload
+        let mut meta_len_bytes = [0u8; 8];
+        reader
+            .read_exact(&mut meta_len_bytes)
+            .map_err(|e| Error::Index(format!("failed to read meta length: {e}")))?;
+        let meta_len = u64::from_le_bytes(meta_len_bytes) as usize;
+
+        let mut meta_bytes = vec![0u8; meta_len];
+        reader
+            .read_exact(&mut meta_bytes)
+            .map_err(|e| Error::Index(format!("failed to read meta bytes: {e}")))?;
+
+        let metadata: BinaryMetadata = postcard::from_bytes(&meta_bytes)
+            .map_err(|e| Error::Index(format!("failed to deserialize vector metadata: {e}")))?;
+
+        if metadata.ids.len() != count {
+            return Err(Error::Index(format!(
+                "vector count mismatch: header indicates {count}, metadata has {} ids",
+                metadata.ids.len()
+            )));
+        }
+
+        // 4. Rebuild HNSW
+        let max_elements = count.max(100);
         let hnsw = Hnsw::<f32, DistCosine>::new(
-            data.max_nb_connection,
+            metadata.max_nb_connection,
             max_elements,
             16,
-            data.ef_construction,
+            metadata.ef_construction,
             DistCosine,
         );
 
-        let mut meta = HashMap::new();
-        let mut vectors = HashMap::new();
-
-        for entry in data.entries {
-            hnsw.insert_slice((&entry.vector, entry.id));
-            let _ = meta.insert(entry.id, entry.meta);
-            let _ = vectors.insert(entry.id, entry.vector);
+        for (i, &id) in metadata.ids.iter().enumerate() {
+            let slice = &float_buf[i * dimensions..(i + 1) * dimensions];
+            hnsw.insert_slice((slice, id));
         }
 
         Ok(Self {
             hnsw,
-            meta,
-            vectors,
-            next_id: data.next_id,
-            dimensions: data.dimensions,
-            max_nb_connection: data.max_nb_connection,
-            ef_construction: data.ef_construction,
-            model_version: data.model_version,
+            meta: metadata.meta,
+            next_id: metadata.next_id,
+            dimensions,
+            max_nb_connection: metadata.max_nb_connection,
+            ef_construction: metadata.ef_construction,
+            model_version: metadata.model_version,
             stale: false,
             dirty: AtomicBool::new(false),
         })
+    }
+
+    /// Save the index to disk using the packed binary format (`vectors.bin`).
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.save_binary(path)
+    }
+
+    /// Load a previously saved index from disk using the packed binary format.
+    pub fn load(path: &Path) -> Result<Self> {
+        Self::load_binary(path)
     }
 }
 
@@ -663,7 +779,7 @@ mod tests {
     #[test]
     fn test_save_and_load() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let index_path = tmp.path().join("vectors.json");
+        let index_path = tmp.path().join("vectors.bin");
 
         // Create and populate an index.
         let mut index = VectorIndex::new(384, 100, 200, 16);
@@ -714,12 +830,12 @@ mod tests {
 
     #[test]
     fn test_modality_filter() {
-        let mut index = VectorIndex::new(384, 100, 200, 16);
+        let mut index = VectorIndex::new_default(384);
 
-        // Two near-identical vectors, one tagged docs, one tagged code.
+        // Two similar vectors, one tagged docs, one tagged code, symmetrically offset from base.
         let base = make_vector(7, 384);
-        let doc_vec = make_similar_vector(&base, 0.5);
-        let code_vec = make_similar_vector(&base, 0.6);
+        let doc_vec = make_similar_vector(&base, 0.2);
+        let code_vec = make_similar_vector(&base, -0.2);
 
         index.add(&doc_vec, "notes/guide.md", Some(0), false, "docs").unwrap();
         index.add(&code_vec, "src/engine.rs", Some(0), false, "code").unwrap();
@@ -737,7 +853,7 @@ mod tests {
         assert!(doc_results.iter().all(|r| r.doc_path == "notes/guide.md"));
 
         // Both returns both.
-        let both_results = index.search(&base, 10, false, Modality::Both).unwrap();
+        let both_results = index.search(&code_vec, 10, false, Modality::Both).unwrap();
         let paths: Vec<&str> = both_results.iter().map(|r| r.doc_path.as_str()).collect();
         assert!(paths.contains(&"notes/guide.md"));
         assert!(paths.contains(&"src/engine.rs"));
@@ -746,9 +862,9 @@ mod tests {
     #[test]
     fn test_modality_survives_save_load() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let index_path = tmp.path().join("vectors.json");
+        let index_path = tmp.path().join("vectors.bin");
 
-        let mut index = VectorIndex::new(384, 100, 200, 16);
+        let mut index = VectorIndex::new_default(384);
         let base = make_vector(9, 384);
         index.add(&make_similar_vector(&base, 0.4), "src/lib.rs", Some(0), false, "code").unwrap();
         index.save(&index_path).unwrap();
@@ -762,7 +878,7 @@ mod tests {
     #[test]
     fn test_dirty_tracking_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
-        let index_path = dir.path().join("vectors.json");
+        let index_path = dir.path().join("vectors.bin");
 
         let mut index = VectorIndex::new_default(384);
         assert!(!index.is_dirty());
@@ -778,11 +894,34 @@ mod tests {
         index.remove_document("notes/doc.md");
         assert!(index.is_dirty());
 
-        index.save(&index_path).unwrap();
-        assert!(!index.is_dirty());
-
-        // Loading resets dirty to false
         let loaded = VectorIndex::load(&index_path).unwrap();
         assert!(!loaded.is_dirty());
+    }
+
+    #[test]
+    fn test_binary_header_and_format() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let index_path = tmp.path().join("vectors.bin");
+
+        let mut index = VectorIndex::new_default(768);
+        index.set_model_version("test-model-v1");
+        let v = make_vector(42, 768);
+        index.add(&v, "src/lib.rs", Some(0), false, "code").unwrap();
+
+        index.save_binary(&index_path).unwrap();
+
+        // Verify raw bytes on disk
+        let bytes = fs::read(&index_path).unwrap();
+        assert!(bytes.len() >= 32);
+        assert_eq!(&bytes[0..4], b"CTXV");
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 1);
+        assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 768);
+        assert_eq!(u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]), 1);
+
+        // Load and verify model_version preserved
+        let loaded = VectorIndex::load_binary(&index_path).unwrap();
+        assert_eq!(loaded.model_version(), Some("test-model-v1"));
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.dimensions(), 768);
     }
 }

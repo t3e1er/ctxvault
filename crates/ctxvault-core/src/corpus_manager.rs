@@ -754,6 +754,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let repo_dir = tmp.path().join("dynamic_repo");
         fs::create_dir_all(&repo_dir).unwrap();
+        fs::create_dir_all(repo_dir.join(".index")).unwrap();
 
         let mut manager = CorpusManager::new();
         let name = manager.ensure_corpus(&repo_dir).unwrap();

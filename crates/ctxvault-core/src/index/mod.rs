@@ -76,7 +76,8 @@ impl BM25Index {
         let field_path = builder.add_text_field("path", STRING | STORED);
         let field_chunk_index = builder.add_text_field("chunk_index", STORED);
         let field_title = builder.add_text_field("title", TEXT | STORED);
-        let field_body = builder.add_text_field("body", TEXT | STORED);
+        // Body is indexed for BM25 scoring but NOT stored, eliminating redundant text in .store files.
+        let field_body = builder.add_text_field("body", TEXT);
         let field_tags = builder.add_text_field("tags", TEXT | STORED);
         // Coarse modality tag ("code"/"docs") for exact-match filtering.
         let field_modality = builder.add_text_field("modality", STRING | STORED);
@@ -355,29 +356,10 @@ impl BM25Index {
                 retrieved.get_first(self.field_chunk_index).and_then(|v| v.as_str()).unwrap_or("0");
             let chunk_index = chunk_index_str.parse::<usize>().unwrap_or(0);
 
-            let body = retrieved
-                .get_first(self.field_body)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Create snippet from first ~200 characters of body (char-boundary safe).
-            let snippet = if body.len() > 200 {
-                // Find the nearest char boundary at or before byte 200.
-                let mut end = 200;
-                while end > 0 && !body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                Some(body[..end].to_string())
-            } else {
-                Some(body)
-            };
-
             let score_f64 = score as f64;
 
             results.push(
                 SearchResult::new(path, score_f64)
-                    .with_snippet(snippet)
                     .with_chunk_index(Some(chunk_index))
                     .with_score_components(ScoreBreakdown {
                         bm25: score_f64,

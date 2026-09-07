@@ -82,9 +82,9 @@ impl EngineBuilder {
                 let configured_dimensions = configured_model_name.dimensions();
                 let configured_model_version = configured_model_name.version_string();
 
-                let vector_path = index_dir.join("vectors.json");
+                let vector_path = index_dir.join("vectors.bin");
                 let mut vi = if vector_path.exists() {
-                    VectorIndex::load(&vector_path).unwrap_or_else(|e| {
+                    VectorIndex::load_binary(&vector_path).unwrap_or_else(|e| {
                         warn!("Failed to load vector index from disk, starting fresh: {}", e);
                         VectorIndex::new_default(configured_dimensions)
                     })

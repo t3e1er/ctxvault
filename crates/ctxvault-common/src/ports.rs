@@ -161,6 +161,9 @@ pub trait MetadataCatalog {
     /// Retrieve all chunks for a file, ordered by chunk index.
     fn get_chunks_for_file(&self, file_path: &str) -> Result<Vec<ChunkRecord>>;
 
+    /// Retrieve a single chunk for a file by its chunk index.
+    fn get_chunk(&self, file_path: &str, chunk_index: usize) -> Result<Option<ChunkRecord>>;
+
     /// Delete all chunks for a file.
     fn delete_chunks_for_file(&self, file_path: &str) -> Result<()>;
 
@@ -316,7 +319,7 @@ pub trait TextIndex {
 /// - Loading is deliberately **not** on the port. The load-equivalent operation
 ///   (and the `new` / `new_default` constructors) return `Self`, which a
 ///   `&dyn`-object-safe trait cannot express, and constructing a store — reading
-///   a `vectors.json` off disk or building an empty index — is an
+///   a `vectors.bin` off disk or building an empty index — is an
 ///   adapter/composition-root concern, not a runtime behaviour of an existing
 ///   store. The composition root constructs the concrete adapter (loading from
 ///   disk when present) and injects it behind this port.
