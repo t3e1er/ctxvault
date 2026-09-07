@@ -74,11 +74,29 @@ pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
     };
 
     // Apply overlap if configured.
-    if config.overlap_tokens > 0 && raw_chunks.len() > 1 {
+    let mut chunks = if config.overlap_tokens > 0 && raw_chunks.len() > 1 {
         apply_overlap(raw_chunks, config.overlap_tokens)
     } else {
         raw_chunks
+    };
+
+    for chunk in &mut chunks {
+        if chunk.start_line == 1
+            && chunk.end_line == 1
+            && (chunk.start_byte > 0 || chunk.end_byte > 0)
+        {
+            chunk.start_line = byte_offset_to_line(body, chunk.start_byte);
+            chunk.end_line = byte_offset_to_line(body, chunk.end_byte);
+        }
     }
+
+    chunks
+}
+
+/// Convert a byte offset in a string to a 1-based line number.
+fn byte_offset_to_line(content: &str, byte_offset: usize) -> usize {
+    let offset = byte_offset.min(content.len());
+    1 + content[..offset].bytes().filter(|&b| b == b'\n').count()
 }
 
 // ---------------------------------------------------------------------------

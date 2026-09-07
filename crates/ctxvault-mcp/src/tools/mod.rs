@@ -1573,7 +1573,8 @@ fn fetch_doc_chunk(
         .find(|c| c.chunk_index == chunk_index)
         .ok_or_else(|| Error::NotFound(format!("chunk {chunk_index} not found for '{path}'")))?;
 
-    let text_lines: Vec<&str> = chunk.text.lines().collect();
+    let chunk_text = engine.fetch_chunk_text(path, chunk.start_byte, chunk.end_byte)?;
+    let text_lines: Vec<&str> = chunk_text.lines().collect();
     let (text, truncated) = cap_lines(&text_lines, max_lines);
 
     let mut out = serde_json::json!({
@@ -1589,16 +1590,17 @@ fn fetch_doc_chunk(
     if include_neighbors {
         let neighbor_cap = (max_lines / 2).max(1);
         let neighbor = |target: usize| -> Option<Value> {
-            chunks.iter().find(|c| c.chunk_index == target).map(|c| {
-                let nlines: Vec<&str> = c.text.lines().collect();
+            chunks.iter().find(|c| c.chunk_index == target).and_then(|c| {
+                let n_text = engine.fetch_chunk_text(path, c.start_byte, c.end_byte).ok()?;
+                let nlines: Vec<&str> = n_text.lines().collect();
                 let (ntext, ntrunc) = cap_lines(&nlines, neighbor_cap);
-                serde_json::json!({
+                Some(serde_json::json!({
                     "chunk_index": c.chunk_index,
                     "start_byte": c.start_byte,
                     "end_byte": c.end_byte,
                     "text": ntext,
                     "truncated": ntrunc,
-                })
+                }))
             })
         };
 
@@ -1750,10 +1752,14 @@ fn populate_top_snippets(
         if let Some(chunk_index) = item.chunk_index {
             if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
                 if let Some(chunk) = chunks.iter().find(|c| c.chunk_index == chunk_index) {
-                    let lines: Vec<&str> = chunk.text.lines().collect();
-                    let (capped, _) = cap_lines(&lines, max_lines);
-                    item.snippet = Some(capped);
-                    continue;
+                    if let Ok(chunk_text) =
+                        engine.fetch_chunk_text(&item.path, chunk.start_byte, chunk.end_byte)
+                    {
+                        let lines: Vec<&str> = chunk_text.lines().collect();
+                        let (capped, _) = cap_lines(&lines, max_lines);
+                        item.snippet = Some(capped);
+                        continue;
+                    }
                 }
             }
         }

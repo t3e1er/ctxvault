@@ -280,8 +280,8 @@ pub struct FileRecord {
     pub indexed_at: i64,
 }
 
-/// A text chunk stored for a file.
-#[derive(Debug, Clone)]
+/// A text chunk coordinate record stored for a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkRecord {
     /// Zero-based index within the parent document.
     pub chunk_index: usize,
@@ -289,8 +289,10 @@ pub struct ChunkRecord {
     pub start_byte: usize,
     /// Byte offset of chunk end in original content.
     pub end_byte: usize,
-    /// The text content of this chunk.
-    pub text: String,
+    /// 1-based line number of chunk start.
+    pub start_line: usize,
+    /// 1-based line number of chunk end.
+    pub end_line: usize,
 }
 
 /// A registered edge type configuration persisted to the database.
@@ -326,6 +328,10 @@ impl Default for ChunkEmbedPolicy {
     }
 }
 
+fn default_line() -> usize {
+    1
+}
+
 /// A text chunk ready for embedding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
@@ -339,6 +345,12 @@ pub struct Chunk {
     pub start_byte: usize,
     /// Byte offset of chunk end in original content.
     pub end_byte: usize,
+    /// 1-based line number of chunk start.
+    #[serde(default = "default_line")]
+    pub start_line: usize,
+    /// 1-based line number of chunk end.
+    #[serde(default = "default_line")]
+    pub end_line: usize,
     /// Heading hierarchy for this chunk (e.g., "Setup > Prerequisites").
     /// Populated by the heading-aware chunker; None for other strategies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,12 +384,21 @@ impl Chunk {
             text: text.into(),
             start_byte,
             end_byte,
+            start_line: 1,
+            end_line: 1,
             heading_chain: None,
             language: None,
             scope_path: None,
             entity_kind: Some(EntityKind::Documentation),
             embed_policy: ChunkEmbedPolicy::Anchor,
         }
+    }
+
+    /// Set line span.
+    pub fn with_lines(mut self, start_line: usize, end_line: usize) -> Self {
+        self.start_line = start_line;
+        self.end_line = end_line;
+        self
     }
 
     /// Set heading chain.
@@ -398,6 +419,8 @@ impl Chunk {
         let scope = scope_path.into();
         self.language = Some(lang.clone());
         self.scope_path = Some(scope.clone());
+        self.start_line = start_line;
+        self.end_line = end_line;
         self.entity_kind =
             Some(EntityKind::CodeChunk { language: lang, scope_path: scope, start_line, end_line });
         self
