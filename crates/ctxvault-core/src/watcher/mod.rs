@@ -129,7 +129,7 @@ impl CorpusWatcher {
 ///
 /// Whenever indexable files (.md or supported source code) are created, modified,
 /// or deleted, events are debounced and incrementally synced via
-/// [`CorpusManager::sync_delta_paths`].
+/// [`crate::corpus_manager::CorpusManager::sync_delta_paths`].
 pub fn spawn_corpus_watcher(
     corpus_name: String,
     root_path: PathBuf,
