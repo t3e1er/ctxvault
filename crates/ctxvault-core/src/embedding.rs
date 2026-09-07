@@ -477,15 +477,15 @@ impl HardwareGovernor for DirectMlGovernor {
         let per_chunk_attention_bytes = (3 * 12 * seq_len * seq_len * 4).max(2048);
         let batch_by_mem = activation_budget / per_chunk_attention_bytes;
 
-        let max_tokens = (activation_budget / 32).clamp(8_192, 65_536);
+        let max_tokens = (activation_budget / 32).clamp(2_048, 8_192);
         let batch_by_tokens = max_tokens / seq_len;
 
         // Windows DirectML TDR safety ceiling: ensure single GPU dispatch duration is < 400ms
         let tdr_safe_cap = match seq_len {
-            s if s > 768 => 16,
-            s if s > 384 => 64,
-            s if s > 128 => 128,
-            _ => 256,
+            s if s > 768 => 8,
+            s if s > 384 => 16,
+            s if s > 128 => 32,
+            _ => 64,
         };
 
         let base_batch = batch_by_mem.min(batch_by_tokens).min(tdr_safe_cap).max(1);
@@ -872,11 +872,10 @@ impl Embedder {
 
         let mut sessions = vec![Mutex::new(session_0)];
 
-        // Strategy 3: Dual Concurrent Inference Streams
-        // Only spawn dual sessions if governor reports total memory >= 4 GB on hardware acceleration platforms
+        // DirectML on Windows requires serialized command submission to avoid DXGI device resets / TDR.
+        // Multi-stream concurrent sessions are enabled on platforms with native multi-stream compute (macOS Metal).
         let has_sufficient_vram = governor.total_memory_bytes() >= 4 * 1024 * 1024 * 1024;
-        let can_use_dual_stream =
-            cfg!(any(target_os = "windows", target_os = "macos")) && has_sufficient_vram;
+        let can_use_dual_stream = cfg!(target_os = "macos") && has_sufficient_vram;
 
         if can_use_dual_stream {
             #[cfg(target_os = "windows")]
