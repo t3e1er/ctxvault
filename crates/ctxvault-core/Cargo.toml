@@ -69,7 +69,7 @@ tree-sitter-php = "0.23"
 tree-sitter-swift = "=0.6.0"
 tree-sitter-elixir = "0.3"
 tree-sitter-lua = "=0.2.0"
-tree-sitter-bash = "0.23"
+tree-sitter-bash = "0.25"
 # Expanded Grammars
 tree-sitter-kotlin-ng = "1.1"
 tree-sitter-scala = "0.26"
