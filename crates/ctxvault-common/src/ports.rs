@@ -730,6 +730,8 @@ pub struct SearchQuery {
     pub edge_class: Option<String>,
     /// Whether to run multi-hop query decomposition (`hybrid` mode only).
     pub decompose: Option<bool>,
+    /// Number of top-ranked search results to inline source snippets for in Turn 1.
+    pub snippets: Option<usize>,
 }
 
 /// Search service port: the search-mode dispatch + RRF fusion contract.

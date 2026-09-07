@@ -60,6 +60,7 @@ fn main() {
         edge_types: None,
         edge_class: None,
         decompose: Some(true),
+        snippets: None,
     };
     match service.search(&sq) {
         Ok(results) => {
