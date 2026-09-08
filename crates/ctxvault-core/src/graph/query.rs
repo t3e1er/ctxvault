@@ -807,6 +807,11 @@ impl<'a> QueryEngine<'a> {
                 return (Some(s.file_path.clone()), Some(format!("{:?}", s.symbol_type)));
             }
         }
+        if let Ok(syms) = self.store.find_symbols_by_name(node_id) {
+            if let Some(s) = syms.first() {
+                return (Some(s.file_path.clone()), Some(format!("{:?}", s.symbol_type)));
+            }
+        }
         if let Ok(Some(file)) = self.store.get_file(node_id) {
             return (Some(file.path), Some("DocNode".to_string()));
         }

@@ -223,16 +223,21 @@ pub enum EdgeDirection {
 }
 
 /// Classification of an edge's purpose in the knowledge graph.
-/// Semantic edges support discovery/boosting; structural edges support navigation/lineage.
+/// Semantic edges support discovery/boosting; structural edges support markdown hierarchy;
+/// code edges represent concrete AST relationships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum EdgeClass {
     /// Discovery-oriented: shared tags, vector similarity, co-occurrence.
     /// Used by hybrid search for graph boosting, search_related, graph_communities.
     Semantic,
-    /// Navigation-oriented: wikilinks, frontmatter relationships, schema-declared links.
+    /// Navigation-oriented: markdown wikilinks, frontmatter relationships, schema-declared links.
     /// Used by search_graph, graph_path, backlinks/forwardlinks.
     Structural,
+    /// Code-oriented: AST relationships (calls, defines, implements, imports, type references).
+    Code,
+    /// Cross-modal bridge: documentation-to-code edges (documents, tested_by, specifies).
+    CrossModal,
     /// Both purposes: intentional link that also signals topical proximity.
     #[default]
     Hybrid,
@@ -246,7 +251,7 @@ impl EdgeClass {
             EdgeSource::Wikilink => EdgeClass::Structural,
             EdgeSource::Frontmatter => EdgeClass::Structural,
             EdgeSource::Reference => EdgeClass::Structural,
-            EdgeSource::Code => EdgeClass::Structural,
+            EdgeSource::Code => EdgeClass::Code,
         }
     }
 
@@ -255,17 +260,21 @@ impl EdgeClass {
         match s.to_lowercase().as_str() {
             "semantic" => Some(Self::Semantic),
             "structural" => Some(Self::Structural),
+            "code" => Some(Self::Code),
+            "crossmodal" | "cross-modal" => Some(Self::CrossModal),
             "hybrid" => Some(Self::Hybrid),
             _ => None,
         }
     }
 
-    /// Check if this class matches a filter. Hybrid matches both semantic and structural filters.
+    /// Check if this class matches a filter. Hybrid matches all filters.
     pub fn matches(&self, filter: EdgeClass) -> bool {
         match filter {
             EdgeClass::Hybrid => true, // Hybrid filter matches everything
             EdgeClass::Semantic => *self == EdgeClass::Semantic || *self == EdgeClass::Hybrid,
             EdgeClass::Structural => *self == EdgeClass::Structural || *self == EdgeClass::Hybrid,
+            EdgeClass::Code => *self == EdgeClass::Code || *self == EdgeClass::Hybrid,
+            EdgeClass::CrossModal => *self == EdgeClass::CrossModal || *self == EdgeClass::Hybrid,
         }
     }
 
@@ -274,6 +283,8 @@ impl EdgeClass {
         match self {
             Self::Semantic => "semantic",
             Self::Structural => "structural",
+            Self::Code => "code",
+            Self::CrossModal => "crossmodal",
             Self::Hybrid => "hybrid",
         }
     }

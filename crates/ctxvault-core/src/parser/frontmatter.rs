@@ -30,7 +30,7 @@ pub fn strip_frontmatter(content: &str) -> &str {
     let after_opening = &content[3..];
     if let Some(end_pos) = after_opening.find("\n---") {
         let remainder = &after_opening[end_pos + 4..];
-        remainder.trim_start_matches('\n')
+        remainder.trim_start_matches(|c| c == '\r' || c == '\n')
     } else {
         content
     }

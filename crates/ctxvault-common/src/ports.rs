@@ -728,7 +728,7 @@ pub struct SearchQuery {
     pub graph_depth: Option<usize>,
     /// Optional edge-type filter for graph-aware modes.
     pub edge_types: Option<Vec<String>>,
-    /// Optional edge-class filter (`semantic` | `structural` | `hybrid`) as a raw
+    /// Optional edge-class filter (`code` | `semantic` | `structural` | `crossmodal` | `hybrid`) as a raw
     /// string. The service applies the per-mode default when this is `None`.
     pub edge_class: Option<String>,
     /// Whether to run multi-hop query decomposition (`hybrid` mode only).

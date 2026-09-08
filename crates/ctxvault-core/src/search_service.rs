@@ -121,10 +121,13 @@ impl SearchService for CoreSearchService<'_> {
                 let edge_type_filter = query.edge_types.as_deref();
                 let code_paths = &self.code_paths;
 
-                // Default to Semantic class filter for hybrid search graph boost.
                 let edge_class_filter = match query.edge_class.as_deref() {
                     Some(s) => EdgeClass::from_str_name(s),
-                    None => Some(EdgeClass::Semantic),
+                    None => match modality {
+                        Modality::Code => Some(EdgeClass::Code),
+                        Modality::Docs => Some(EdgeClass::Semantic),
+                        Modality::Both => None,
+                    },
                 };
 
                 // Try to get a query embedding for full 3-signal hybrid.
@@ -186,10 +189,13 @@ impl SearchService for CoreSearchService<'_> {
                 let edge_type_filter = query.edge_types.as_deref();
                 let code_paths = &self.code_paths;
 
-                // Default to Structural class filter for graph traversal search.
                 let edge_class_filter = match query.edge_class.as_deref() {
                     Some(s) => EdgeClass::from_str_name(s),
-                    None => Some(EdgeClass::Structural),
+                    None => match modality {
+                        Modality::Code => Some(EdgeClass::Code),
+                        Modality::Docs => Some(EdgeClass::Semantic),
+                        Modality::Both => None,
+                    },
                 };
 
                 let results = search::search_graph(

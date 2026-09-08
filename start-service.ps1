@@ -27,8 +27,8 @@ Write-Host "============================================================" -Foreg
 & $Bin --mode server `
   --bind $BindAddr `
   --profile all `
-  --corpus "kubernetes=C:\dev\semantic\corpus\kubernetes" `
-  --corpus "rust=C:\dev\semantic\corpus\rust" `
-  --corpus "typescript=C:\dev\semantic\corpus\typescript" `
+  --corpus "kubernetes=C:\dev\ctx\corpus\kubernetes" `
+  --corpus "rust=C:\dev\ctx\corpus\rust" `
+  --corpus "typescript=C:\dev\ctx\corpus\typescript" `
   --default-corpus "kubernetes" `
   $args

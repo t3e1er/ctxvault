@@ -220,7 +220,7 @@ impl TypeEnvironment {
     }
 
     fn inspect_go_node(&mut self, node: Node, content: &str) {
-        // Short var declaration: `client := NewSearchClient(...)`
+        // Short var declaration: `client := NewSearchClient(...)` or `kl := &Kubelet{...}`
         if node.kind() == "short_var_declaration" {
             if let (Some(left), Some(right)) =
                 (node.child_by_field_name("left"), node.child_by_field_name("right"))
@@ -228,9 +228,24 @@ impl TypeEnvironment {
                 let var_name = node_text(left, content).trim().to_string();
                 if right.kind() == "call_expression" {
                     if let Some(func) = right.child_by_field_name("function") {
-                        let fn_name = node_text(func, content).trim();
+                        let fn_text = node_text(func, content).trim();
+                        let fn_name = fn_text.rsplit('.').next().unwrap_or(fn_text);
                         if let Some(type_name) = fn_name.strip_prefix("New") {
                             self.register_variable(var_name, type_name.to_string());
+                        }
+                    }
+                } else if right.kind() == "composite_literal" {
+                    if let Some(ty) = right.child_by_field_name("type") {
+                        let type_name = clean_type_name(node_text(ty, content));
+                        self.register_variable(var_name, type_name);
+                    }
+                } else if right.kind() == "unary_expression" {
+                    if let Some(operand) = right.child_by_field_name("operand") {
+                        if operand.kind() == "composite_literal" {
+                            if let Some(ty) = operand.child_by_field_name("type") {
+                                let type_name = clean_type_name(node_text(ty, content));
+                                self.register_variable(var_name, type_name);
+                            }
                         }
                     }
                 }

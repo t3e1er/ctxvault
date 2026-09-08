@@ -78,7 +78,7 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
    - `mode="hybrid"`: Default for broad exploratory queries (3-way RRF fusion).
    - `mode="bm25"`: Exact symbols, identifiers, struct names, error strings, verbatim tokens.
    - `mode="semantic"`: Conceptual similarity and abstract technical intentions.
-   - `mode="graph"`: Typed graph traversal; filter by `edge_types` or `edge_class` (`structural`, `semantic`, `hybrid`).
+   - `mode="graph"`: Typed graph traversal; filter by `edge_types` or `edge_class` (`code`, `structural`, `semantic`, `crossmodal`, `hybrid`).
    - `mode="explain"`: Introspect scoring breakdowns (BM25 vs vector vs graph).
    - `snippets=K`: Search automatically inlines source snippets for the top $K$ results (default 3) directly in Turn 1 across docs and code. Set `snippets=0` for pure handle sweeps.
 3. **Turn 1 Affordance Grounding & Turn 2 Path Expansion**:

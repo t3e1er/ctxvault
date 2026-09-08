@@ -356,8 +356,39 @@ fn parse_sections(body: &str) -> Vec<HeadingSection> {
     let mut current_start: usize = 0;
     let mut pos: usize = 0;
 
-    for line in body.lines() {
-        if let Some((level, text)) = parse_heading(line) {
+    let mut in_code_block = false;
+    let mut fence_char = '\0';
+    let mut fence_len = 0;
+
+    while pos < body.len() {
+        let line_end = body[pos..].find('\n').map(|i| pos + i).unwrap_or(body.len());
+        let line_content_end = if line_end > pos && body.as_bytes()[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let line = &body[pos..line_content_end];
+        let next_pos = if line_end < body.len() { line_end + 1 } else { body.len() };
+
+        let trimmed = line.trim_start();
+        if in_code_block {
+            if (fence_char == '`' && trimmed.starts_with("```"))
+                || (fence_char == '~' && trimmed.starts_with("~~~"))
+            {
+                let close_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+                if close_len >= fence_len {
+                    in_code_block = false;
+                }
+            }
+        } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence_char = trimmed.chars().next().unwrap();
+            fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            in_code_block = true;
+        }
+
+        let heading_opt = if in_code_block { None } else { parse_heading(line) };
+
+        if let Some((level, text)) = heading_opt {
             // Emit previous section if it has content.
             if !current_body.is_empty() || !current_heading.is_empty() || current_level > 0 {
                 sections.push(HeadingSection {
@@ -378,7 +409,7 @@ fn parse_sections(body: &str) -> Vec<HeadingSection> {
             current_body.push('\n');
         }
 
-        pos += line.len() + 1; // +1 for the newline char
+        pos = next_pos;
     }
 
     // Emit final section.
@@ -412,6 +443,83 @@ struct SubChunk {
     end: usize,
 }
 
+/// A paragraph extracted from a section, with exact slice offsets and code-fence protection.
+struct ParagraphSpan<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
+
+fn extract_paragraphs(text: &str) -> Vec<ParagraphSpan<'_>> {
+    let mut paragraphs = Vec::new();
+    let mut pos = 0;
+    let mut current_start = 0;
+    let mut in_code_block = false;
+    let mut fence_char = '\0';
+    let mut fence_len = 0;
+    let mut has_content = false;
+
+    while pos < text.len() {
+        let line_end = text[pos..].find('\n').map(|i| pos + i).unwrap_or(text.len());
+        let line_content_end = if line_end > pos && text.as_bytes()[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let line = &text[pos..line_content_end];
+        let next_pos = if line_end < text.len() { line_end + 1 } else { text.len() };
+
+        let trimmed = line.trim_start();
+        if in_code_block {
+            if (fence_char == '`' && trimmed.starts_with("```"))
+                || (fence_char == '~' && trimmed.starts_with("~~~"))
+            {
+                let close_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+                if close_len >= fence_len {
+                    in_code_block = false;
+                }
+            }
+        } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence_char = trimmed.chars().next().unwrap();
+            fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            in_code_block = true;
+        }
+
+        let is_blank = line.trim().is_empty();
+        if is_blank && !in_code_block && has_content {
+            let para_slice = &text[current_start..pos];
+            let trimmed_slice = para_slice.trim();
+            if !trimmed_slice.is_empty() {
+                paragraphs.push(ParagraphSpan {
+                    text: trimmed_slice,
+                    start: current_start,
+                    end: pos,
+                });
+            }
+            current_start = next_pos;
+            has_content = false;
+        } else if !is_blank {
+            has_content = true;
+        }
+
+        pos = next_pos;
+    }
+
+    if has_content && current_start < text.len() {
+        let para_slice = &text[current_start..text.len()];
+        let trimmed_slice = para_slice.trim();
+        if !trimmed_slice.is_empty() {
+            paragraphs.push(ParagraphSpan {
+                text: trimmed_slice,
+                start: current_start,
+                end: text.len(),
+            });
+        }
+    }
+
+    paragraphs
+}
+
 /// Split a large section at paragraph boundaries, falling back to sentence/character splits.
 fn split_large_section(
     text: &str,
@@ -420,59 +528,61 @@ fn split_large_section(
     max_chars: usize,
     min_chars: usize,
 ) -> Vec<SubChunk> {
-    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    let paragraphs = extract_paragraphs(text);
     let mut sub_chunks: Vec<SubChunk> = Vec::new();
     let mut current_text = String::new();
     let mut current_start = base_offset;
-    let mut byte_pos = base_offset;
+    let mut current_end = base_offset;
 
-    for (i, para) in paragraphs.iter().enumerate() {
-        let para_len = para.len();
+    for para in paragraphs {
+        let para_len = para.text.len();
+        let abs_start = base_offset + para.start;
+        let abs_end = base_offset + para.end;
 
         if para_len > max_chars {
-            // Flush any accumulated text first
             if !current_text.is_empty() {
                 let trimmed = current_text.trim().to_string();
                 if trimmed.len() >= min_chars {
                     sub_chunks.push(SubChunk {
                         text: trimmed,
                         start: current_start,
-                        end: byte_pos,
+                        end: current_end,
                     });
                 }
                 current_text = String::new();
             }
 
-            // Split the oversized paragraph via sentence/character fallback
             let oversized_subs =
-                split_oversized_paragraph(para, byte_pos, target_chars, max_chars, min_chars);
+                split_oversized_paragraph(para.text, abs_start, target_chars, max_chars, min_chars);
             sub_chunks.extend(oversized_subs);
-            byte_pos += para_len + if i < paragraphs.len() - 1 { 2 } else { 0 };
-            current_start = byte_pos;
+            current_start = abs_end;
+            current_end = abs_end;
             continue;
         }
 
         if !current_text.is_empty() && current_text.len() + para_len + 2 > target_chars {
-            // Emit current accumulation.
             let trimmed = current_text.trim().to_string();
             if trimmed.len() >= min_chars {
-                sub_chunks.push(SubChunk { text: trimmed, start: current_start, end: byte_pos });
+                sub_chunks.push(SubChunk { text: trimmed, start: current_start, end: current_end });
             }
             current_text = String::new();
-            current_start = byte_pos;
+            current_start = abs_start;
         }
 
-        if !current_text.is_empty() {
+        if current_text.is_empty() {
+            current_start = abs_start;
+        } else {
             current_text.push_str("\n\n");
         }
-        current_text.push_str(para);
-        byte_pos += para_len + if i < paragraphs.len() - 1 { 2 } else { 0 }; // +2 for \n\n separator
+        current_text.push_str(para.text);
+        current_end = abs_end;
     }
 
-    // Emit remainder.
-    let trimmed = current_text.trim().to_string();
-    if trimmed.len() >= min_chars {
-        sub_chunks.push(SubChunk { text: trimmed, start: current_start, end: byte_pos });
+    if !current_text.is_empty() {
+        let trimmed = current_text.trim().to_string();
+        if trimmed.len() >= min_chars {
+            sub_chunks.push(SubChunk { text: trimmed, start: current_start, end: current_end });
+        }
     }
 
     sub_chunks
