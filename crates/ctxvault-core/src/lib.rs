@@ -12,6 +12,7 @@
 //! is the construction seam that builds and injects the concrete adapters.
 
 pub mod analytics;
+pub mod bundle;
 pub mod corpus_manager;
 pub mod embedding;
 pub mod engine;

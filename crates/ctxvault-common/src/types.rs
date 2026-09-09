@@ -467,6 +467,43 @@ pub enum ResolutionConfidence {
     Speculative,
 }
 
+/// The kind of unresolved reference captured as an [`ExternalRef`].
+///
+/// Both variants capture ordinary intra-language references that failed to
+/// resolve locally and are handed to the cross-corpus reconciliation pass for
+/// qualified-name symbol matching.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalRefKind {
+    /// A call site whose callee did not resolve to any in-corpus symbol.
+    Call,
+    /// An import/use whose target did not resolve to any in-corpus symbol.
+    Import,
+}
+
+/// A call or import target that failed to resolve against the full corpus
+/// symbol index.
+///
+/// Single-repo indexing intentionally still emits a low-confidence intra-repo
+/// edge for these (see the graph code extractor); an `ExternalRef` is captured
+/// *in addition*, as a durable record of the unresolved target so a later
+/// cross-corpus reconciliation pass can attempt to resolve it against other
+/// corpora. Capturing these does not alter intra-repo edge output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalRef {
+    /// Scope path of the caller/importer (the edge source) that referenced the
+    /// unresolved target.
+    pub caller_scope_path: String,
+    /// The raw, unresolved target string as it appeared in the source (e.g. a
+    /// bare callee name, `receiver.method`, or an import path).
+    pub raw_target: String,
+    /// Whether the unresolved reference is a call or an import.
+    pub kind: ExternalRefKind,
+    /// Resolution confidence band for the reference (always
+    /// [`ResolutionConfidence::Speculative`] at capture time).
+    pub confidence: ResolutionConfidence,
+}
+
 /// A typed, weighted, directed edge in the knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
@@ -491,6 +528,21 @@ pub struct Edge {
     /// `None` for intra-corpus edges; `Some(_)` for cross-corpus links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<ResolutionConfidence>,
+    /// Path of the resolved target within its (possibly remote) corpus.
+    ///
+    /// `None` for intra-corpus edges. For cross-corpus edges this is the
+    /// remote-endpoint payload that lets a federated query report a hop and
+    /// continue traversal into the target corpus without re-resolving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<String>,
+    /// Qualified symbol name of the resolved cross-corpus target (`None` for
+    /// intra-corpus edges).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_symbol: Option<String>,
+    /// Kind of the resolved cross-corpus target (e.g. code symbol type or
+    /// document kind); `None` for intra-corpus edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<String>,
 }
 
 /// How an edge came into existence.

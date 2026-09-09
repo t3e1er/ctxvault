@@ -4,6 +4,16 @@
 //! directly on Tree-sitter ASTs to disambiguate method calls and receiver invocations
 //! (e.g., `client.query(...)` -> `SearchClient > query`) with [`ResolutionConfidence::High`](ctxvault_common::types::ResolutionConfidence::High),
 //! eliminating speculative cross-file call edges without external LSP daemons.
+//!
+//! # Cross-corpus scope
+//!
+//! [`TypeEnvironment`] is an *intra-file* resolver: its scope frames and type
+//! bindings are built and consumed while walking a single file's AST during
+//! extraction, and are not retained past that. It therefore has no cross-corpus
+//! symbol table of its own. The cross-corpus resolver trust ladder
+//! (`ResolverKind` in [`crate::corpus_manager`]) reserves a `HybridLsp` tier for
+//! when in-engine LSP-grade data becomes queryable across corpora, but keeps the
+//! *live* ladder at SCIP → qualified-name so no do-nothing tier is introduced.
 
 use std::collections::HashMap;
 use tree_sitter::Node;

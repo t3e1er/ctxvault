@@ -390,6 +390,43 @@ impl<'a> AstExtractor<'a> {
             return None;
         }
 
+        // HCL custom block handling: capture block type and labels (e.g. `aws_s3_bucket.b` or `module.vpc`)
+        if lang == SupportedLanguage::Hcl && node.kind() == "block" {
+            let mut cursor = node.walk();
+            let mut block_type = String::new();
+            let mut labels = Vec::new();
+
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" && block_type.is_empty() {
+                    block_type = self.node_text(child).to_string();
+                } else if child.kind() == "string_lit" {
+                    let text = self.node_text(child).trim_matches('"').to_string();
+                    labels.push(text);
+                }
+            }
+
+            let name = match labels.len() {
+                2 => format!("{}.{}", labels[0], labels[1]),
+                1 => {
+                    if block_type.is_empty() || block_type == "resource" || block_type == "data" {
+                        labels[0].clone()
+                    } else {
+                        format!("{}.{}", block_type, labels[0])
+                    }
+                }
+                _ => {
+                    if !block_type.is_empty() {
+                        block_type
+                    } else {
+                        self.find_child_identifier(node).unwrap_or_else(|| "block".to_string())
+                    }
+                }
+            };
+
+            let sig = self.extract_first_line(node);
+            return Some((CodeSymbolType::Struct, name, sig));
+        }
+
         let mut sym_type = spec.classify_symbol(node)?;
         if lang == SupportedLanguage::Python
             && sym_type == CodeSymbolType::Function
@@ -1189,5 +1226,24 @@ deploy_app() {
         let tla_code = "---- MODULE Test ----\nEXTENDS Naturals\nVARIABLE x\nInit == x = 0\n====";
         let res = CodeChunker::parse_and_chunk(Path::new("spec.tla"), tla_code, &config).unwrap();
         assert!(!res.chunks.is_empty());
+    }
+
+    #[test]
+    fn test_hcl_resource_extraction() {
+        let config = ChunkingConfig::default();
+        let hcl_code = "resource \"aws_s3_bucket\" \"b\" { bucket = \"my-tf-test-bucket\" }";
+        let res = CodeChunker::parse_and_chunk(Path::new("main.tf"), hcl_code, &config).unwrap();
+        assert!(
+            res.symbols
+                .iter()
+                .any(|s| s.name == "aws_s3_bucket.b" && s.symbol_type == CodeSymbolType::Struct),
+            "HCL resource block must yield Struct symbol named 'aws_s3_bucket.b', got: {:?}",
+            res.symbols
+        );
+        assert!(
+            res.symbols.iter().any(|s| s.scope_path == "aws_s3_bucket.b"),
+            "HCL resource block must have scope_path 'aws_s3_bucket.b', got: {:?}",
+            res.symbols
+        );
     }
 }

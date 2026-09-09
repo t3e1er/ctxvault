@@ -281,14 +281,25 @@ impl Engine {
 
                 // 5. Code Graph
                 self.graph.remove_edges_for_node(rel_path);
-                let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
-                    path,
-                    content,
-                    &res.symbols,
-                    &res.symbols,
-                );
-                for edge in &edges {
+                let symbol_index =
+                    crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
+                let extraction =
+                    crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                        path,
+                        content,
+                        &res.symbols,
+                        &symbol_index,
+                    );
+                for edge in &extraction.edges {
                     self.graph.add_code_edge(edge);
+                }
+
+                // 6. Persist unresolved external references, replacing any prior
+                //    set so re-indexing this file stays idempotent (mirrors the
+                //    graph edge clear above).
+                self.store.clear_external_refs_for_file(rel_path)?;
+                if !extraction.external_refs.is_empty() {
+                    self.store.insert_external_refs(rel_path, &extraction.external_refs)?;
                 }
             }
 
@@ -544,6 +555,12 @@ impl Engine {
             self.graph.remove_edges_for_node(path);
             for edge in &record.graph_edges {
                 self.graph.add_code_edge(edge);
+            }
+
+            // 6. Unresolved external references (replace prior set for idempotency).
+            self.store.clear_external_refs_for_file(path)?;
+            if !record.external_refs.is_empty() {
+                self.store.insert_external_refs(path, &record.external_refs)?;
             }
         } else if let Some(mut doc) = record.doc_metadata {
             // 1. SQLite Store
@@ -1250,16 +1267,25 @@ impl Engine {
             };
 
             let file_symbols = self.store.get_code_symbols_for_file(&f.path)?;
-            let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
-                rel_p,
-                &content,
-                &file_symbols,
-                &symbol_index,
-            );
+            let extraction =
+                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                    rel_p,
+                    &content,
+                    &file_symbols,
+                    &symbol_index,
+                );
 
-            for edge in &edges {
+            for edge in &extraction.edges {
                 self.graph.add_code_edge(edge);
                 edges_added += 1;
+            }
+
+            // Persist unresolved call/import targets as external references for a
+            // later cross-corpus reconciliation pass. Clear-then-insert per file
+            // keeps re-indexing idempotent and does not affect intra-repo edges.
+            self.store.clear_external_refs_for_file(&f.path)?;
+            if !extraction.external_refs.is_empty() {
+                self.store.insert_external_refs(&f.path, &extraction.external_refs)?;
             }
         }
 
@@ -1495,6 +1521,20 @@ impl Engine {
     /// Get a mutable reference to the corpus config.
     pub fn config_mut(&mut self) -> &mut CorpusConfig {
         &mut self.config
+    }
+
+    /// Get the index directory for this engine.
+    pub fn index_dir(&self) -> &Path {
+        &self.index_dir
+    }
+
+    /// Get the embedding dimensions for this engine.
+    pub fn embedding_dimension(&self) -> usize {
+        self.vector_index.as_ref().map(|vi| vi.dimensions()).unwrap_or_else(|| {
+            crate::embedding::ModelName::from_str_name(&self.config.embedding.model)
+                .unwrap_or_default()
+                .dimensions()
+        })
     }
 
     /// Check whether vectors are stale (model version mismatch).
@@ -1791,6 +1831,7 @@ fn parse_file_record(
         let mut raw_chunks = Vec::new();
         let mut symbols = Vec::new();
         let mut graph_edges = Vec::new();
+        let mut external_refs = Vec::new();
 
         if let Some(res) = parse_res {
             for c in &res.chunks {
@@ -1819,12 +1860,17 @@ fn parse_file_record(
                 });
             }
 
-            graph_edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
-                path,
-                content,
-                &res.symbols,
-                &res.symbols,
-            );
+            let symbol_index =
+                crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
+            let extraction =
+                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                    path,
+                    content,
+                    &res.symbols,
+                    &symbol_index,
+                );
+            graph_edges = extraction.edges;
+            external_refs = extraction.external_refs;
 
             raw_chunks = res.chunks;
             symbols = res.symbols;
@@ -1838,6 +1884,7 @@ fn parse_file_record(
             symbols,
             doc_metadata: None,
             graph_edges,
+            external_refs,
             is_code: true,
         })
     } else {
@@ -1883,6 +1930,7 @@ fn parse_file_record(
             symbols: Vec::new(),
             doc_metadata: Some(doc),
             graph_edges: Vec::new(),
+            external_refs: Vec::new(),
             is_code: false,
         })
     }
