@@ -97,6 +97,10 @@ impl CodeGraphExtractor {
         }
 
         // 2. Parse AST for imports and call sites
+        if content.len() > crate::parser::code::chunker::CodeChunker::MAX_CODE_FILE_SIZE_BYTES {
+            return CodeExtraction { edges, external_refs: Vec::new() };
+        }
+
         let Some(lang) = detect_language(file_path) else {
             return CodeExtraction { edges, external_refs: Vec::new() };
         };

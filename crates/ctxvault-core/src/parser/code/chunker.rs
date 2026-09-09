@@ -25,12 +25,27 @@ pub struct CodeParseResult {
 pub struct CodeChunker;
 
 impl CodeChunker {
+    /// Maximum size of a source file eligible for full Tree-sitter AST parsing (2 MB).
+    /// Files exceeding this limit (e.g. 100MB generated C grammars, huge minified bundles)
+    /// are skipped to prevent CPU exhaustion on generated data tables.
+    pub const MAX_CODE_FILE_SIZE_BYTES: usize = 2 * 1024 * 1024;
+
     /// Parse and chunk a source code file.
     pub fn parse_and_chunk(
         file_path: &Path,
         content: &str,
         config: &ChunkingConfig,
     ) -> Option<CodeParseResult> {
+        if content.len() > Self::MAX_CODE_FILE_SIZE_BYTES {
+            tracing::info!(
+                "Skipping Tree-sitter AST parsing for oversized file {} ({} bytes > {} max)",
+                file_path.display(),
+                content.len(),
+                Self::MAX_CODE_FILE_SIZE_BYTES
+            );
+            return None;
+        }
+
         let lang = detect_language(file_path)?;
         let mut parser = Parser::new();
         if let Err(e) = parser.set_language(&lang.tree_sitter_language()) {
