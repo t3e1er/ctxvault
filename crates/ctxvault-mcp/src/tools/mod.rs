@@ -589,6 +589,97 @@ enum CorpusTarget {
     Multi(Vec<String>),
 }
 
+/// Dynamically construct a SchemaEnvelope from the actual returned search items and their graph affordances.
+fn build_dynamic_schema_envelope(
+    items: &[ctxvault_common::types::SearchResult],
+    is_code: bool,
+    extra_active_edges: &[String],
+) -> ctxvault_common::types::SchemaEnvelope {
+    let mut labels = std::collections::BTreeSet::new();
+    let mut edges = std::collections::BTreeSet::new();
+
+    for e in extra_active_edges {
+        edges.insert(e.clone());
+    }
+
+    if is_code {
+        labels.insert("CodeSymbol".to_string());
+        labels.insert("CodeChunk".to_string());
+        edges.insert("calls".to_string());
+        edges.insert("implements".to_string());
+        edges.insert("imports".to_string());
+        edges.insert("defines".to_string());
+
+        for item in items {
+            if let Some(ref kind) = item.entity_kind {
+                match kind {
+                    ctxvault_common::types::EntityKind::CodeSymbol { symbol_type, .. } => {
+                        labels.insert(format!("{:?}", symbol_type));
+                    }
+                    ctxvault_common::types::EntityKind::CodeChunk { .. } => {
+                        labels.insert("CodeChunk".to_string());
+                    }
+                    ctxvault_common::types::EntityKind::CodeFile { .. } => {
+                        labels.insert("CodeFile".to_string());
+                    }
+                    ctxvault_common::types::EntityKind::Documentation { .. } => {
+                        labels.insert("DocNode".to_string());
+                    }
+                }
+            }
+            if let Some(ref aff) = item.graph_affordances {
+                for (edge_name, count) in &aff.edge_counts {
+                    if *count > 0 {
+                        let clean = edge_name.strip_suffix("_in").unwrap_or(edge_name);
+                        edges.insert(clean.to_string());
+                    }
+                }
+            }
+        }
+    } else {
+        labels.insert("DocNode".to_string());
+        labels.insert("ADR".to_string());
+        labels.insert("Concept".to_string());
+        edges.insert("wikilink".to_string());
+        edges.insert("supersedes".to_string());
+        edges.insert("documents".to_string());
+        edges.insert("tag".to_string());
+
+        for item in items {
+            if let Some(ref lineage) = item.lineage {
+                if !lineage.superseded_by.is_empty() || !lineage.supersedes.is_empty() {
+                    edges.insert("supersedes".to_string());
+                }
+                if !lineage.implements.is_empty() || !lineage.implemented_by.is_empty() {
+                    edges.insert("implements".to_string());
+                }
+                if !lineage.depends_on.is_empty() || !lineage.depended_on_by.is_empty() {
+                    edges.insert("depends_on".to_string());
+                }
+                for incoming_type in lineage.incoming.keys() {
+                    edges.insert(incoming_type.clone());
+                }
+                for outgoing_type in lineage.outgoing.keys() {
+                    edges.insert(outgoing_type.clone());
+                }
+            }
+            if let Some(ref aff) = item.graph_affordances {
+                for (edge_name, count) in &aff.edge_counts {
+                    if *count > 0 {
+                        let clean = edge_name.strip_suffix("_in").unwrap_or(edge_name);
+                        edges.insert(clean.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    ctxvault_common::types::SchemaEnvelope {
+        node_labels: labels.into_iter().collect(),
+        active_edges: edges.into_iter().collect(),
+    }
+}
+
 impl MultiCorpusToolRegistry {
     /// Create a new multi-corpus registry with all tools registered and the
     /// [`ToolProfile::All`] exposure profile.
@@ -719,19 +810,7 @@ impl MultiCorpusToolRegistry {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: merged_docs.len(),
                     top_k_returned: merged_docs.len(),
-                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
-                        node_labels: vec![
-                            "DocNode".to_string(),
-                            "ADR".to_string(),
-                            "Concept".to_string(),
-                        ],
-                        active_edges: vec![
-                            "wikilink".to_string(),
-                            "supersedes".to_string(),
-                            "documents".to_string(),
-                            "tag".to_string(),
-                        ],
-                    },
+                    schema_envelope: build_dynamic_schema_envelope(&merged_docs, false, &[]),
                     results: merged_docs,
                 })
             } else {
@@ -741,21 +820,7 @@ impl MultiCorpusToolRegistry {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: merged_code.len(),
                     top_k_returned: merged_code.len(),
-                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
-                        node_labels: vec![
-                            "CodeSymbol".to_string(),
-                            "CodeChunk".to_string(),
-                            "Function".to_string(),
-                            "Method".to_string(),
-                            "Struct".to_string(),
-                        ],
-                        active_edges: vec![
-                            "calls".to_string(),
-                            "implements".to_string(),
-                            "imports".to_string(),
-                            "defines".to_string(),
-                        ],
-                    },
+                    schema_envelope: build_dynamic_schema_envelope(&merged_code, true, &[]),
                     results: merged_code,
                 })
             } else {
@@ -1974,50 +2039,65 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             }
         }
 
+        for item in &mut code_items {
+            if let Some(ctxvault_common::types::EntityKind::CodeSymbol { ref scope_path, .. }) =
+                item.entity_kind
+            {
+                item.graph_affordances = Some(engine.compute_affordances(scope_path));
+            } else if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
+                let mut combined_aff = item.graph_affordances.clone().unwrap_or_default();
+                for sym in file_symbols {
+                    let sym_aff = engine.compute_affordances(&sym.scope_path);
+                    for (k, v) in sym_aff.edge_counts {
+                        *combined_aff.edge_counts.entry(k).or_insert(0) += v;
+                    }
+                    if let Some(c) = sym_aff.calls_out {
+                        combined_aff.calls_out = Some(combined_aff.calls_out.unwrap_or(0) + c);
+                    }
+                    if let Some(c) = sym_aff.calls_in {
+                        combined_aff.calls_in = Some(combined_aff.calls_in.unwrap_or(0) + c);
+                    }
+                    if let Some(c) = sym_aff.implements {
+                        combined_aff.implements = Some(combined_aff.implements.unwrap_or(0) + c);
+                    }
+                    if let Some(c) = sym_aff.imports {
+                        combined_aff.imports = Some(combined_aff.imports.unwrap_or(0) + c);
+                    }
+                }
+                item.graph_affordances = Some(combined_aff);
+            }
+        }
+
+        let active_doc_edges =
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Structural));
         let docs_partition =
             if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: docs_items.len(),
                     top_k_returned: docs_items.len(),
-                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
-                        node_labels: vec![
-                            "DocNode".to_string(),
-                            "ADR".to_string(),
-                            "Concept".to_string(),
-                        ],
-                        active_edges: vec![
-                            "wikilink".to_string(),
-                            "supersedes".to_string(),
-                            "documents".to_string(),
-                            "tag".to_string(),
-                        ],
-                    },
+                    schema_envelope: build_dynamic_schema_envelope(
+                        &docs_items,
+                        false,
+                        &active_doc_edges,
+                    ),
                     results: docs_items,
                 })
             } else {
                 None
             };
 
+        let active_code_edges =
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Code));
         let code_partition =
             if !code_items.is_empty() || modality != ctxvault_common::types::Modality::Docs {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: code_items.len(),
                     top_k_returned: code_items.len(),
-                    schema_envelope: ctxvault_common::types::SchemaEnvelope {
-                        node_labels: vec![
-                            "CodeSymbol".to_string(),
-                            "CodeChunk".to_string(),
-                            "Function".to_string(),
-                            "Method".to_string(),
-                            "Struct".to_string(),
-                        ],
-                        active_edges: vec![
-                            "calls".to_string(),
-                            "implements".to_string(),
-                            "imports".to_string(),
-                            "defines".to_string(),
-                        ],
-                    },
+                    schema_envelope: build_dynamic_schema_envelope(
+                        &code_items,
+                        true,
+                        &active_code_edges,
+                    ),
                     results: code_items,
                 })
             } else {
@@ -4558,5 +4638,79 @@ pub fn compute_hash(data: &[u8]) -> u64 {
         assert_eq!(top_hit.path, "arch.md");
         assert!(top_hit.snippet.is_some(), "Turn 1 snippet must be populated");
         assert!(top_hit.snippet.as_ref().unwrap().contains("high performance semantic"));
+    }
+
+    #[test]
+    fn test_dynamic_turn1_schema_envelope_and_graph_match() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        let ts_code = r#"
+@Injectable()
+export class UserService extends BaseService implements IUserService {
+    @Get('/users')
+    getUsers() {}
+}
+"#;
+        fs::write(corpus_dir.join("user.ts"), ts_code).unwrap();
+        engine.index_file("user.ts", ts_code).unwrap();
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Search for UserService and inspect Turn 1 SchemaEnvelope & Affordances
+        let search_val = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "UserService", "mode": "bm25" }),
+            )
+            .unwrap();
+
+        let resp: ctxvault_common::types::SearchResponse =
+            serde_json::from_value(search_val).unwrap();
+        let code = resp.code.expect("expected code partition");
+        assert!(!code.results.is_empty(), "expected hits for UserService");
+
+        // Verify active_edges in schema_envelope contains extended edge types
+        assert!(
+            code.schema_envelope.active_edges.iter().any(|e| e == "extends"),
+            "schema_envelope should include 'extends', got: {:?}",
+            code.schema_envelope.active_edges
+        );
+        assert!(
+            code.schema_envelope.active_edges.iter().any(|e| e == "decorates"),
+            "schema_envelope should include 'decorates', got: {:?}",
+            code.schema_envelope.active_edges
+        );
+
+        // Verify graph_affordances on the UserService hit
+        let hit = &code.results[0];
+        let affordances = hit.graph_affordances.as_ref().expect("graph affordances");
+        assert!(
+            affordances.edge_counts.contains_key("extends")
+                || affordances.edge_counts.contains_key("decorates"),
+            "Expected extends or decorates in edge_counts: {:?}",
+            affordances.edge_counts
+        );
+
+        // 2. Cypher-Lite graph_match traversal across new edge types
+        let match_val = registry
+            .execute_read(
+                "graph_match",
+                &engine,
+                serde_json::json!({ "pattern": "(:CodeSymbol {name: \"UserService\"})-[:extends]->(target)" }),
+            )
+            .unwrap();
+
+        let match_res: ctxvault_common::types::GraphMatchResult =
+            serde_json::from_value(match_val).unwrap();
+        assert_eq!(match_res.total_matches, 1);
+        assert!(!match_res.matches.is_empty(), "Expected graph_match path for -[:extends]->");
     }
 }

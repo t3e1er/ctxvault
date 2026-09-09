@@ -292,6 +292,21 @@ impl KnowledgeGraph {
         edges
     }
 
+    /// Return all active distinct edge types present in the graph, optionally filtered by EdgeClass.
+    pub fn active_edge_types(&self, class_filter: Option<EdgeClass>) -> Vec<String> {
+        let mut types = std::collections::BTreeSet::new();
+        for edge in self.graph.edge_weights() {
+            if let Some(cf) = class_filter {
+                if edge.class == cf {
+                    types.insert(edge.edge_type.clone());
+                }
+            } else {
+                types.insert(edge.edge_type.clone());
+            }
+        }
+        types.into_iter().collect()
+    }
+
     // ─── Graph Builder ───────────────────────────────────────────────────────
 
     /// Build edges from a parsed Document based on the given edge type configurations.
@@ -895,7 +910,7 @@ impl KnowledgeGraph {
             let weight = edge_ref.weight();
             match weight.edge_type.as_str() {
                 "calls" => affordances.calls_out = Some(affordances.calls_out.unwrap_or(0) + 1),
-                "implements" => {
+                "implements" | "implements_trait" => {
                     affordances.implements = Some(affordances.implements.unwrap_or(0) + 1)
                 }
                 "imports" => affordances.imports = Some(affordances.imports.unwrap_or(0) + 1),
@@ -905,7 +920,9 @@ impl KnowledgeGraph {
                 "documents" => {
                     affordances.documents_code = Some(affordances.documents_code.unwrap_or(0) + 1)
                 }
-                _ => {}
+                other => {
+                    *affordances.edge_counts.entry(other.to_string()).or_insert(0) += 1;
+                }
             }
         }
 
@@ -920,7 +937,10 @@ impl KnowledgeGraph {
                     let existing = affordances.documents_code.unwrap_or(0);
                     affordances.documents_code = Some(existing + 1);
                 }
-                _ => {}
+                other => {
+                    let key = format!("{}_in", other);
+                    *affordances.edge_counts.entry(key).or_insert(0) += 1;
+                }
             }
         }
 

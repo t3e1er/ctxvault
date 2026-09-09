@@ -1454,6 +1454,14 @@ impl Engine {
         self.graph.compute_affordances(path)
     }
 
+    /// Return all active distinct edge types present in the graph, optionally filtered by EdgeClass.
+    pub fn active_edge_types(
+        &self,
+        class_filter: Option<ctxvault_common::config::EdgeClass>,
+    ) -> Vec<String> {
+        self.graph.active_edge_types(class_filter)
+    }
+
     /// Build the set of graph node keys that represent code entities.
     ///
     /// Used by the search layer to classify a result path as code vs docs for
