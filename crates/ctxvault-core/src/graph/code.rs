@@ -110,8 +110,10 @@ struct CallAndImportVisitor<'a> {
     file_symbols: &'a [CodeSymbol],
     symbol_index: &'a HashMap<String, Vec<&'a CodeSymbol>>,
     current_caller: Option<String>,
+    current_container: Option<String>,
     edges: Vec<Edge>,
     visited_calls: HashSet<(String, String)>,
+    visited_edges: HashSet<(String, String, String)>,
     type_env: TypeEnvironment,
 }
 
@@ -130,14 +132,82 @@ impl<'a> CallAndImportVisitor<'a> {
             file_symbols,
             symbol_index,
             current_caller: None,
+            current_container: None,
             edges: Vec::new(),
             visited_calls: HashSet::new(),
+            visited_edges: HashSet::new(),
             type_env: TypeEnvironment::new(language),
         }
     }
 
     fn node_text(&self, node: Node) -> &str {
         &self.content[node.start_byte()..node.end_byte()]
+    }
+
+    fn add_rel_edge(
+        &mut self,
+        source: String,
+        target: String,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        confidence: ResolutionConfidence,
+    ) {
+        if source == target || source.is_empty() || target.is_empty() {
+            return;
+        }
+        let key = (source.clone(), target.clone(), edge_type.to_string());
+        if !self.visited_edges.contains(&key) {
+            self.visited_edges.insert(key);
+            self.edges.push(Edge {
+                source,
+                target,
+                edge_type: edge_type.to_string(),
+                weight,
+                provenance,
+                target_corpus: None,
+                confidence: Some(confidence),
+            });
+        }
+    }
+
+    fn resolve_target(&self, raw_target: &str) -> (String, ResolutionConfidence) {
+        let clean = raw_target.rsplit("::").next().unwrap_or(raw_target);
+        let clean = clean.rsplit('.').next().unwrap_or(clean);
+
+        if let Some(m) = self.file_symbols.iter().find(|s| s.name == clean) {
+            return (m.scope_path.clone(), ResolutionConfidence::High);
+        }
+
+        if let Some(candidates) = self.symbol_index.get(clean) {
+            if candidates.len() == 1 {
+                return (candidates[0].scope_path.clone(), ResolutionConfidence::High);
+            }
+            let file_dir = Path::new(&self.file_path).parent().unwrap_or_else(|| Path::new(""));
+            if let Some(dir_match) = candidates.iter().find(|c| {
+                Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new("")) == file_dir
+            }) {
+                return (dir_match.scope_path.clone(), ResolutionConfidence::Medium);
+            }
+            if let Some(first) = candidates.first() {
+                return (first.scope_path.clone(), ResolutionConfidence::Speculative);
+            }
+        }
+
+        (raw_target.to_string(), ResolutionConfidence::Speculative)
+    }
+
+    fn extract_name_from_descendants(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "object_reference" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    return Some(self.node_text(name_node).trim().to_string());
+                }
+                return Some(self.node_text(child).trim().to_string());
+            }
+        }
+        None
     }
 
     fn visit(&mut self, node: Node) {
@@ -155,15 +225,18 @@ impl<'a> CallAndImportVisitor<'a> {
         if is_container {
             let container_name = if is_rust_impl {
                 node.child_by_field_name("type").map(|t| clean_type_name(self.node_text(t)))
+            } else if let Some(n) = node.child_by_field_name("name") {
+                Some(clean_type_name(self.node_text(n)))
             } else {
-                node.child_by_field_name("name").map(|n| clean_type_name(self.node_text(n)))
+                self.extract_name_from_descendants(node)
             };
 
+            let prev_container = self.current_container.take();
+            self.current_container = container_name.clone().or_else(|| prev_container.clone());
             self.type_env.push_scope(container_name);
 
-            if is_rust_impl {
-                self.extract_implements(node);
-            }
+            // Container-level edge extractions
+            self.extract_container_edges(node);
 
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -171,6 +244,7 @@ impl<'a> CallAndImportVisitor<'a> {
             }
 
             self.type_env.pop_scope();
+            self.current_container = prev_container;
             return;
         }
 
@@ -206,6 +280,28 @@ impl<'a> CallAndImportVisitor<'a> {
 
         // Inside a body: inspect statements/declarations for variable bindings
         self.type_env.inspect_node(node, self.content);
+
+        // Language-specific AST relationship extractions:
+        match self.language {
+            SupportedLanguage::TypeScript
+            | SupportedLanguage::Tsx
+            | SupportedLanguage::JavaScript => {
+                if kind == "decorator" {
+                    self.extract_ts_decorator(node);
+                }
+            }
+            SupportedLanguage::Python => {
+                if kind == "decorated_definition" {
+                    self.extract_python_decorated(node);
+                }
+            }
+            SupportedLanguage::Rust => {
+                if kind == "macro_invocation" {
+                    self.extract_rust_macro(node);
+                }
+            }
+            _ => {}
+        }
 
         // Extract imports
         if spec.is_import(kind) {
@@ -568,6 +664,384 @@ impl<'a> CallAndImportVisitor<'a> {
             }
         }
     }
+
+    fn extract_container_edges(&mut self, node: Node) {
+        let kind = node.kind();
+        let Some(container) = self.current_container.clone() else {
+            return;
+        };
+
+        match self.language {
+            SupportedLanguage::Rust => {
+                if kind == "impl_item" {
+                    if let Some(trait_node) = node.child_by_field_name("trait") {
+                        let trait_name = self.node_text(trait_node).trim().to_string();
+                        let (target, conf) = self.resolve_target(&trait_name);
+                        self.add_rel_edge(
+                            container.clone(),
+                            target,
+                            "implements",
+                            0.9,
+                            EdgeProvenance::CodeImplementsTrait,
+                            conf,
+                        );
+                    }
+                }
+            }
+            SupportedLanguage::TypeScript
+            | SupportedLanguage::Tsx
+            | SupportedLanguage::JavaScript => {
+                if kind == "class_declaration" || kind == "class" {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.kind() == "class_heritage" {
+                            let mut hcursor = child.walk();
+                            for hchild in child.children(&mut hcursor) {
+                                if hchild.kind() == "extends_clause" {
+                                    if let Some(val) = hchild.child_by_field_name("value") {
+                                        let super_name = self.node_text(val).trim().to_string();
+                                        let (target, conf) = self.resolve_target(&super_name);
+                                        self.add_rel_edge(
+                                            container.clone(),
+                                            target,
+                                            "extends",
+                                            0.9,
+                                            EdgeProvenance::CodeExtends,
+                                            conf,
+                                        );
+                                    } else {
+                                        for sc in hchild.children(&mut hchild.walk()) {
+                                            let skind = sc.kind();
+                                            if skind == "identifier" || skind == "type_identifier" {
+                                                let super_name =
+                                                    self.node_text(sc).trim().to_string();
+                                                let (target, conf) =
+                                                    self.resolve_target(&super_name);
+                                                self.add_rel_edge(
+                                                    container.clone(),
+                                                    target,
+                                                    "extends",
+                                                    0.9,
+                                                    EdgeProvenance::CodeExtends,
+                                                    conf,
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else if hchild.kind() == "implements_clause" {
+                                    let mut icursor = hchild.walk();
+                                    for if_child in hchild.children(&mut icursor) {
+                                        let ikind = if_child.kind();
+                                        if ikind == "type_identifier" || ikind == "identifier" {
+                                            let if_name =
+                                                self.node_text(if_child).trim().to_string();
+                                            let (target, conf) = self.resolve_target(&if_name);
+                                            self.add_rel_edge(
+                                                container.clone(),
+                                                target,
+                                                "implements",
+                                                0.9,
+                                                EdgeProvenance::CodeImplementsTrait,
+                                                conf,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            SupportedLanguage::Python => {
+                if kind == "class_definition" {
+                    if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                        let mut cursor = superclasses.walk();
+                        for child in superclasses.children(&mut cursor) {
+                            let ckind = child.kind();
+                            if ckind == "identifier" || ckind == "attribute" {
+                                let super_name = self.node_text(child).trim().to_string();
+                                if !super_name.is_empty() {
+                                    let (target, conf) = self.resolve_target(&super_name);
+                                    self.add_rel_edge(
+                                        container.clone(),
+                                        target,
+                                        "inherits",
+                                        0.9,
+                                        EdgeProvenance::CodeExtends,
+                                        conf,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            SupportedLanguage::Go => {
+                self.extract_go_embedded_fields(node, &container);
+            }
+            SupportedLanguage::Sql => {
+                if kind == "create_table" || kind == "create_table_statement" {
+                    self.extract_sql_foreign_key_references(node, &container);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn extract_go_embedded_fields(&mut self, node: Node, container: &str) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "struct_type" {
+                let mut fcursor = child.walk();
+                for fchild in child.children(&mut fcursor) {
+                    if fchild.kind() == "field_declaration_list" {
+                        let mut dcursor = fchild.walk();
+                        for field in fchild.children(&mut dcursor) {
+                            if field.kind() == "field_declaration"
+                                && field.child_by_field_name("name").is_none()
+                            {
+                                if let Some(type_node) = field.child_by_field_name("type") {
+                                    let raw_type = self
+                                        .node_text(type_node)
+                                        .trim()
+                                        .trim_start_matches('*')
+                                        .trim()
+                                        .to_string();
+                                    if !raw_type.is_empty() {
+                                        let (target, conf) = self.resolve_target(&raw_type);
+                                        self.add_rel_edge(
+                                            container.to_string(),
+                                            target,
+                                            "struct_embeds",
+                                            0.85,
+                                            EdgeProvenance::CodeStructEmbeds,
+                                            conf,
+                                        );
+                                    }
+                                } else {
+                                    for c in field.children(&mut field.walk()) {
+                                        let ckind = c.kind();
+                                        if ckind == "type_identifier"
+                                            || ckind == "qualified_type"
+                                            || ckind == "pointer_type"
+                                        {
+                                            let raw_type = self
+                                                .node_text(c)
+                                                .trim()
+                                                .trim_start_matches('*')
+                                                .trim()
+                                                .to_string();
+                                            if !raw_type.is_empty() {
+                                                let (target, conf) = self.resolve_target(&raw_type);
+                                                self.add_rel_edge(
+                                                    container.to_string(),
+                                                    target,
+                                                    "struct_embeds",
+                                                    0.85,
+                                                    EdgeProvenance::CodeStructEmbeds,
+                                                    conf,
+                                                );
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.extract_go_embedded_fields(child, container);
+            }
+        }
+    }
+
+    fn extract_sql_foreign_key_references(&mut self, node: Node, container: &str) {
+        let mut stack = vec![node];
+        while let Some(curr) = stack.pop() {
+            let kind = curr.kind();
+            if kind == "keyword_references" || kind == "references_clause" || kind == "references" {
+                let target_table = if let Some(next) = curr.next_named_sibling() {
+                    if next.kind() == "object_reference" {
+                        if let Some(n) = next.child_by_field_name("name") {
+                            Some(self.node_text(n).trim().to_string())
+                        } else {
+                            Some(self.node_text(next).trim().to_string())
+                        }
+                    } else {
+                        Some(self.node_text(next).trim().to_string())
+                    }
+                } else {
+                    let mut found = None;
+                    for c in curr.children(&mut curr.walk()) {
+                        if c.kind() == "object_reference" {
+                            found = Some(self.node_text(c).trim().to_string());
+                            break;
+                        }
+                    }
+                    found
+                };
+
+                if let Some(ref_table) = target_table {
+                    let clean = ref_table.trim_matches('"').trim_matches('`').trim();
+                    if !clean.is_empty() {
+                        let (target, conf) = self.resolve_target(clean);
+                        self.add_rel_edge(
+                            container.to_string(),
+                            target,
+                            "foreign_key",
+                            0.9,
+                            EdgeProvenance::CodeForeignKey,
+                            conf,
+                        );
+                    }
+                }
+            }
+
+            let mut cursor = curr.walk();
+            for child in curr.children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+    }
+
+    fn extract_ts_decorator(&mut self, node: Node) {
+        let Some(name) = self.extract_decorator_name(node) else {
+            return;
+        };
+
+        let decorated_target = if let Some(sibling) = node.next_named_sibling() {
+            let skind = sibling.kind();
+            if skind == "method_definition"
+                || skind == "property_definition"
+                || skind == "class_declaration"
+                || skind == "function_declaration"
+            {
+                sibling.child_by_field_name("name").map(|n| {
+                    let text = self.node_text(n).trim().to_string();
+                    if let Some(ref cont) = self.current_container {
+                        format!("{} > {}", cont, text)
+                    } else {
+                        text
+                    }
+                })
+            } else {
+                None
+            }
+        } else if let Some(parent) = node.parent() {
+            if parent.kind() == "export_statement" {
+                if let Some(decl) = parent.child_by_field_name("declaration") {
+                    decl.child_by_field_name("name").map(|n| self.node_text(n).trim().to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let target_sym = decorated_target
+            .or_else(|| self.current_caller.clone())
+            .or_else(|| self.current_container.clone());
+
+        if let Some(sym) = target_sym {
+            let (target, conf) = self.resolve_target(&name);
+            self.add_rel_edge(sym, target, "decorates", 0.85, EdgeProvenance::CodeDecorates, conf);
+        }
+    }
+
+    fn extract_decorator_name(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "call_expression" || kind == "call" {
+                if let Some(func) = child.child_by_field_name("function").or_else(|| child.child(0))
+                {
+                    return Some(self.node_text(func).trim().to_string());
+                }
+            } else if kind == "identifier"
+                || kind == "property_identifier"
+                || kind == "attribute"
+                || kind == "member_expression"
+            {
+                return Some(self.node_text(child).trim().to_string());
+            }
+        }
+        None
+    }
+
+    fn extract_python_decorated(&mut self, node: Node) {
+        let definition = node.child_by_field_name("definition").or_else(|| {
+            let mut cursor = node.walk();
+            let mut found = None;
+            for c in node.children(&mut cursor) {
+                let k = c.kind();
+                if k == "function_definition" || k == "class_definition" {
+                    found = Some(c);
+                    break;
+                }
+            }
+            found
+        });
+
+        let Some(def_node) = definition else {
+            return;
+        };
+        let def_name =
+            def_node.child_by_field_name("name").map(|n| self.node_text(n).trim().to_string());
+        let Some(raw_name) = def_name else {
+            return;
+        };
+
+        let full_scope = if let Some(ref cont) = self.current_container {
+            format!("{} > {}", cont, raw_name)
+        } else {
+            raw_name
+        };
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "decorator" {
+                if let Some(dec_name) = self.extract_decorator_name(child) {
+                    let (target, conf) = self.resolve_target(&dec_name);
+                    self.add_rel_edge(
+                        full_scope.clone(),
+                        target,
+                        "decorates",
+                        0.85,
+                        EdgeProvenance::CodeDecorates,
+                        conf,
+                    );
+                }
+            }
+        }
+    }
+
+    fn extract_rust_macro(&mut self, node: Node) {
+        if let Some(macro_node) = node.child_by_field_name("macro").or_else(|| node.child(0)) {
+            let macro_text =
+                self.node_text(macro_node).trim().trim_end_matches('!').trim().to_string();
+            if !macro_text.is_empty() {
+                let caller = self
+                    .current_caller
+                    .clone()
+                    .or_else(|| self.current_container.clone())
+                    .unwrap_or_else(|| self.file_path.clone());
+
+                let (target, conf) = self.resolve_target(&macro_text);
+                self.add_rel_edge(
+                    caller,
+                    target,
+                    "macro_expands",
+                    0.7,
+                    EdgeProvenance::CodeMacroExpands,
+                    conf,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -575,6 +1049,163 @@ mod tests {
     use super::*;
     use crate::parser::code::chunker::CodeChunker;
     use ctxvault_common::config::ChunkingConfig;
+
+    #[test]
+    fn test_language_specific_ast_edges() {
+        let config = ChunkingConfig::default();
+
+        // 1. TypeScript: decorates, extends, implements
+        let ts_code = r#"
+@Injectable()
+export class UserService extends BaseService implements IUserService {
+    @Get('/users')
+    getUsers() {}
+}
+"#;
+        let ts_res =
+            CodeChunker::parse_and_chunk(Path::new("src/user.ts"), ts_code, &config).unwrap();
+        let ts_edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/user.ts"),
+            ts_code,
+            &ts_res.symbols,
+            &ts_res.symbols,
+        );
+        assert!(
+            ts_edges.iter().any(|e| e.edge_type == "extends"
+                && e.source == "UserService"
+                && e.target == "BaseService"),
+            "Expected UserService -[:extends]-> BaseService, got: {:?}",
+            ts_edges
+        );
+        assert!(
+            ts_edges.iter().any(|e| e.edge_type == "implements"
+                && e.source == "UserService"
+                && e.target == "IUserService"),
+            "Expected UserService -[:implements]-> IUserService, got: {:?}",
+            ts_edges
+        );
+        assert!(
+            ts_edges.iter().any(|e| e.edge_type == "decorates" && e.target == "Injectable"),
+            "Expected decorates Injectable, got: {:?}",
+            ts_edges
+        );
+
+        // 2. Python: decorates, inherits
+        let py_code = r#"
+@app.route("/items")
+class ItemView(BaseView):
+    @login_required
+    def get(self):
+        pass
+"#;
+        let py_res =
+            CodeChunker::parse_and_chunk(Path::new("app/views.py"), py_code, &config).unwrap();
+        let py_edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("app/views.py"),
+            py_code,
+            &py_res.symbols,
+            &py_res.symbols,
+        );
+        assert!(
+            py_edges.iter().any(|e| e.edge_type == "inherits"
+                && e.source == "ItemView"
+                && e.target == "BaseView"),
+            "Expected ItemView -[:inherits]-> BaseView, got: {:?}",
+            py_edges
+        );
+        assert!(
+            py_edges.iter().any(|e| e.edge_type == "decorates" && e.target == "app.route"),
+            "Expected decorates app.route, got: {:?}",
+            py_edges
+        );
+
+        // 3. Rust: macro_expands
+        let rs_code = r#"
+pub fn run() {
+    println!("hello");
+    tokio::select! {
+        _ = a => {}
+    }
+}
+"#;
+        let rs_res =
+            CodeChunker::parse_and_chunk(Path::new("src/main.rs"), rs_code, &config).unwrap();
+        let rs_edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("src/main.rs"),
+            rs_code,
+            &rs_res.symbols,
+            &rs_res.symbols,
+        );
+        assert!(
+            rs_edges.iter().any(|e| e.edge_type == "macro_expands" && e.target == "println"),
+            "Expected run -[:macro_expands]-> println, got: {:?}",
+            rs_edges
+        );
+        assert!(
+            rs_edges.iter().any(|e| e.edge_type == "macro_expands" && e.target == "tokio::select"),
+            "Expected run -[:macro_expands]-> tokio::select, got: {:?}",
+            rs_edges
+        );
+
+        // 4. Go: struct_embeds
+        let go_code = r#"
+package server
+
+import "sync"
+
+type Server struct {
+    sync.Mutex
+    Logger
+    port int
+}
+"#;
+        let go_res =
+            CodeChunker::parse_and_chunk(Path::new("server/server.go"), go_code, &config).unwrap();
+        let go_edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("server/server.go"),
+            go_code,
+            &go_res.symbols,
+            &go_res.symbols,
+        );
+        assert!(
+            go_edges.iter().any(|e| e.edge_type == "struct_embeds" && e.target == "sync.Mutex"),
+            "Expected Server -[:struct_embeds]-> sync.Mutex, got: {:?}",
+            go_edges
+        );
+        assert!(
+            go_edges.iter().any(|e| e.edge_type == "struct_embeds" && e.target == "Logger"),
+            "Expected Server -[:struct_embeds]-> Logger, got: {:?}",
+            go_edges
+        );
+
+        // 5. SQL: foreign_key
+        let sql_code = r#"
+CREATE TABLE orders (
+    id INT PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+"#;
+        let sql_res =
+            CodeChunker::parse_and_chunk(Path::new("schema/orders.sql"), sql_code, &config)
+                .unwrap();
+        let sql_edges = CodeGraphExtractor::extract_edges_for_file(
+            Path::new("schema/orders.sql"),
+            sql_code,
+            &sql_res.symbols,
+            &sql_res.symbols,
+        );
+        assert!(
+            sql_edges.iter().any(|e| e.edge_type == "foreign_key" && e.target == "users"),
+            "Expected orders -[:foreign_key]-> users, got: {:?}",
+            sql_edges
+        );
+        assert!(
+            sql_edges.iter().any(|e| e.edge_type == "foreign_key" && e.target == "accounts"),
+            "Expected orders -[:foreign_key]-> accounts, got: {:?}",
+            sql_edges
+        );
+    }
 
     #[test]
     fn test_code_graph_extraction_calls_and_defines() {

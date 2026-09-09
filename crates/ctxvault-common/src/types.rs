@@ -513,6 +513,16 @@ pub enum EdgeProvenance {
     CodeCalls,
     /// Trait or interface implementation.
     CodeImplementsTrait,
+    /// Language decorator or annotation (e.g. @decorator, #[derive]).
+    CodeDecorates,
+    /// Class inheritance / extension (e.g. class A extends B).
+    CodeExtends,
+    /// Macro expansion invocation (e.g. println!, vec![]).
+    CodeMacroExpands,
+    /// Embedded struct field composition (e.g. Go anonymous struct fields).
+    CodeStructEmbeds,
+    /// Relational foreign key constraint (e.g. SQL REFERENCES).
+    CodeForeignKey,
     /// Markdown documentation specifies or documents code symbol.
     DocumentsCode,
     /// Code entity implements an architecture decision record (ADR).
@@ -915,10 +925,13 @@ pub struct GraphAffordances {
     /// Connected code documentation links count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documents_code: Option<usize>,
+    /// Dynamic counts for language-specific or extended edge types (e.g. decorates, extends, foreign_key).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub edge_counts: HashMap<String, usize>,
 }
 
 impl GraphAffordances {
-    /// Returns true if all affordance counts are None or zero.
+    /// Returns true if all affordance counts are None or zero and edge_counts is empty.
     pub fn is_empty(&self) -> bool {
         self.calls_in.unwrap_or(0) == 0
             && self.calls_out.unwrap_or(0) == 0
@@ -927,6 +940,7 @@ impl GraphAffordances {
             && self.wikilinks_in.unwrap_or(0) == 0
             && self.wikilinks_out.unwrap_or(0) == 0
             && self.documents_code.unwrap_or(0) == 0
+            && self.edge_counts.is_empty()
     }
 }
 

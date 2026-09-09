@@ -531,7 +531,12 @@ static SQL_SPEC: LanguageSpec = LanguageSpec {
     language: SupportedLanguage::Sql,
     function_node_kinds: &["create_function_statement", "create_procedure_statement"],
     method_node_kinds: &[],
-    class_node_kinds: &["create_table_statement", "create_view_statement"],
+    class_node_kinds: &[
+        "create_table_statement",
+        "create_view_statement",
+        "create_table",
+        "create_view",
+    ],
     struct_node_kinds: &[],
     interface_node_kinds: &[],
     trait_node_kinds: &[],
