@@ -60,6 +60,7 @@ struct AstExtractor<'a> {
     chunks: Vec<Chunk>,
     symbols: Vec<CodeSymbol>,
     chunk_index: usize,
+    depth: usize,
 }
 
 impl<'a> AstExtractor<'a> {
@@ -78,6 +79,7 @@ impl<'a> AstExtractor<'a> {
             chunks: Vec::new(),
             symbols: Vec::new(),
             chunk_index: 0,
+            depth: 0,
         }
     }
 
@@ -89,7 +91,18 @@ impl<'a> AstExtractor<'a> {
         }
     }
 
+    const MAX_AST_DEPTH: usize = 256;
+
     fn traverse(&mut self, node: Node) {
+        if self.depth >= Self::MAX_AST_DEPTH {
+            return;
+        }
+        self.depth += 1;
+        self.traverse_inner(node);
+        self.depth -= 1;
+    }
+
+    fn traverse_inner(&mut self, node: Node) {
         let lang = self.language;
 
         let symbol_info = self.classify_node(node);

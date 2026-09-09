@@ -166,6 +166,7 @@ struct CallAndImportVisitor<'a> {
     visited_edges: HashSet<(String, String, String)>,
     visited_external_refs: HashSet<(String, String, ExternalRefKind)>,
     type_env: TypeEnvironment,
+    depth: usize,
 }
 
 impl<'a> CallAndImportVisitor<'a> {
@@ -190,6 +191,7 @@ impl<'a> CallAndImportVisitor<'a> {
             visited_edges: HashSet::new(),
             visited_external_refs: HashSet::new(),
             type_env: TypeEnvironment::new(language),
+            depth: 0,
         }
     }
 
@@ -283,7 +285,18 @@ impl<'a> CallAndImportVisitor<'a> {
         None
     }
 
+    const MAX_AST_DEPTH: usize = 256;
+
     fn visit(&mut self, node: Node) {
+        if self.depth >= Self::MAX_AST_DEPTH {
+            return;
+        }
+        self.depth += 1;
+        self.visit_inner(node);
+        self.depth -= 1;
+    }
+
+    fn visit_inner(&mut self, node: Node) {
         let kind = node.kind();
         let spec = get_language_spec(self.language);
 

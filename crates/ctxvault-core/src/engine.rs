@@ -705,14 +705,17 @@ impl Engine {
             let commit_time_threshold = Duration::from_secs(30);
 
             std::thread::scope(|s| {
-                for _ in 0..num_cpus {
+                for i in 0..num_cpus {
                     let work_rx_clone = work_rx.clone();
                     let ast_tx_clone = ast_tx.clone();
                     let chunk_tx_clone = chunk_tx_opt.clone();
                     let chunking_ref = &chunking_config;
 
-                    s.spawn(move || {
-                        while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                    std::thread::Builder::new()
+                        .name(format!("indexer-worker-{}", i))
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn_scoped(s, move || {
+                            while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
                             let content = match Self::read_file_lossy(&full_path) {
                                 Ok(c) => c,
                                 Err(e) => {
@@ -750,7 +753,8 @@ impl Engine {
                                 break;
                             }
                         }
-                    });
+                    })
+                    .expect("failed to spawn indexer worker thread");
                 }
 
                 // Drop our local handles so channels disconnect when workers finish
@@ -1046,63 +1050,67 @@ impl Engine {
 
         std::thread::scope(|s| {
             // 1. Spawn Stage A Worker Threads
-            for _ in 0..num_cpus {
+            for i in 0..num_cpus {
                 let work_rx_clone = work_rx.clone();
                 let ast_tx_clone = ast_tx.clone();
                 let chunk_tx_clone = chunk_tx_opt.clone();
                 let stored_map_ref = &stored_map;
                 let chunking_ref = &chunking_config;
 
-                s.spawn(move || {
-                    while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                        let content = match Self::read_file_lossy(&full_path) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!("Failed to read {}: {}", rel_path, e);
-                                continue;
-                            }
-                        };
-                        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-
-                        if resume {
-                            if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
-                                if *stored_hash == hash {
+                std::thread::Builder::new()
+                    .name(format!("indexer-worker-{}", i))
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
+                        while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                            let content = match Self::read_file_lossy(&full_path) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    warn!("Failed to read {}: {}", rel_path, e);
                                     continue;
                                 }
-                            }
-                        }
+                            };
+                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-                        let record = match parse_file_record(
-                            &rel_path,
-                            &content,
-                            hash,
-                            chunking_ref,
-                            index_mode,
-                        ) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                warn!("Failed to parse {}: {}", rel_path, e);
-                                continue;
-                            }
-                        };
-
-                        // Stream anchor chunks to GPU prefetch worker (Stage B)
-                        if let Some(ref tx) = chunk_tx_clone {
-                            for chunk in &record.chunks {
-                                if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                    if tx.send(chunk.clone()).is_err() {
-                                        break;
+                            if resume {
+                                if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
+                                    if *stored_hash == hash {
+                                        continue;
                                     }
                                 }
                             }
-                        }
 
-                        // Emit parsed record to Stage C storage sink
-                        if ast_tx_clone.send(record).is_err() {
-                            break;
+                            let record = match parse_file_record(
+                                &rel_path,
+                                &content,
+                                hash,
+                                chunking_ref,
+                                index_mode,
+                            ) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!("Failed to parse {}: {}", rel_path, e);
+                                    continue;
+                                }
+                            };
+
+                            // Stream anchor chunks to GPU prefetch worker (Stage B)
+                            if let Some(ref tx) = chunk_tx_clone {
+                                for chunk in &record.chunks {
+                                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                        if tx.send(chunk.clone()).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Emit parsed record to Stage C storage sink
+                            if ast_tx_clone.send(record).is_err() {
+                                break;
+                            }
                         }
-                    }
-                });
+                    })
+                    .expect("failed to spawn indexer worker thread");
             }
 
             // Drop our local handles so channels disconnect when workers finish
