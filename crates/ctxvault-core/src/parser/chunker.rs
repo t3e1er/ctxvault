@@ -96,7 +96,7 @@ pub fn chunk_document(doc_path: &str, body: &str, config: &ChunkingConfig) -> Ve
 /// Convert a byte offset in a string to a 1-based line number.
 fn byte_offset_to_line(content: &str, byte_offset: usize) -> usize {
     let offset = byte_offset.min(content.len());
-    1 + content[..offset].bytes().filter(|&b| b == b'\n').count()
+    1 + content.as_bytes()[..offset].iter().filter(|&&b| b == b'\n').count()
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,5 +1159,17 @@ mod tests {
                 chunk.text.len()
             );
         }
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_non_char_boundary_multibyte() {
+        // '→' is 3 bytes (0xE2 0x86 0x92)
+        let text = "Line 1\nLine 2 with arrow: →\nLine 3";
+        let arrow_pos = text.find('→').unwrap();
+        // Index inside the multi-byte character (arrow_pos + 1)
+        let inside_char = arrow_pos + 1;
+        // Must not panic on non-char boundary
+        let line = byte_offset_to_line(text, inside_char);
+        assert_eq!(line, 2);
     }
 }
