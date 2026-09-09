@@ -276,7 +276,7 @@ impl ToolRegistry {
                     "depth": { "type": "string", "enum": ["precise", "broad", "adaptive"], "description": "Semantic mode only: retrieval depth — precise (chunk-level, default), broad (doc-level), adaptive (both + RRF)" },
                     "graph_depth": { "type": "number", "description": "hybrid/graph/explain modes: max graph traversal depth (default 2 for hybrid/explain, 3 for graph)" },
                     "edge_types": { "type": "array", "items": { "type": "string" }, "description": "hybrid/graph/explain modes: filter graph traversal by edge types" },
-                    "edge_class": { "type": "string", "enum": ["semantic", "structural", "hybrid"], "description": "hybrid/graph/explain modes: filter graph traversal by edge class (default: semantic for hybrid/explain, structural for graph)" },
+                    "edge_class": { "type": "string", "enum": ["code", "semantic", "structural", "crossmodal", "hybrid"], "description": "hybrid/graph/explain modes: filter graph traversal by edge class (default: code for code modality, semantic for docs)" },
                     "decompose": { "type": "boolean", "description": "hybrid mode only: enable query decomposition for multi-hop queries (default: false)" },
                     "modality": { "type": "string", "enum": ["docs", "code", "both"], "description": "Restrict results to documentation, code, or both (default)." },
                     "detail": { "type": "string", "enum": ["ids", "default"], "description": "ids = bare handles (path/qualified_name + line range + metadata, no snippet) for wide sweeps; default = handle plus top-K snippets." }
@@ -315,8 +315,8 @@ impl ToolRegistry {
                     },
                     "edge_class": {
                         "type": "string",
-                        "enum": ["structural", "semantic", "hybrid"],
-                        "description": "Optional edge class filter: structural (AST/wikilinks), semantic (tags/similarity), hybrid (both)"
+                        "enum": ["code", "structural", "semantic", "crossmodal", "hybrid"],
+                        "description": "Optional edge class filter: code (calls/defines/implements/imports), structural (wikilinks/hierarchy), semantic (tags/similarity), crossmodal, hybrid (all)"
                     },
                     "where": {
                         "type": "string",
@@ -1304,6 +1304,11 @@ fn code_symbol_handle(sym: &ctxvault_common::types::CodeSymbol) -> Value {
     })
 }
 
+fn read_file_lossy(path: &Path) -> std::io::Result<String> {
+    let bytes = fs::read(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Read a single file for [`handle_read_file`].
 fn read_single_file(
     corpus_root: &Path,
@@ -1313,7 +1318,7 @@ fn read_single_file(
     max_lines: usize,
 ) -> Result<Value> {
     let full_path = corpus_root.join(path);
-    let raw = std::fs::read_to_string(&full_path)
+    let raw = read_file_lossy(&full_path)
         .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
 
     let is_markdown = matches!(language_from_path(path), "markdown");
@@ -1480,7 +1485,7 @@ fn fetch_code_symbol(
         1 => {
             let sym = &matches[0];
             let full_path = corpus_root.join(&sym.file_path);
-            let content = fs::read_to_string(&full_path)
+            let content = read_file_lossy(&full_path)
                 .map_err(|e| Error::NotFound(format!("cannot read {}: {}", sym.file_path, e)))?;
             let file_lines: Vec<&str> = content.lines().collect();
 
@@ -1509,33 +1514,50 @@ fn fetch_code_symbol(
 
             if include_neighbors {
                 let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+                let mut sym_map: HashMap<String, &ctxvault_common::types::CodeSymbol> =
+                    HashMap::with_capacity(all_symbols.len() * 2);
+                for s in &all_symbols {
+                    sym_map.insert(s.scope_path.clone(), s);
+                    sym_map.insert(s.name.clone(), s);
+                }
+
                 let edges = engine.graph().get_all_edges();
                 let matches_sym =
                     |candidate: &str| candidate == sym.scope_path || candidate == sym.name;
 
                 // Callers: "calls" edges whose TARGET is this symbol → source is a caller.
-                let callers: Vec<Value> = edges
-                    .iter()
-                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.target))
-                    .filter_map(|e| {
-                        all_symbols
-                            .iter()
-                            .find(|s| s.scope_path == e.source || s.name == e.source)
-                            .map(code_symbol_handle)
-                    })
-                    .collect();
+                let mut callers: Vec<Value> = Vec::new();
+                let mut seen_callers = HashSet::new();
+                for e in edges.iter().filter(|e| e.edge_type == "calls" && matches_sym(&e.target)) {
+                    if seen_callers.insert(e.source.clone()) {
+                        if let Some(s) = sym_map.get(&e.source) {
+                            callers.push(code_symbol_handle(s));
+                        } else {
+                            callers.push(serde_json::json!({
+                                "name": e.source,
+                                "scope_path": e.source,
+                                "unresolved": true,
+                            }));
+                        }
+                    }
+                }
 
                 // Callees: "calls" edges whose SOURCE is this symbol → target is a callee.
-                let callees: Vec<Value> = edges
-                    .iter()
-                    .filter(|e| e.edge_type == "calls" && matches_sym(&e.source))
-                    .filter_map(|e| {
-                        all_symbols
-                            .iter()
-                            .find(|s| s.scope_path == e.target || s.name == e.target)
-                            .map(code_symbol_handle)
-                    })
-                    .collect();
+                let mut callees: Vec<Value> = Vec::new();
+                let mut seen_callees = HashSet::new();
+                for e in edges.iter().filter(|e| e.edge_type == "calls" && matches_sym(&e.source)) {
+                    if seen_callees.insert(e.target.clone()) {
+                        if let Some(s) = sym_map.get(&e.target) {
+                            callees.push(code_symbol_handle(s));
+                        } else {
+                            callees.push(serde_json::json!({
+                                "name": e.target,
+                                "scope_path": e.target,
+                                "unresolved": true,
+                            }));
+                        }
+                    }
+                }
 
                 out["callers"] = Value::Array(callers);
                 out["callees"] = Value::Array(callees);
@@ -1769,7 +1791,7 @@ fn populate_top_snippets(
         if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
             if let Some(sym) = symbols.first() {
                 let full_path = corpus_root.join(&sym.file_path);
-                if let Ok(content) = fs::read_to_string(&full_path) {
+                if let Ok(content) = read_file_lossy(&full_path) {
                     let file_lines: Vec<&str> = content.lines().collect();
                     if sym.start_line > 0 && sym.start_line <= file_lines.len() {
                         let start_idx = sym.start_line - 1;
@@ -1783,7 +1805,7 @@ fn populate_top_snippets(
         }
 
         let full_path = corpus_root.join(&item.path);
-        if let Ok(content) = fs::read_to_string(&full_path) {
+        if let Ok(content) = read_file_lossy(&full_path) {
             let lines: Vec<&str> = content.lines().collect();
             let (capped, _) = cap_lines(&lines, max_lines);
             item.snippet = Some(capped);
@@ -1880,6 +1902,77 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
 
         populate_top_snippets(engine, &mut docs_items, k, 40);
         populate_top_snippets(engine, &mut code_items, k, 40);
+
+        for item in &mut docs_items {
+            if item.entity_kind.is_none() {
+                item.entity_kind = Some(ctxvault_common::types::EntityKind::Documentation);
+            }
+            if item.graph_affordances.is_none() {
+                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+            }
+        }
+
+        for item in &mut code_items {
+            if item.graph_affordances.is_none() {
+                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+            }
+            if item.entity_kind.is_none()
+                || matches!(
+                    item.entity_kind,
+                    Some(ctxvault_common::types::EntityKind::CodeChunk {
+                        start_line: 0,
+                        end_line: 0,
+                        ..
+                    })
+                )
+            {
+                if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
+                    if let Some(chunk_index) = item.chunk_index {
+                        if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
+                            if let Some(chunk) =
+                                chunks.iter().find(|c| c.chunk_index == chunk_index)
+                            {
+                                if let Some(sym) = file_symbols.iter().find(|s| {
+                                    s.start_line <= chunk.end_line && s.end_line >= chunk.start_line
+                                }) {
+                                    item.entity_kind =
+                                        Some(ctxvault_common::types::EntityKind::CodeSymbol {
+                                            language: sym.language.clone(),
+                                            symbol_type: sym.symbol_type,
+                                            scope_path: sym.scope_path.clone(),
+                                            signature: sym.signature.clone(),
+                                        });
+                                    item.language = Some(sym.language.clone());
+                                } else {
+                                    item.entity_kind =
+                                        Some(ctxvault_common::types::EntityKind::CodeChunk {
+                                            language: item.language.clone().unwrap_or_default(),
+                                            scope_path: item.path.clone(),
+                                            start_line: chunk.start_line,
+                                            end_line: chunk.end_line,
+                                        });
+                                }
+                            }
+                        }
+                    }
+                    if item.language.is_none() {
+                        if let Some(first_sym) = file_symbols.first() {
+                            item.language = Some(first_sym.language.clone());
+                        }
+                    }
+                } else if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
+                    if let Some(sym) = symbols.first() {
+                        item.entity_kind = Some(ctxvault_common::types::EntityKind::CodeSymbol {
+                            language: sym.language.clone(),
+                            symbol_type: sym.symbol_type,
+                            scope_path: sym.scope_path.clone(),
+                            signature: sym.signature.clone(),
+                        });
+                        item.language = Some(sym.language.clone());
+                    }
+                }
+            }
+        }
 
         let docs_partition =
             if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {

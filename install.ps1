@@ -34,23 +34,34 @@ try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipFile -UseBasicParsing
 
     # SHA-256 Digest Validation
-    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
+    $ChecksumUrls = @(
+        "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt",
+        "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
+    )
     $ChecksumFile = Join-Path $TempDir "checksums.txt"
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumFile -UseBasicParsing -ErrorAction SilentlyContinue
-        if (Test-Path $ChecksumFile) {
-            $ExpectedHash = Get-Content $ChecksumFile | Select-String $ArchiveName | ForEach-Object { ($_ -split '\s+')[0] }
-            if ($ExpectedHash) {
-                Write-Host "[*] Verifying SHA-256 checksum..." -ForegroundColor Cyan
-                $ActualHash = (Get-FileHash -Path $ZipFile -Algorithm SHA256).Hash.ToLower()
-                if ($ActualHash -ne $ExpectedHash.ToLower()) {
-                    Write-Error "Checksum verification failed! Expected: $ExpectedHash, Actual: $ActualHash"
-                    exit 1
-                }
-                Write-Host "[+] Checksum verified." -ForegroundColor Green
+    $ChecksumFound = $false
+    foreach ($Url in $ChecksumUrls) {
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $ChecksumFile -UseBasicParsing -ErrorAction SilentlyContinue
+            if ((Test-Path $ChecksumFile) -and ((Get-Item $ChecksumFile).Length -gt 0)) {
+                $ChecksumFound = $true
+                break
             }
+        } catch { }
+    }
+
+    if ($ChecksumFound) {
+        $ExpectedHash = Get-Content $ChecksumFile | Select-String $ArchiveName | ForEach-Object { ($_ -split '\s+')[0] }
+        if ($ExpectedHash) {
+            Write-Host "[*] Verifying SHA-256 checksum..." -ForegroundColor Cyan
+            $ActualHash = (Get-FileHash -Path $ZipFile -Algorithm SHA256).Hash.ToLower()
+            if ($ActualHash -ne $ExpectedHash.ToLower()) {
+                Write-Error "Checksum verification failed! Expected: $ExpectedHash, Actual: $ActualHash"
+                exit 1
+            }
+            Write-Host "[+] Checksum verified ($ActualHash)." -ForegroundColor Green
         }
-    } catch {
+    } else {
         Write-Host "[*] Checksum file not available, skipping verification." -ForegroundColor DarkGray
     }
 

@@ -168,7 +168,7 @@ impl KnowledgeGraph {
             &edge.edge_type,
             edge.weight,
             edge.provenance.clone(),
-            EdgeClass::Structural,
+            EdgeClass::Code,
             edge.target_corpus.clone(),
             edge.confidence,
         );

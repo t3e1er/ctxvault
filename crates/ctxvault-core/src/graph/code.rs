@@ -33,15 +33,28 @@ pub struct ExtractedCodeEdge {
 pub struct CodeGraphExtractor;
 
 impl CodeGraphExtractor {
-    /// Extract all structural edges (defines, imports, calls, implements) for a single code file.
-    pub fn extract_edges_for_file(
+    /// Build a symbol lookup index from a slice of code symbols.
+    pub fn build_symbol_index<'a>(
+        symbols: &'a [CodeSymbol],
+    ) -> HashMap<String, Vec<&'a CodeSymbol>> {
+        let mut symbol_index: HashMap<String, Vec<&CodeSymbol>> =
+            HashMap::with_capacity(symbols.len());
+        for sym in symbols {
+            symbol_index.entry(sym.name.clone()).or_default().push(sym);
+        }
+        symbol_index
+    }
+
+    /// Extract all structural edges (defines, imports, calls, implements) for a single code file
+    /// using a pre-computed symbol index.
+    pub fn extract_edges_for_file_with_index(
         file_path: &Path,
         content: &str,
         file_symbols: &[CodeSymbol],
-        all_symbols: &[CodeSymbol],
+        symbol_index: &HashMap<String, Vec<&CodeSymbol>>,
     ) -> Vec<Edge> {
         let mut edges = Vec::new();
-        let file_path_str = file_path.to_string_lossy().to_string();
+        let file_path_str = file_path.to_string_lossy().replace('\\', "/");
 
         // 1. "defines" edges: File -> Symbol
         for sym in file_symbols {
@@ -70,18 +83,23 @@ impl CodeGraphExtractor {
             return edges;
         };
 
-        // Symbol index for fast resolution: name -> Vec<CodeSymbol>
-        let mut symbol_index: HashMap<String, Vec<&CodeSymbol>> = HashMap::new();
-        for sym in all_symbols {
-            symbol_index.entry(sym.name.clone()).or_default().push(sym);
-        }
-
         let mut visitor =
-            CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, &symbol_index);
+            CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, symbol_index);
         visitor.visit(tree.root_node());
 
         edges.extend(visitor.edges);
         edges
+    }
+
+    /// Extract all structural edges (defines, imports, calls, implements) for a single code file.
+    pub fn extract_edges_for_file(
+        file_path: &Path,
+        content: &str,
+        file_symbols: &[CodeSymbol],
+        all_symbols: &[CodeSymbol],
+    ) -> Vec<Edge> {
+        let symbol_index = Self::build_symbol_index(all_symbols);
+        Self::extract_edges_for_file_with_index(file_path, content, file_symbols, &symbol_index)
     }
 }
 
@@ -331,6 +349,24 @@ impl<'a> CallAndImportVisitor<'a> {
                     provenance: EdgeProvenance::CodeCalls,
                     target_corpus: None,
                     confidence: Some(confidence),
+                });
+            }
+        } else {
+            let target = match receiver.as_deref() {
+                Some(rec) if !rec.is_empty() => format!("{}.{}", rec, callee),
+                _ => callee.clone(),
+            };
+            let key = (caller.clone(), target.clone());
+            if !self.visited_calls.contains(&key) && caller != &target {
+                self.visited_calls.insert(key);
+                self.edges.push(Edge {
+                    source: caller.clone(),
+                    target,
+                    edge_type: "calls".to_string(),
+                    weight: 0.5,
+                    provenance: EdgeProvenance::CodeCalls,
+                    target_corpus: None,
+                    confidence: Some(ResolutionConfidence::Speculative),
                 });
             }
         }

@@ -593,6 +593,12 @@ impl Engine {
         Ok(())
     }
 
+    /// Helper to read file bytes and decode as UTF-8 lossily so non-UTF8 characters never throw.
+    fn read_file_lossy(path: &Path) -> std::io::Result<String> {
+        let bytes = fs::read(path)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// Perform a paginated delta scan: compare filesystem against stored file records.
     ///
     /// Automatically re-indexes changed files and removes deleted ones with intermediate commits.
@@ -617,7 +623,7 @@ impl Engine {
 
         for (rel_path, full_path) in &disk_files {
             let _ = seen_on_disk.insert(rel_path.clone(), ());
-            let content = match fs::read_to_string(full_path) {
+            let content = match Self::read_file_lossy(full_path) {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("{}: {}", rel_path, e);
@@ -690,7 +696,7 @@ impl Engine {
 
                     s.spawn(move || {
                         while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                            let content = match fs::read_to_string(&full_path) {
+                            let content = match Self::read_file_lossy(&full_path) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     warn!("Failed to read {}: {}", rel_path, e);
@@ -773,6 +779,9 @@ impl Engine {
                 pipeline.finish(vi)?;
             }
         }
+        if !new_files.is_empty() || !modified_files.is_empty() {
+            let _ = self.resolve_cross_file_code_edges();
+        }
         self.commit()?;
         let _ = self.store.checkpoint();
 
@@ -831,7 +840,7 @@ impl Engine {
                 }
             } else {
                 // File exists: check if new or modified
-                let content = match fs::read_to_string(&full_path) {
+                let content = match Self::read_file_lossy(&full_path) {
                     Ok(c) => c,
                     Err(e) => {
                         warn!("Failed to read {}: {}", rel_path, e);
@@ -893,6 +902,10 @@ impl Engine {
             if let Some(ref mut vi) = self.vector_index {
                 pipeline.finish(vi)?;
             }
+        }
+
+        if !new_files.is_empty() || !modified_files.is_empty() {
+            let _ = self.resolve_cross_file_code_edges();
         }
 
         self.commit()?;
@@ -1026,7 +1039,7 @@ impl Engine {
 
                 s.spawn(move || {
                     while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                        let content = match fs::read_to_string(&full_path) {
+                        let content = match Self::read_file_lossy(&full_path) {
                             Ok(c) => c,
                             Err(e) => {
                                 warn!("Failed to read {}: {}", rel_path, e);
@@ -1143,6 +1156,9 @@ impl Engine {
             self.graph.build_all_tag_edges(&tag_configs, &all_docs);
         }
 
+        // Second pass: resolve cross-file code call graph edges now that all symbols are indexed
+        let _ = self.resolve_cross_file_code_edges();
+
         // Final commit and mark Completed
         self.commit()?;
         let _ = self.store.checkpoint();
@@ -1200,6 +1216,55 @@ impl Engine {
         );
 
         Ok(stats)
+    }
+
+    /// Second-pass cross-file AST call graph resolution.
+    ///
+    /// After all files in the corpus are indexed and their symbols stored in SQLite,
+    /// this pass walks all code files, resolves cross-file call sites against the complete
+    /// corpus symbol index, and inserts the resulting `calls` edges into the knowledge graph.
+    pub fn resolve_cross_file_code_edges(&mut self) -> Result<usize> {
+        let all_symbols = self.store.get_all_code_symbols()?;
+        if all_symbols.is_empty() {
+            return Ok(0);
+        }
+
+        let symbol_index = crate::graph::code::CodeGraphExtractor::build_symbol_index(&all_symbols);
+        let corpus_path = PathBuf::from(&self.config.path);
+        let files = self.store.list_files()?;
+        let mut edges_added = 0usize;
+
+        for f in &files {
+            let rel_p = Path::new(&f.path);
+            if !crate::parser::code::is_code_file(rel_p) {
+                continue;
+            }
+
+            let full_path = corpus_path.join(&f.path);
+            let content = match Self::read_file_lossy(&full_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read code file {}: {}", f.path, e);
+                    continue;
+                }
+            };
+
+            let file_symbols = self.store.get_code_symbols_for_file(&f.path)?;
+            let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                rel_p,
+                &content,
+                &file_symbols,
+                &symbol_index,
+            );
+
+            for edge in &edges {
+                self.graph.add_code_edge(edge);
+                edges_added += 1;
+            }
+        }
+
+        info!("Cross-file code call resolution complete: {} edges added/updated", edges_added);
+        Ok(edges_added)
     }
 
     /// Build a [`CoreSearchService`](crate::search_service::CoreSearchService)
@@ -1527,15 +1592,7 @@ impl Engine {
         let len = end_byte.saturating_sub(start_byte);
         let mut buf = vec![0u8; len];
         file.read_exact(&mut buf)?;
-        String::from_utf8(buf).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "invalid UTF-8 in chunk slice for '{}' [{}..{}]: {e}",
-                    rel_path, start_byte, end_byte
-                ),
-            ))
-        })
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
     /// Generate a coverage report over the given test queries.

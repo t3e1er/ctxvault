@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ctxvault_common::ports::{EmbeddingProvider, GraphStore, TextIndex, VectorStore};
-use ctxvault_common::types::{Modality, ScoreBreakdown, SearchResult};
+use ctxvault_common::types::{EntityKind, Modality, ScoreBreakdown, SearchResult};
 use ctxvault_common::Result;
 
 /// Classify a result path as passing a [`Modality`] filter using the set of
@@ -14,10 +14,14 @@ use ctxvault_common::Result;
 /// catalog); otherwise it is documentation. [`Modality::Both`] accepts every
 /// path.
 pub fn path_matches_modality(path: &str, modality: Modality, code_paths: &HashSet<String>) -> bool {
+    let normalized = path.replace('\\', "/");
+    let is_code = code_paths.contains(path)
+        || code_paths.contains(&normalized)
+        || crate::parser::code::is_code_file(std::path::Path::new(path));
     match modality {
         Modality::Both => true,
-        Modality::Code => code_paths.contains(path),
-        Modality::Docs => !code_paths.contains(path),
+        Modality::Code => is_code,
+        Modality::Docs => !is_code,
     }
 }
 
@@ -288,6 +292,60 @@ pub fn search_hybrid(
     modality: Modality,
     code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
+    if modality == Modality::Both {
+        let doc_results = search_hybrid_single(
+            bm25,
+            graph,
+            query,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Docs,
+            code_paths,
+        )?;
+
+        let code_results = search_hybrid_single(
+            bm25,
+            graph,
+            query,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Code,
+            code_paths,
+        )?;
+
+        let mut combined = doc_results;
+        combined.extend(code_results);
+        return Ok(combined);
+    }
+
+    search_hybrid_single(
+        bm25,
+        graph,
+        query,
+        limit,
+        graph_depth,
+        edge_type_filter,
+        edge_class_filter,
+        modality,
+        code_paths,
+    )
+}
+
+fn search_hybrid_single(
+    bm25: &impl TextIndex,
+    graph: &impl GraphStore,
+    query: &str,
+    limit: usize,
+    graph_depth: usize,
+    edge_type_filter: Option<&[String]>,
+    edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
+) -> Result<Vec<SearchResult>> {
     const RRF_K: f64 = 60.0;
 
     // 1. Get BM25 seeds (over-fetch to allow graph reranking), modality-filtered.
@@ -297,16 +355,19 @@ pub fn search_hybrid(
         return Ok(Vec::new());
     }
 
-    // 2. Build BM25 rank map: path -> (raw_score, rank_1based, snippet, chunk_index).
-    let mut bm25_info: HashMap<String, (f64, usize, Option<String>, Option<usize>)> =
-        HashMap::new();
+    // 2. Build BM25 rank map: key -> (raw_score, rank_1based, snippet, chunk_index).
+    let mut bm25_info: HashMap<
+        (String, Option<usize>),
+        (f64, usize, Option<String>, Option<usize>),
+    > = HashMap::new();
     for (rank, r) in bm25_results.iter().enumerate() {
-        let _ = bm25_info.entry(r.path.clone()).or_insert((
-            r.score,
-            rank + 1,
-            r.snippet.clone(),
-            r.chunk_index,
-        ));
+        let key = if modality == Modality::Code {
+            (r.path.clone(), r.chunk_index)
+        } else {
+            (r.path.clone(), None)
+        };
+        let _ =
+            bm25_info.entry(key).or_insert((r.score, rank + 1, r.snippet.clone(), r.chunk_index));
     }
 
     // 3. Graph expansion: BFS from each BM25 seed, accumulate proximity scores.
@@ -339,24 +400,25 @@ pub fn search_hybrid(
         graph_boost_map.into_iter().map(|(path, (boost, hops))| (path, boost, hops)).collect();
     graph_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut graph_rank_map: HashMap<String, (f64, usize, usize)> = HashMap::new(); // path -> (boost, min_hops, rank_1based)
+    let mut graph_rank_map: HashMap<(String, Option<usize>), (f64, usize, usize)> = HashMap::new(); // key -> (boost, min_hops, rank_1based)
     for (rank, (path, boost, hops)) in graph_ranked.iter().enumerate() {
-        let _ = graph_rank_map.insert(path.clone(), (*boost, *hops, rank + 1));
+        let key = (path.clone(), None);
+        let _ = graph_rank_map.insert(key, (*boost, *hops, rank + 1));
     }
 
-    // 5. Collect all unique paths from both signals.
-    let all_paths: std::collections::HashSet<String> =
+    // 5. Collect all unique keys from both signals.
+    let all_keys: HashSet<(String, Option<usize>)> =
         bm25_info.keys().chain(graph_rank_map.keys()).cloned().collect();
 
     // 6. RRF fusion: combine BM25 rank and graph rank.
-    let mut results: Vec<SearchResult> = all_paths
+    let mut results: Vec<SearchResult> = all_keys
         .into_iter()
-        .map(|path| {
+        .map(|(path, chunk_key)| {
             let (bm25_score, bm25_rank, snippet, chunk_index) =
-                bm25_info.get(&path).cloned().unwrap_or((0.0, 0, None, None));
+                bm25_info.get(&(path.clone(), chunk_key)).cloned().unwrap_or((0.0, 0, None, None));
 
             let (graph_boost, min_hops, graph_rank) =
-                graph_rank_map.get(&path).copied().unwrap_or((0.0, 0, 0));
+                graph_rank_map.get(&(path.clone(), None)).copied().unwrap_or((0.0, 0, 0));
 
             let bm25_rrf = if bm25_rank > 0 { 1.0 / (RRF_K + bm25_rank as f64) } else { 0.0 };
             // Pure graph discoveries receive a higher RRF K denominator (120 vs 60)
@@ -366,15 +428,26 @@ pub fn search_hybrid(
 
             let final_score = bm25_rrf + graph_rrf;
 
-            SearchResult::new(path, final_score)
+            let mut res = SearchResult::new(path, final_score)
                 .with_snippet(snippet)
-                .with_chunk_index(chunk_index)
+                .with_chunk_index(chunk_index.or(chunk_key))
                 .with_score_components(ScoreBreakdown {
                     bm25: bm25_score,
                     vector: 0.0,
                     graph_boost,
                     graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                })
+                });
+            if modality == Modality::Code {
+                res.entity_kind = Some(EntityKind::CodeChunk {
+                    language: String::new(),
+                    scope_path: String::new(),
+                    start_line: 0,
+                    end_line: 0,
+                });
+            } else {
+                res.entity_kind = Some(EntityKind::Documentation);
+            }
+            res
         })
         .collect();
 
@@ -389,6 +462,7 @@ pub fn search_hybrid(
                 b_direct.partial_cmp(&a_direct).unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
     });
     // Modality filter: graph-expanded paths may introduce the other modality.
     results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
@@ -423,6 +497,68 @@ pub fn search_hybrid_full(
     modality: Modality,
     code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
+    if modality == Modality::Both {
+        let doc_results = search_hybrid_full_single(
+            bm25,
+            vector_index,
+            graph,
+            query,
+            query_embedding,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Docs,
+            code_paths,
+        )?;
+
+        let code_results = search_hybrid_full_single(
+            bm25,
+            vector_index,
+            graph,
+            query,
+            query_embedding,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Code,
+            code_paths,
+        )?;
+
+        let mut combined = doc_results;
+        combined.extend(code_results);
+        return Ok(combined);
+    }
+
+    search_hybrid_full_single(
+        bm25,
+        vector_index,
+        graph,
+        query,
+        query_embedding,
+        limit,
+        graph_depth,
+        edge_type_filter,
+        edge_class_filter,
+        modality,
+        code_paths,
+    )
+}
+
+fn search_hybrid_full_single(
+    bm25: &impl TextIndex,
+    vector_index: &impl VectorStore,
+    graph: &impl GraphStore,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    limit: usize,
+    graph_depth: usize,
+    edge_type_filter: Option<&[String]>,
+    edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
+) -> Result<Vec<SearchResult>> {
     tracing::debug!("hybrid search: vector results from anchor embeddings, BM25 from full corpus");
     const RRF_K: f64 = 60.0;
 
@@ -442,19 +578,21 @@ pub fn search_hybrid_full(
     }
 
     // 3. Build RRF scores from BM25 ranked list.
-    let mut rrf_map: HashMap<String, (f64, f64, f64, Option<String>, Option<usize>, usize)> =
-        HashMap::new(); // path -> (rrf_total, bm25_score, vector_score, snippet, chunk, min_hops)
+    // For code, key is (path, chunk_index); for docs, key is (path, None).
+    let mut rrf_map: HashMap<
+        (String, Option<usize>),
+        (f64, f64, f64, Option<String>, Option<usize>, usize),
+    > = HashMap::new(); // key -> (rrf_total, bm25_score, vector_score, snippet, chunk, min_hops)
 
     for (rank, r) in bm25_results.iter().enumerate() {
         let rrf_score = 1.0 / (RRF_K + rank as f64 + 1.0);
-        let entry = rrf_map.entry(r.path.clone()).or_insert((
-            0.0,
-            0.0,
-            0.0,
-            r.snippet.clone(),
-            r.chunk_index,
-            0,
-        ));
+        let key = if modality == Modality::Code {
+            (r.path.clone(), r.chunk_index)
+        } else {
+            (r.path.clone(), None)
+        };
+        let entry =
+            rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, r.snippet.clone(), r.chunk_index, 0));
         entry.0 += rrf_score;
         entry.1 = r.score; // raw BM25 score
     }
@@ -462,14 +600,18 @@ pub fn search_hybrid_full(
     // 4. Add RRF scores from vector ranked list.
     for (rank, vr) in vector_results.iter().enumerate() {
         let rrf_score = 1.0 / (RRF_K + rank as f64 + 1.0);
-        let entry =
-            rrf_map.entry(vr.doc_path.clone()).or_insert((0.0, 0.0, 0.0, None, vr.chunk_index, 0));
+        let key = if modality == Modality::Code {
+            (vr.doc_path.clone(), vr.chunk_index)
+        } else {
+            (vr.doc_path.clone(), None)
+        };
+        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, None, vr.chunk_index, 0));
         entry.0 += rrf_score;
         entry.2 = vr.score; // cosine similarity
     }
 
-    // 5. Graph expansion: BFS from all seed docs to add graph boost.
-    let seed_paths: Vec<String> = rrf_map.keys().cloned().collect();
+    // 5. Graph expansion: BFS from all seed paths to add graph boost.
+    let seed_paths: HashSet<String> = rrf_map.keys().map(|k| k.0.clone()).collect();
     let mut graph_boost_map: HashMap<String, (f64, usize)> = HashMap::new();
 
     for seed_path in &seed_paths {
@@ -495,39 +637,53 @@ pub fn search_hybrid_full(
     }
 
     // 6. Add graph boost as a third signal via RRF-style scoring.
-    //    Sort graph-discovered nodes by boost, then assign RRF rank scores.
     let mut graph_ranked: Vec<(String, f64, usize)> =
         graph_boost_map.into_iter().map(|(path, (boost, hops))| (path, boost, hops)).collect();
     graph_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     for (rank, (path, boost, hops)) in graph_ranked.iter().enumerate() {
-        // Pure graph discoveries receive a higher RRF K denominator (120 vs 60)
-        // so direct keyword or vector matches are not displaced.
-        let is_pure_graph = !rrf_map.contains_key(path);
+        let key = (path.clone(), None);
+        let is_pure_graph = !rrf_map.contains_key(&key);
         let k_factor = if is_pure_graph { RRF_K * 2.0 } else { RRF_K };
         let rrf_score = 1.0 / (k_factor + rank as f64 + 1.0);
-        let entry = rrf_map.entry(path.clone()).or_insert((0.0, 0.0, 0.0, None, None, 0));
+        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, None, None, 0));
         entry.0 += rrf_score;
         if *hops > 0 && (entry.5 == 0 || *hops < entry.5) {
             entry.5 = *hops;
         }
-        let _ = boost; // used indirectly via rank
+        let _ = boost;
     }
 
     // 7. Build final results.
     let mut results: Vec<SearchResult> = rrf_map
         .into_iter()
-        .map(|(path, (rrf_total, bm25_score, vector_score, snippet, chunk_index, min_hops))| {
-            SearchResult::new(path, rrf_total)
-                .with_snippet(snippet)
-                .with_chunk_index(chunk_index)
-                .with_score_components(ScoreBreakdown {
-                    bm25: bm25_score,
-                    vector: vector_score,
-                    graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
-                    graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                })
-        })
+        .map(
+            |(
+                (path, chunk_key),
+                (rrf_total, bm25_score, vector_score, snippet, chunk_index, min_hops),
+            )| {
+                let mut res = SearchResult::new(path, rrf_total)
+                    .with_snippet(snippet)
+                    .with_chunk_index(chunk_index.or(chunk_key))
+                    .with_score_components(ScoreBreakdown {
+                        bm25: bm25_score,
+                        vector: vector_score,
+                        graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
+                        graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
+                    });
+                if modality == Modality::Code {
+                    res.entity_kind = Some(EntityKind::CodeChunk {
+                        language: String::new(),
+                        scope_path: String::new(),
+                        start_line: 0,
+                        end_line: 0,
+                    });
+                } else {
+                    res.entity_kind = Some(EntityKind::Documentation);
+                }
+                res
+            },
+        )
         .collect();
 
     results.sort_by(|a, b| {
@@ -540,6 +696,7 @@ pub fn search_hybrid_full(
                 b_direct.partial_cmp(&a_direct).unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
     });
     // Modality filter: graph-expanded paths may introduce the other modality.
     results.retain(|r| path_matches_modality(&r.path, modality, code_paths));
@@ -554,6 +711,68 @@ pub fn search_hybrid_full(
 /// Runs the 3-signal hybrid search (BM25 + vector + graph) and provides
 /// per-result breakdown of each signal's raw score, rank, and RRF contribution.
 pub fn search_explain(
+    bm25: &impl TextIndex,
+    vector_index: &impl VectorStore,
+    graph: &impl GraphStore,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    limit: usize,
+    graph_depth: usize,
+    edge_type_filter: Option<&[String]>,
+    edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
+) -> Result<Vec<ctxvault_common::types::SearchExplanation>> {
+    if modality == Modality::Both {
+        let doc_explanations = search_explain_single(
+            bm25,
+            vector_index,
+            graph,
+            query,
+            query_embedding,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Docs,
+            code_paths,
+        )?;
+
+        let code_explanations = search_explain_single(
+            bm25,
+            vector_index,
+            graph,
+            query,
+            query_embedding,
+            limit,
+            graph_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Code,
+            code_paths,
+        )?;
+
+        let mut combined = doc_explanations;
+        combined.extend(code_explanations);
+        return Ok(combined);
+    }
+
+    search_explain_single(
+        bm25,
+        vector_index,
+        graph,
+        query,
+        query_embedding,
+        limit,
+        graph_depth,
+        edge_type_filter,
+        edge_class_filter,
+        modality,
+        code_paths,
+    )
+}
+
+fn search_explain_single(
     bm25: &impl TextIndex,
     vector_index: &impl VectorStore,
     graph: &impl GraphStore,
@@ -707,6 +926,60 @@ pub fn search_graph(
     modality: Modality,
     code_paths: &HashSet<String>,
 ) -> Result<Vec<SearchResult>> {
+    if modality == Modality::Both {
+        let doc_results = search_graph_single(
+            bm25,
+            graph,
+            query,
+            limit,
+            max_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Docs,
+            code_paths,
+        )?;
+
+        let code_results = search_graph_single(
+            bm25,
+            graph,
+            query,
+            limit,
+            max_depth,
+            edge_type_filter,
+            edge_class_filter,
+            Modality::Code,
+            code_paths,
+        )?;
+
+        let mut combined = doc_results;
+        combined.extend(code_results);
+        return Ok(combined);
+    }
+
+    search_graph_single(
+        bm25,
+        graph,
+        query,
+        limit,
+        max_depth,
+        edge_type_filter,
+        edge_class_filter,
+        modality,
+        code_paths,
+    )
+}
+
+fn search_graph_single(
+    bm25: &impl TextIndex,
+    graph: &impl GraphStore,
+    query: &str,
+    limit: usize,
+    max_depth: usize,
+    edge_type_filter: Option<&[String]>,
+    edge_class_filter: Option<ctxvault_common::config::EdgeClass>,
+    modality: Modality,
+    code_paths: &HashSet<String>,
+) -> Result<Vec<SearchResult>> {
     // 1. Find seed nodes via BM25 (top 5). Seeds themselves are unrestricted so
     //    traversal can bridge modalities; the final results are modality-filtered.
     let seeds = bm25.search(query, 5)?;
@@ -743,12 +1016,23 @@ pub fn search_graph(
     let mut results: Vec<SearchResult> = score_map
         .into_iter()
         .map(|(path, (score, min_hops))| {
-            SearchResult::new(path, score).with_score_components(ScoreBreakdown {
+            let mut res = SearchResult::new(path, score).with_score_components(ScoreBreakdown {
                 bm25: 0.0,
                 vector: 0.0,
                 graph_boost: score,
                 graph_hops: Some(min_hops),
-            })
+            });
+            if modality == Modality::Code {
+                res.entity_kind = Some(EntityKind::CodeChunk {
+                    language: String::new(),
+                    scope_path: String::new(),
+                    start_line: 0,
+                    end_line: 0,
+                });
+            } else {
+                res.entity_kind = Some(EntityKind::Documentation);
+            }
+            res
         })
         .collect();
 
