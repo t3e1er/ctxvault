@@ -474,8 +474,56 @@ impl CorpusManager {
     /// across corpora; it is intentionally *not* a live tier today because the
     /// hybrid-LSP type environment is per-file and carries no cross-corpus symbol
     /// table, so a runtime `HybridLsp` tier would be a do-nothing stub.
-    fn resolve_ref_across_corpora(
+    /// Build an in-memory SCIP moniker index: leaf identifier -> list of (corpus_name, moniker).
+    ///
+    /// Scans graph nodes across all engines ONCE instead of rescanning for every
+    /// candidate reference, keeping resolution bounded and preventing quadratic allocations.
+    fn build_scip_index(&self) -> std::collections::HashMap<String, Vec<(String, String)>> {
+        let mut scip_by_leaf: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        for (corpus_name, engine) in &self.engines {
+            for node in engine.graph().node_paths() {
+                if crate::graph::scip::looks_like_moniker(&node) {
+                    if let Some(leaf) = crate::graph::scip::moniker_leaf(&node) {
+                        scip_by_leaf
+                            .entry(leaf)
+                            .or_default()
+                            .push((corpus_name.clone(), node));
+                    }
+                }
+            }
+        }
+        scip_by_leaf
+    }
+
+    fn resolve_ref_via_scip_index(
+        scip_index: &std::collections::HashMap<String, Vec<(String, String)>>,
+        source_corpus: &str,
+        leaf: &str,
+    ) -> Option<(String, CodeSymbol)> {
+        let candidates = scip_index.get(leaf)?;
+        let mut matches = candidates.iter().filter(|(c, _)| c != source_corpus);
+        let (target_corpus, moniker) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let symbol = CodeSymbol {
+            file_path: String::new(),
+            name: leaf.to_string(),
+            scope_path: moniker.clone(),
+            symbol_type: CodeSymbolType::Function,
+            language: String::new(),
+            signature: String::new(),
+            docstring: None,
+            start_line: 0,
+            end_line: 0,
+        };
+        Some((target_corpus.clone(), symbol))
+    }
+
+    fn resolve_ref_with_scip_index(
         &self,
+        scip_index: &std::collections::HashMap<String, Vec<(String, String)>>,
         source_corpus: &str,
         raw_target: &str,
     ) -> Option<(String, CodeSymbol, ResolverKind)> {
@@ -484,8 +532,10 @@ impl CorpusManager {
         let leaf = raw_target.rsplit("::").next().unwrap_or(raw_target);
         let leaf = leaf.rsplit('.').next().unwrap_or(leaf);
 
-        // Tier 1 (highest trust): SCIP monikers.
-        if let Some((corpus, symbol)) = self.resolve_ref_via_scip(source_corpus, leaf) {
+        // Tier 1 (highest trust): SCIP monikers via pre-indexed lookup.
+        if let Some((corpus, symbol)) =
+            Self::resolve_ref_via_scip_index(scip_index, source_corpus, leaf)
+        {
             return Some((corpus, symbol, ResolverKind::Scip));
         }
 
@@ -506,57 +556,15 @@ impl CorpusManager {
         None
     }
 
-    /// SCIP tier: resolve `leaf` (a cleaned target identifier) against SCIP
-    /// moniker nodes present in the graphs of corpora OTHER than `source_corpus`.
-    ///
-    /// SCIP monikers are stored only as graph nodes (never in the SQLite symbol
-    /// catalog), so this scans each other corpus's node names for a moniker whose
-    /// [`crate::graph::scip::moniker_leaf`] equals `leaf`. A match is returned
-    /// only when EXACTLY ONE such moniker exists across all other corpora
-    /// (mirroring the uniqueness gate). The returned [`CodeSymbol`] is synthesized
-    /// from the moniker (its `scope_path` is the moniker string, so the emitted
-    /// cross edge carries the moniker as its `target_symbol`).
-    ///
-    /// When no corpus has any SCIP moniker nodes this returns `None` and the
-    /// caller falls through to qualified-name matching (invariant I5). The scan
-    /// is language-agnostic — it keys purely off moniker shape (invariant I6).
-    fn resolve_ref_via_scip(
+    /// Resolve `raw_target` (a caller's unresolved call/import target) to a
+    /// unique symbol in a DIFFERENT corpus, walking the resolver trust ladder.
+    pub fn resolve_ref_across_corpora(
         &self,
         source_corpus: &str,
-        leaf: &str,
-    ) -> Option<(String, CodeSymbol)> {
-        let mut matches: Vec<(String, String)> = Vec::new();
-        for (corpus_name, engine) in &self.engines {
-            if corpus_name == source_corpus {
-                continue;
-            }
-            for node in engine.graph().node_paths() {
-                if !crate::graph::scip::looks_like_moniker(&node) {
-                    continue;
-                }
-                if crate::graph::scip::moniker_leaf(&node).as_deref() == Some(leaf) {
-                    matches.push((corpus_name.clone(), node));
-                }
-            }
-        }
-
-        // Unique cross match only.
-        if matches.len() != 1 {
-            return None;
-        }
-        let (target_corpus, moniker) = matches.into_iter().next()?;
-        let symbol = CodeSymbol {
-            file_path: String::new(),
-            name: leaf.to_string(),
-            scope_path: moniker,
-            symbol_type: CodeSymbolType::Function,
-            language: String::new(),
-            signature: String::new(),
-            docstring: None,
-            start_line: 0,
-            end_line: 0,
-        };
-        Some((target_corpus, symbol))
+        raw_target: &str,
+    ) -> Option<(String, CodeSymbol, ResolverKind)> {
+        let scip_index = self.build_scip_index();
+        self.resolve_ref_with_scip_index(&scip_index, source_corpus, raw_target)
     }
 
     /// Post-index linking pass that injects cross-corpus doc→code edges.
@@ -734,22 +742,36 @@ impl CorpusManager {
         }
 
         let mut decisions: Vec<CrossRef> = Vec::new();
+        let scip_index = self.build_scip_index();
 
         for (source_corpus, engine) in &self.engines {
             let refs = engine.store().get_external_refs()?;
+            // Cache resolution per raw_target string within this source corpus to avoid
+            // redundant cross-corpus lookups and repeated SQLite queries on identical targets.
+            let mut memo: std::collections::HashMap<String, Option<(String, CodeSymbol, ResolverKind)>> =
+                std::collections::HashMap::new();
+
             for ext in refs {
-                // Walk the resolver trust ladder (SCIP -> qualified-name). The
-                // ladder applies the same leaf-cleaning and unique-cross-match
-                // gate the doc pass uses; ambiguous (0 or >1) targets yield None.
-                let Some((target_corpus, symbol, resolver)) =
-                    self.resolve_ref_across_corpora(source_corpus, &ext.raw_target)
-                else {
+                let resolved = match memo.get(&ext.raw_target) {
+                    Some(res) => res.clone(),
+                    None => {
+                        let res = self.resolve_ref_with_scip_index(
+                            &scip_index,
+                            source_corpus,
+                            &ext.raw_target,
+                        );
+                        memo.insert(ext.raw_target.clone(), res.clone());
+                        res
+                    }
+                };
+
+                let Some((target_corpus, symbol, resolver)) = resolved else {
                     continue;
                 };
 
                 decisions.push(CrossRef {
                     source_corpus: source_corpus.clone(),
-                    caller_scope_path: ext.caller_scope_path.clone(),
+                    caller_scope_path: ext.caller_scope_path,
                     kind: ext.kind,
                     target_corpus,
                     symbol,
