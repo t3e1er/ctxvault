@@ -13,7 +13,7 @@ Written in 100% pure Rust (`unsafe_code = "forbid"`) for memory safety, zero C-r
 ### Non-Negotiable Invariants
 1. **Markdown/source is authoritative ground truth**: Files on disk are king. All indices (Tantivy BM25, HNSW vectors, SQLite catalog, Petgraph) are derived, disposable, and 100% rebuildable. Never treat an index as canonical.
 2. **Explicit graph topology, not LLM extraction**: Edges are generated deterministically from typed frontmatter fields, `#tags`, `[[wikilinks]]`, and AST code relations (`calls`, `defines`, `imports`, `implements`) — never from stochastic extraction pipelines.
-3. **Continuous knowledge crystallization (Principle 3)**: Ephemeral agent exhaust (debug traces, design consensus, bug resolutions) must be distilled into permanent, schema-validated notes with full lineage/provenance via `promote_concept` and `traverse_lineage`.
+3. **Continuous knowledge crystallization (Principle 3)**: Ephemeral agent exhaust (debug traces, design consensus, bug resolutions) must be distilled into permanent, schema-validated notes with full lineage/provenance via `write_note` (using templates with `derived_from` frontmatter) and ancestor tracing via `graph_match`.
 4. **Pure Rust sub-millisecond speed**: Multi-hop graph traversal and hybrid ranking operate in real time (lexical p50 ~2.2ms, graph BFS ~1.8ms) with no perceptible agent lag.
 5. **Multi-agent memory substrate**: A shared in-memory + on-disk semantic plane for specialized agent swarms (Scouts, Readers, Writers, Crystallizers).
 
@@ -22,9 +22,9 @@ Written in 100% pure Rust (`unsafe_code = "forbid"`) for memory safety, zero C-r
 - **Cross-Modal Linking**: Unifies documentation and polyglot source code (Rust, TS/JS, Python, Go, Java, C/C++) in a single graph.
 - **Multi-Corpus Serving**: A central MCP process serves $N$ index roots via `CorpusManager`. Tools accept optional `corpus` or fan-out `corpora` (`["a", "b"]` or `"all"`).
 - **Progressive Disclosure (3 Tiers)**:
-  - *Tier 1*: `search` returns lightweight handles (paths, qualified names, line ranges, snippets).
+  - *Tier 1*: `search` returns partitioned `docs` and `code` hits enriched with Turn 1 source snippets (`snippets: usize`, default 3) and graph affordances (`calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`).
   - *Tier 2*: `get_snippet` fetches exactly one code symbol or doc chunk, bounded, with optional neighbor expansion.
-  - *Tier 3*: `read_multiple` / `read_note` / `read_code_file` read full file contents only when exhaustive context is required.
+  - *Tier 3*: `read_file` reads full file contents or line slices (`[start_line, end_line]`) only when exhaustive context is required.
 
 ---
 

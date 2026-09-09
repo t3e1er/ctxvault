@@ -18,7 +18,7 @@ AI development tools suffer from **context rot** (too much irrelevant context sl
 
 1. **Markdown/source is the authoritative ground truth.** Files on disk are king. All indices (Tantivy BM25, HNSW vectors, SQLite catalog, Petgraph) are derived, disposable, and 100% rebuildable. Never treat an index as canonical.
 2. **Explicit graph topology, not LLM extraction.** Edges come deterministically from typed frontmatter fields, `#tags`, and `[[wikilinks]]` — never from expensive, non-deterministic extraction pipelines.
-3. **Continuous knowledge crystallization (Principle 3).** Distill ephemeral agent exhaust (debug traces, design consensus, bug resolutions) into permanent, schema-validated notes with full lineage/provenance via `promote_concept` / `traverse_lineage`.
+3. **Continuous knowledge crystallization (Principle 3).** Distill ephemeral agent exhaust (debug traces, design consensus, bug resolutions) into permanent, schema-validated notes with full lineage/provenance via `write_note` (using formal templates with `derived_from` frontmatter) and trace ancestry via `graph_match`.
 4. **Pure Rust sub-millisecond speed.** Multi-hop graph traversal and hybrid ranking run in real time (p50 lexical ~2.2ms, graph BFS ~1.8ms) with no perceptible agent lag.
 5. **Multi-agent memory substrate.** A shared in-memory + on-disk semantic plane for swarms of specialized agents (Scouts, Readers, Writers, Crystallizers).
 
@@ -36,9 +36,12 @@ ctxvault unifies **documentation** (ADRs, RFCs, design docs, Obsidian vaults) an
 
 - **Multi-corpus.** One central MCP process serves N index roots via a `CorpusManager`. Read tools take an optional `corpus` (single root) or `corpora` (`["a","b"]` or `"all"`); cross-corpus queries fan out and RRF-merge, tagging each hit with its source corpus. A single root is just N=1.
 - **Cross-corpus symbol linking.** A doc that `implements`/`documents` a code symbol resolves to that symbol even when it lives in a different corpus, but only when the qualified name resolves uniquely (ambiguous/unresolved ⇒ no false edge). Resolved cross-corpus edges carry a confidence band.
-- **Bi-modal filtering.** Every search accepts `modality` = `docs` | `code` | `both` (default), applied consistently across BM25, vector, graph, and the fused hybrid path.
-- **Progressive disclosure (three tiers).** Tier 1 — `search` returns handles (paths/qualified names + line ranges), never full bodies; `detail=ids` gives bare handles, `default` a short snippet. Tier 2 — `get_snippet` fetches exactly one code symbol or one doc chunk, bounded, with optional neighbor expansion. Tier 3 — `read_note` / `read_code_file` / `read_multiple` read whole files as a last resort.
-- **Condensed tool surface + profiles.** The `search_*` family is one `search` tool (`mode` param); status tools are one `status` tool (`scope` param). A `--profile` flag (`scout` ⊂ `analysis` ⊂ `all`) gates the advertised `tools/list` to keep the payload small for narrow agent roles.
+- **Bi-modal filtering & 5 edge classes.** Every search accepts `modality` = `docs` | `code` | `both` (default), applied consistently across BM25, vector, graph, and the fused hybrid path. Graph queries filter across 5 distinct edge classes: `code`, `structural`, `semantic`, `crossmodal`, and `hybrid`.
+- **Progressive disclosure (three tiers).**
+  - **Tier 1**: `search` returns partitioned `docs` and `code` hits enriched with Turn 1 source snippets (`snippets: usize`, default 3) and graph affordances (degree counts: `calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`).
+  - **Tier 2**: `get_snippet` fetches exactly one code symbol or one doc chunk, bounded, with optional neighbor expansion.
+  - **Tier 3**: `read_file` reads file contents or line slices (`[start_line, end_line]`) as a last resort.
+- **Condensed tool surface + profiles.** The authoritative MCP surface is 17 tools. A `--profile` flag (`scout` [6] ⊂ `analysis` [11] ⊂ `all` [17]) gates the advertised `tools/list` to keep the payload small for narrow agent roles.
 
 ## Deployment Modes
 

@@ -135,6 +135,12 @@ enum Commands {
         /// Dry-run mode: show what would change without modifying files.
         #[arg(long)]
         dry_run: bool,
+        /// Auto-populate agent steering rules (.cursorrules, GEMINI.md, .windsurfrules, CLAUDE.md).
+        #[arg(long)]
+        rules: bool,
+        /// Optional workspace directory to write local repository rules into (defaults to current directory if --rules is set).
+        #[arg(long)]
+        rules_dir: Option<PathBuf>,
     },
     /// View and edit ctxvault configuration.
     Config {
@@ -254,8 +260,20 @@ async fn main() -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     if let Some(cmd) = &cli.command {
         match cmd {
-            Commands::Install { dir, yes, dry_run } => {
-                let summary = installer::run_install(dir.as_deref(), *dry_run, *yes)?;
+            Commands::Install { dir, yes, dry_run, rules, rules_dir } => {
+                let current_dir = std::env::current_dir().ok();
+                let ws_dir = if *rules {
+                    rules_dir.as_deref().or(current_dir.as_deref())
+                } else {
+                    rules_dir.as_deref()
+                };
+                let summary = installer::run_install(
+                    dir.as_deref(),
+                    *dry_run,
+                    *yes,
+                    *rules || rules_dir.is_some(),
+                    ws_dir,
+                )?;
                 if *dry_run {
                     println!("\n=== ctxvault Agent Configuration (DRY RUN) ===");
                     for line in summary.dry_run_detected {
@@ -265,6 +283,9 @@ async fn main() -> anyhow::Result<()> {
                     println!("\n=== ctxvault Agent Configuration Complete ===");
                     for line in summary.configured {
                         println!("  [+] Configured {}", line);
+                    }
+                    for line in summary.rules_configured {
+                        println!("  [+] Installed rule {}", line);
                     }
                 }
                 for line in summary.skipped {

@@ -1,4 +1,4 @@
-﻿---
+---
 name: ctxvault-curate
 description: >-
   Create, update, move, and formally validate markdown notes against corpus schemas and taxonomies.
@@ -8,7 +8,7 @@ description: >-
 
 # Ctxvault Knowledge Curation & Schema Validation
 
-This skill guides agents through drafting, updating, and formally validating notes and taxonomy hierarchies in `ctxvault` knowledge bases.
+This skill guides agents through drafting, updating, moving, and formally validating notes and taxonomy hierarchies in `ctxvault` knowledge bases using the authoritative 17-tool suite.
 
 ---
 
@@ -22,24 +22,18 @@ When authoring a new note (e.g. ADR, Incident Report, Architecture Concept):
    {}
    ```
 2. **Inspect Template Requirements**:
-   Note the required frontmatter fields (e.g. `title`, `status`, `date`), optional fields, and required section headers.
-3. **Create the Note**:
-   Call `create_note` with the target path, frontmatter attributes, and markdown body:
+   Note required frontmatter fields (e.g. `title`, `status`, `date`, `tags`), optional fields, and required section headers.
+3. **Write the Note**:
+   Call `write_note` with `mode="create"`, target path, and markdown content including YAML frontmatter:
    ```json
    {
      "path": "decisions/adr-002-tantivy-bm25.md",
-     "template": "decision_record",
-     "frontmatter": {
-       "title": "ADR 002: Tantivy Inverted Index for BM25 Retrieval",
-       "status": "accepted",
-       "date": "2026-08-30",
-       "tags": ["architecture", "search", "bm25"]
-     },
-     "content": "# ADR 002: Tantivy Inverted Index\n\n## Context\n...\n\n## Decision\n...\n\n## Consequences\n..."
+     "mode": "create",
+     "content": "---\ntitle: \"ADR 002: Tantivy Inverted Index for BM25 Retrieval\"\nstatus: accepted\ndate: 2026-08-30\ntemplate: decision_record\ntags:\n  - architecture\n  - search\n  - bm25\n---\n\n# ADR 002: Tantivy Inverted Index\n\n## Context\n...\n\n## Decision\n...\n\n## Consequences\n..."
    }
    ```
 4. **Validate Immediate Conformance**:
-   Call `validate_note` on the newly created path to ensure zero schema errors:
+   Call `validate` on the newly created path to ensure zero schema errors:
    ```json
    {
      "path": "decisions/adr-002-tantivy-bm25.md"
@@ -53,9 +47,9 @@ When authoring a new note (e.g. ADR, Incident Report, Architecture Concept):
 When modifying existing documentation:
 
 1. **Read Current Content or Frontmatter**:
-   Call `read_note` or `get_frontmatter` to inspect current document contents.
+   Call `read_file` (with line slicing if large) or inspect via `list_notes` to see existing frontmatter and structure.
 2. **Apply Content Updates**:
-   Call `update_note` with the updated content string and mode (`overwrite`, `append`, or `prepend`):
+   Call `write_note` with mode (`overwrite`, `append`, or `prepend`):
    ```json
    {
      "path": "decisions/adr-002-tantivy-bm25.md",
@@ -72,7 +66,12 @@ When modifying existing documentation:
    }
    ```
 4. **Re-Validate**:
-   Call `validate_note` to confirm that changes satisfy template constraints.
+   Call `validate` to confirm that changes satisfy template constraints:
+   ```json
+   {
+     "path": "decisions/adr-002-tantivy-index.md"
+   }
+   ```
 
 ---
 
@@ -80,7 +79,15 @@ When modifying existing documentation:
 
 To audit the health and consistency of the entire knowledge base:
 
-1. **Validate All Notes**:
-   Call `validate_corpus` to check for missing required frontmatter, invalid enum values, broken links, or empty sections across all notes.
+1. **Validate All Notes in Corpus**:
+   Call `validate` with no `path` argument to perform a full corpus audit (missing required frontmatter, invalid enum values, broken links, or empty sections):
+   ```json
+   {}
+   ```
 2. **Validate Tag & Category Taxonomy**:
-   Call `validate_taxonomy` to identify orphan tags, inconsistent casing, or misspelled categories.
+   Call `validate` with `check_taxonomy=true` to identify orphan tags, inconsistent casing, or misspelled categories:
+   ```json
+   {
+     "check_taxonomy": true
+   }
+   ```

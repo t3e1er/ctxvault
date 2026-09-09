@@ -1,6 +1,6 @@
-﻿# Multi-Agent Swarm Orchestration with ctxvault
+# Multi-Agent Swarm Orchestration with ctxvault
 
-This guide provides blueprint architectures for orchestrating multi-agent swarms powered by `ctxvault` as a sub-millisecond, shared semantic memory substrate.
+This guide provides blueprint architectures for orchestrating multi-agent swarms powered by `ctxvault` as a sub-millisecond, shared semantic memory substrate (17 authoritative tools).
 
 ```mermaid
 flowchart TD
@@ -8,7 +8,7 @@ flowchart TD
     
     subgraph "Knowledge Swarm"
         Orch -->|1. Query Intent| Scout[Scout Agent]
-        Scout -->|2. Ranked Candidates & Graph Paths| Reader[Reader Agent]
+        Scout -->|2. Ranked Candidates, Turn 1 Snippets & Graph| Reader[Reader Agent]
         Reader -->|3. Evidence Dossier & Gaps| Orch
         
         Orch -->|4a. Draft Spec / ADR| Writer[Writer Agent]
@@ -19,7 +19,7 @@ flowchart TD
     end
     
     Vault -.->|Sub-ms BM25 + ONNX + Graph| Scout
-    Vault -.->|Chunk Read & Frontmatter| Reader
+    Vault -.->|get_snippet & read_file| Reader
 ```
 
 ---
@@ -30,8 +30,8 @@ flowchart TD
 *Goal: Answer deep multi-faceted engineering questions with rigorous citations and verified facts.*
 
 1. **Orchestrator** receives user query (e.g. *"How do we handle SQLite lock contention during parallel vector compaction?"*).
-2. **Scout Agent** executes `search_hybrid`, `search_graph`, and `graph_path` between SQLite storage and vector compaction nodes. Returns top 4 candidate paths and snippets.
-3. **Reader Agent** reads candidate documents (`read_note`), validates that documents are currently `accepted` (not `superseded`), checks for semantic gaps with `find_semantic_gaps`, and compiles an Evidence Dossier.
+2. **Scout Agent** executes `search(query="...", mode="hybrid", snippets=3)` and inspects Turn 1 snippets and graph affordances. If call paths or multi-entity links are needed, calls `graph_match(pattern="...")`. Returns top candidate paths, snippets, and relations.
+3. **Reader Agent** inspects candidate definitions using `get_snippet(symbol="...")` or line-bounded `read_file(path="...", start_line=..., end_line=...)`. Validates that documents are currently `accepted` (not `superseded`), traces any superseding ADRs with `graph_match`, and compiles an Evidence Dossier.
 4. **Orchestrator** delivers a comprehensive, cited response to the user.
 
 ---
@@ -40,19 +40,18 @@ flowchart TD
 *Goal: Convert raw incident debugging traces into permanent Architecture Decision Records with full provenance.*
 
 1. **Incident Trigger**: Agent finishes resolving an outage or complex bug recorded in a scratchpad/incident log.
-2. **Crystallizer Agent** inspects the conversation log and calls `promote_concept` targeting `concepts/` or `decisions/`.
-3. **Writer Agent** fills in required ADR sections (`Context`, `Decision`, `Consequences`), formats frontmatter according to `decision_record` template, and calls `validate_note`.
-4. **Crystallizer Agent** runs `traverse_lineage` to ensure the new ADR links back to the original incident note.
+2. **Crystallizer Agent** inspects the conversation log and calls `write_note(mode="create")` targeting `concepts/` or `decisions/`, embedding `derived_from: "incidents/inc-001.md"` in frontmatter.
+3. **Writer Agent** fills in required ADR sections (`Context`, `Decision`, `Consequences`), formats frontmatter according to `decision_record` template, and calls `validate(path="...")`.
+4. **Crystallizer Agent** runs `graph_match(pattern="(:DocNode {path: '...'})-[:derived_from*1..]->(source)")` to ensure the new ADR links back to the original incident note.
 
 ---
 
 ### Pipeline C: Continuous Vault Hygiene & Refactoring Swarm
-*Goal: Maintain clean taxonomy, fix broken links, split bloated notes, and optimize graph topology.*
+*Goal: Maintain clean taxonomy, fix broken links, and optimize graph topology.*
 
-1. **Ops / Scout Agent** executes `validate_corpus`, `coverage_report`, and `graph_communities`.
-2. **Crystallizer Agent** calls `suggest_splits` on high-token nodes identified as monolithic clusters.
-3. **Writer Agent** moves or refactors notes using `create_note`, `update_note`, `move_note`, and immediately runs `validate_note` and `validate_taxonomy`.
-4. **Ops Agent** calls `sync_corpus` to update the active search index.
+1. **Ops / Scout Agent** executes `validate` (full corpus audit), `status(scope="coverage")`, and `graph_communities(view="architecture")`.
+2. **Writer Agent** updates or refactors notes using `write_note`, `move_note`, and immediately runs `validate(path="...")` and `validate(check_taxonomy=true)`.
+3. **Ops Agent** calls `sync_corpus(mode="delta")` to update the active search index.
 
 ---
 
@@ -67,16 +66,18 @@ flowchart TD
     {
       "path": "decisions/adr-001-graph-engine.md",
       "score": 0.045,
-      "summary_snippet": "SQLite WAL mode with busy_timeout configured for 5000ms."
+      "turn1_snippet": "SQLite WAL mode with busy_timeout configured for 5000ms.",
+      "affordances": { "calls_out": 2, "wikilinks_in": 3 }
     },
     {
       "path": "concepts/vector-index.md",
       "score": 0.038,
-      "summary_snippet": "Compaction runs in background thread acquiring temporary write transaction."
+      "turn1_snippet": "Compaction runs in background thread acquiring temporary write transaction.",
+      "affordances": { "wikilinks_in": 5 }
     }
   ],
   "graph_connections": [
-    { "from": "decisions/adr-001-graph-engine.md", "to": "concepts/vector-index.md", "type": "Implements" }
+    "(:DocNode {path: 'decisions/adr-001-graph-engine.md'})-[:implements]->(:DocNode {path: 'concepts/vector-index.md'})"
   ]
 }
 ```
@@ -92,12 +93,9 @@ flowchart TD
     "title": "ADR 004: Dedicated WAL Connection Pool for Vector Compaction",
     "status": "proposed",
     "date": "2026-08-30",
+    "template": "decision_record",
     "tags": ["sqlite", "concurrency", "vector"]
   },
-  "sections": {
-    "Context": "Vector compaction holding SQLite write locks causes stdio RPC latency spikes.",
-    "Decision": "Isolate vector metadata to a secondary SQLite connection with WAL PRAGMAs.",
-    "Consequences": "Zero reader thread blocking, slight increase in memory footprint."
-  }
+  "content": "---\ntitle: \"ADR 004: Dedicated WAL Connection Pool for Vector Compaction\"\nstatus: proposed\ndate: 2026-08-30\ntemplate: decision_record\ntags:\n  - sqlite\n  - concurrency\n  - vector\n---\n\n# ADR 004: Dedicated WAL Connection Pool\n\n## Context\nVector compaction holding SQLite write locks causes stdio RPC latency spikes.\n\n## Decision\nIsolate vector metadata to a secondary SQLite connection with WAL PRAGMAs.\n\n## Consequences\nZero reader thread blocking, slight increase in memory footprint."
 }
 ```

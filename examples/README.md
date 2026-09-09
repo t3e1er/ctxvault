@@ -1,4 +1,4 @@
-﻿# `ctxvault` Examples & Starter Pack
+# `ctxvault` Examples & Starter Pack
 
 This directory contains turnkey examples, agent steering configurations, workflow skills, multi-agent swarm blueprints, and a pre-configured starter knowledge vault for `ctxvault`.
 
@@ -27,7 +27,7 @@ ctxvault --corpus examples/starter-vault --sync
 Or test a hybrid query directly using CLI client mode:
 
 ```bash
-ctxvault --mode client --call search_hybrid --query "How does hybrid retrieval work?"
+ctxvault --mode client --call search --query "How does hybrid retrieval work?" --args '{"mode":"hybrid","snippets":3}'
 ```
 
 ---

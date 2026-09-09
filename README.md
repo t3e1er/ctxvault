@@ -1,8 +1,8 @@
 # ctxvault (`ctxvault` / `ctxv`)
 
-**Enterprise Semantic Model Context Protocol (MCP) Server** for markdown knowledge bases and polyglot codebases. Features pure Rust hybrid BM25 + ONNX vector + Petgraph typed graph retrieval with 3-Way Reciprocal Rank Fusion (RRF), formal schema validation, and Principle 3 knowledge crystallization.
+**Enterprise Semantic Model Context Protocol (MCP) Server** for markdown knowledge bases and polyglot codebases. Features pure Rust hybrid BM25 + ONNX vector + Petgraph typed graph retrieval with 3-Way Reciprocal Rank Fusion (RRF), Cypher-Lite linear pattern queries, formal schema validation, and Principle 3 knowledge crystallization.
 
-Written in 100% pure Rust (`unsafe = forbid`) for maximum performance, safety, zero-dependency deployment, and sub-millisecond graph and full-text retrieval.
+Written in 100% pure Rust (`unsafe_code = "forbid"`) for maximum performance, memory safety, zero C-runtime dependencies, and sub-millisecond graph and full-text retrieval.
 
 ---
 
@@ -10,10 +10,10 @@ Written in 100% pure Rust (`unsafe = forbid`) for maximum performance, safety, z
 
 `ctxvault` is built around five foundational principles designed for the next generation of AI development and multi-agent orchestration:
 
-1. **Markdown is the Authoritative Ground Truth**: Files on disk are king. Indices (BM25, HNSW vectors, SQLite relation caches) are derived, disposable, and 100% rebuildable. Your knowledge remains human-readable, git-trackable, and portable forever.
-2. **Explicit Graph Topology over Flaky Extraction**: Knowledge structure arises deterministically from typed frontmatter fields, `#tags`, and `[[wikilinks]]` — eliminating expensive, non-deterministic LLM entity-extraction pipelines.
-3. **Continuous Knowledge Crystallization**: AI agent interactions produce valuable conversational exhaust (debugging traces, design consensus, bug resolutions). `ctxvault` provides first-class primitives (`promote_concept`, `traverse_lineage`) to distill ephemeral traces into permanent, schema-validated semantic knowledge assets with full provenance.
-4. **Pure Rust Sub-Millisecond Speed**: With p50 retrieval latencies under 2.2ms, AI agents can execute multi-hop graph traversals and hybrid ranking in real-time without introducing perceptible reasoning lag.
+1. **Markdown & Source are Authoritative Ground Truth**: Files on disk are king. All indices (Tantivy BM25, HNSW vectors, SQLite metadata, Petgraph) are derived, disposable, and 100% rebuildable. Your knowledge and code remain human-readable, git-trackable, and portable forever.
+2. **Explicit Graph Topology over Flaky Extraction**: Knowledge and code structures arise deterministically from typed frontmatter fields, `#tags`, `[[wikilinks]]`, and AST relations (`calls`, `defines`, `imports`, `implements`) — eliminating expensive, non-deterministic LLM entity-extraction pipelines.
+3. **Continuous Knowledge Crystallization**: AI agent interactions produce valuable conversational exhaust (debugging traces, design consensus, bug resolutions). `ctxvault` provides first-class primitives (`write_note` with schema templates and `derived_from` frontmatter, plus `graph_match` for ancestry tracing) to distill ephemeral traces into permanent, schema-validated semantic knowledge assets with full provenance.
+4. **Pure Rust Sub-Millisecond Speed**: With p50 retrieval latencies under 2.2ms for lexical search and under 1.8ms for graph CTE traversals, AI agents can execute multi-hop graph queries and hybrid ranking in real-time without introducing perceptible reasoning lag.
 5. **Multi-Agent Memory Substrate**: Designed to act as a shared in-memory and on-disk semantic plane for swarms of specialized agents (Scouts, Readers, Writers, Crystallizers).
 
 ---
@@ -50,123 +50,145 @@ irm https://raw.githubusercontent.com/t3e1er/ctxvault/master/install.ps1 | iex
 cargo install --locked --path crates/ctxvault-cli
 ```
 
-### Embedding model (sidecar)
+### Auto-Configuration & Agent Steering Setup
+Run `ctxvault install` to automatically detect installed coding agents (Antigravity IDE, Gemini CLI, Cursor, Claude Desktop, Claude Code, Windsurf, VS Code, Zed) and configure their MCP launchers:
+```bash
+ctxvault install -y
+```
 
-Semantic/vector search uses a local ONNX embedding model
-([`jinaai/jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code),
-Apache-2.0). The release archives **bundle it as a sidecar** next to the binary
-(`<binary-dir>/models/jina-embeddings-v2-base-code/`), and `install.sh` /
-`install.ps1` place it automatically — no separate download.
+### Embedding Model (Sidecar)
 
-For source builds (or to run the test suite), fetch it once — the on-disk layout
-mirrors the Hugging Face repo 1:1:
+Semantic and vector search uses a local ONNX embedding model ([`jinaai/jina-embeddings-v2-base-code`](https://huggingface.co/jinaai/jina-embeddings-v2-base-code), 768 dimensions, Apache-2.0). The release archives **bundle it as a sidecar** next to the binary (`<binary-dir>/models/jina-embeddings-v2-base-code/`), and `install.sh` / `install.ps1` place it automatically — no separate download required.
+
+For source builds or development:
 ```bash
 just fetch-model                      # downloads into ./models
 export CTX_MODELS_DIR="$(pwd)/models" # point ctxvault (and cargo test) at it
 ```
-The embedder resolves the model from `CTX_MODELS_DIR`, then a `models/` sidecar next
-to the binary, then `../models/` (for `cargo test`). Without it, BM25 + graph search
-still work (and `--fast` mode skips embeddings entirely); only vector/semantic search
-needs the model.
+The embedder resolves the model from `CTX_MODELS_DIR`, then a `models/` sidecar next to the binary, then `../models/` (for `cargo test`). Fast mode (`--fast`) skips embeddings entirely for instant Tantivy BM25 + graph indexing.
 
 ---
 
-## MCP Client Configuration
+## MCP Tool Surface (17 Authoritative Tools)
 
-### Claude Desktop (`claude_desktop_config.json`)
+The authoritative tool registry lives in `crates/ctxvault-mcp/src/tools/mod.rs` (17 tools across 5 domains):
+
+| Domain | Count | Tools | Description |
+|---|---|---|---|
+| **Read** | 3 | `read_file`, `get_snippet`, `list_notes` | Tier 3 batch polymorphic reader (`read_file` with `[start_line, end_line]`), Tier 2 bounded symbol/chunk fetcher (`get_snippet`), and catalog inspector (`list_notes`). |
+| **Search** | 2 | `search`, `search_related` | Tier 1 retrieval with Turn 1 hybrid snippets (`snippets: usize`, default 3) across docs & code (`mode` = `hybrid` \| `bm25` \| `semantic` \| `graph` \| `explain`), and Personalized PageRank (`search_related`). |
+| **Graph** | 2 | `graph_match`, `graph_communities` | Linear Cypher-Lite ASCII path query compiled to recursive SQLite CTEs (`graph_match`), and Leiden/Louvain community detection (`graph_communities`). |
+| **Write** | 3 | `write_note`, `delete_note`, `move_note` | Schema-driven authoring (`write_note` with `mode="create"|"overwrite"|"append"|"prepend"`), note removal (`delete_note`), and wikilink refactoring (`move_note`). |
+| **Validation** | 2 | `validate`, `list_templates` | Unified template and taxonomy validator (`validate` with `check_taxonomy=true`), and template discovery (`list_templates`). |
+| **System** | 5 | `status`, `list_corpora`, `sync_corpus`, `index_corpus`, `unload_corpus` | Multi-corpus overview (`status` with `scope="corpus"|"indexing"|"graph"|"coverage"|"all"`), corpus listing, delta/full reindexing, and dynamic runtime management. |
+
+### Tool Exposure Profiles (`--profile`)
+Gate advertised tools to fit specific agent roles:
+- **`scout`** (6 tools): `search`, `search_related`, `get_snippet`, `read_file`, `list_notes`, `status`.
+- **`analysis`** (11 tools): `scout` + `graph_match`, `graph_communities`, `validate`, `list_templates`, `list_corpora`.
+- **`all`** (17 tools, default): full suite including mutating tools (`write_note`, `delete_note`, `move_note`, `sync_corpus`, `index_corpus`, `unload_corpus`).
+
+---
+
+## Progressive Disclosure & Turn 1 Affordances
+
+`ctxvault` eliminates context rot and multi-turn reasoning lag through a strict 3-tier progressive disclosure model:
+
+```
+Turn 1: search(query, snippets=3)
+  ├── Partitioned docs and code hits
+  ├── Turn 1 inline text / symbol snippets (zero round-trip answers)
+  ├── Graph affordances (calls_in, calls_out, implements, imports, wikilinks)
+  └── Schema envelope (available node labels & edge types)
+          │
+          ▼ (if deeper symbol inspection or traversal is needed)
+Turn 2: get_snippet(symbol="...") OR graph_match(pattern="...")
+          │
+          ▼ (only as an exhaustive last resort)
+Turn 3: read_file(path="...", start_line=1, end_line=120)
+```
+
+---
+
+## Cypher-Lite Query Language (`graph_match`)
+
+`ctxvault` features **Cypher-Lite**, a linear ASCII graph query language compiled directly into recursive SQLite Common Table Expressions (CTEs) with cycle guards and bounded depths for sub-millisecond execution.
+
+### Pattern Syntax
+```text
+(source)-[:edge_type]->(target)
+(:CodeSymbol {name: "NewMainKubelet"})-[:calls*1..2]->(target)
+(:DocNode {path: "adrs/001-architecture.md"})-[:derived_from*1..3]->(target)
+(source)-[:implements]->(target)
+```
+
+### Anchor Resolution Order
+1. `path` property filter
+2. `name` property filter (indexed via `idx_code_symbols_name`)
+3. `title` property filter
+4. `scope` / `scope_path` (indexed via `idx_code_symbols_scope`)
+
+### 5 Typed Edge Classes (`edge_class`)
+Filter traversals across dedicated graph layers:
+- `"code"`: AST code relationships (`defines`, `imports`, `calls`, `implements`).
+- `"structural"`: Document layout relationships (`parent_child`, `section`).
+- `"semantic"`: Markdown graph links (`wikilink`, `derived_from`, `shared_tag`).
+- `"crossmodal"`: Cross-domain links (`documents`, `implements_spec`).
+- `"hybrid"`: Cross-layer blended edges.
+
+---
+
+## Bi-Modal Retrieval Architecture
+
+Documentation and Polyglot Source Code are treated as distinct first-class modalities:
+- **`modality="docs"`**: Searches documentation notes, ADRs, RFCs, and markdown chunks using heading-aware chunking.
+- **`modality="code"`**: Searches polyglot source code (Rust, Go, TypeScript/JavaScript, Python, Java, C/C++) chunked via Tree-sitter cAST parsing.
+- **`modality="both"` (default)**: Independent 3-way RRF rank fusion across both modalities, returning partitioned `docs` and `code` result sets.
+
+---
+
+## Deployment Modes
+
+### 1. Local / Stdio Mode (Default)
+Single process communicating over standard input/output. Used directly by Cursor, Claude Desktop, Antigravity, and VS Code:
 ```json
 {
   "mcpServers": {
     "ctxvault": {
       "command": "ctxvault",
-      "args": [
-        "--corpus", "/path/to/your/markdown/vault",
-        "--sync"
-      ]
+      "args": ["--corpus", "${workspaceFolder}", "--sync"]
     }
   }
 }
 ```
 
-### Cursor / VS Code / Antigravity (`.mcp.json` or Settings)
-```json
-{
-  "mcpServers": {
-    "ctxvault": {
-      "command": "ctxvault",
-      "args": [
-        "--corpus", "${workspaceFolder}",
-        "--sync"
-      ]
-    }
-  }
-}
-```
+### 2. Auto-Daemon Mode
+Probes port 9090; if not running, detaches a shared background daemon and bridges stdio JSON-RPC transparently.
 
-### Shared Multi-Agent / Local Network Server Mode
-Host `ctxvault` as a shared daemon so multiple IDEs, team members on LAN, or sandboxed agent environments share a single in-memory index:
+### 3. Shared Multi-Agent / Server Mode
+Host a central daemon serving multiple corpora to team members or sandboxed swarms over HTTP SSE:
 ```bash
-# Bind to localhost (local multi-agent) or 0.0.0.0 (LAN hackathon / team sharing)
-ctxvault --mode server --bind 0.0.0.0:9090 --corpus /path/to/vault --sync
-
-# Serve multiple corpora from one process; name them and pick a tool profile.
-# --corpus accepts `name=path` or a bare `path`; --profile is scout|analysis|all (default all).
 ctxvault --mode server --bind 0.0.0.0:9090 \
-  --corpus vault=/path/to/wiki --corpus code=/path/to/repo \
-  --default-corpus vault --profile analysis --sync
+  --corpus wiki=/path/to/notes --corpus repo=/path/to/code \
+  --default-corpus wiki --profile analysis --sync
 ```
 
-Read tools then take an optional `corpus` (single root) or `corpora` (`["vault","code"]`
-or `"all"`, fan-out + RRF-merge with per-hit corpus tagging). Search tools also take
-`modality` (`docs`|`code`|`both`) and `detail` (`ids`|`default`).
-
-#### Direct Remote Client (Antigravity / Remote SSE-capable IDEs)
-```json
-{
-  "mcpServers": {
-    "ctxvault": {
-      "serverUrl": "http://<HOST_IP>:9090/sse"
-    }
-  }
-}
-```
-
-#### Stdio Proxy Mode (Claude Desktop, Cursor, Sandboxed Containers)
-For IDEs and containerized agents that only support local stdio processes, run `ctxvault` in proxy mode:
-```json
-{
-  "mcpServers": {
-    "ctxvault": {
-      "command": "ctxvault",
-      "args": [
-        "--mode", "proxy",
-        "--server", "http://<HOST_IP>:9090"
-      ]
-    }
-  }
-}
-```
-
-#### CLI / Scripted Client Mode
+### 4. CLI / Scripted Client Mode
 ```bash
-ctxvault --mode client --server http://<HOST_IP>:9090 --call search --query "architecture" --args '{"mode":"hybrid"}'
+ctxvault --mode client --server http://127.0.0.1:9090 --call search --query "authentication" --args '{"mode":"hybrid","snippets":3}'
 ```
 
 ---
 
-## Key Architectural Features
+## Workspace Layout
 
-- **4-Modality Hybrid Retrieval**:
-  - **Tantivy Okapi BM25**: Full-text inverted index with field norms, term positions, and tokenization.
-  - **Dense Vector Search**: ONNX `BGE-small-en-v1.5` embeddings with document-level chunk max-pooling.
-  - **Petgraph Typed Graph Traversal**: Direct frontmatter relations, `#tags`, and `[[wikilinks]]`.
-  - **3-Way Reciprocal Rank Fusion (RRF)**: Calibrated multi-modal rank combination without brittle score-scaling heuristics.
-- **Principle 3 Knowledge Crystallization**:
-  - `promote_concept` tool synthesizes structured architecture decisions (ADRs) and incident post-mortems from raw episodic logs with 100% schema validation and lineage graph edge synthesis.
-- **Sub-Millisecond Engine Latency**:
-  - Lexical BM25 search p50: **2.2 ms** (>400 QPS)
-  - Graph BFS proximity hops p50: **1.8 ms** (>500 QPS)
-- **Multi-Corpus Isolation**: Multiple knowledge bases isolated in a single server process with atomic synchronization.
+| Crate | Role |
+|---|---|
+| [`ctxvault-common`](crates/ctxvault-common) | Shared domain types, TOML configurations, error definitions, ports traits |
+| [`ctxvault-core`](crates/ctxvault-core) | Engine: Tantivy BM25, ONNX embedder (`ort`), Petgraph, SQLite catalog, cAST parser |
+| [`ctxvault-mcp`](crates/ctxvault-mcp) | Model Context Protocol JSON-RPC transport and authoritative 17 tools |
+| [`ctxvault-cli`](crates/ctxvault-cli) | Native CLI binary: composition root, multi-corpus manager, agent installer |
+| [`examples`](examples) | Steering snippets, workflow skills, multi-agent swarms, and starter vault |
 
 ---
 
@@ -178,18 +200,6 @@ cargo test                      # Run all 156+ unit, integration & e2e tests
 cargo clippy --all-targets -- -D warnings
 cargo build --release           # Build release binary (target/release/ctxvault)
 ```
-
----
-
-## Workspace Layout
-
-| Crate | Role |
-|---|---|
-| [`ctxvault-common`](crates/ctxvault-common) | Shared domain types, TOML configurations, error definitions |
-| [`ctxvault-core`](crates/ctxvault-core) | Retrieval engine: Tantivy, FastEmbed, Petgraph, SQLite, chunking, file watcher |
-| [`ctxvault-mcp`](crates/ctxvault-mcp) | Model Context Protocol JSON-RPC transport and 31+ MCP tools |
-| [`ctxvault-cli`](crates/ctxvault-cli) | Native CLI binary: argument parsing, mode selection, orchestration |
-| [`examples`](examples) | Steering snippets, workflow skills, multi-agent swarms, and starter vault |
 
 ---
 
