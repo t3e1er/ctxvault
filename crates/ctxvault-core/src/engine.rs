@@ -779,10 +779,9 @@ impl Engine {
                                 let _ = pipeline.try_recv_completed(vi);
                             }
                         }
-                        if let Err(e) = self.commit() {
+                        if let Err(e) = self.commit_intermediate() {
                             warn!("Intermediate commit failed: {}", e);
                         }
-                        let _ = self.store.checkpoint();
                         uncommitted_count = 0;
                         last_commit_time = Instant::now();
                     }
@@ -1136,10 +1135,9 @@ impl Engine {
                             let _ = pipeline.try_recv_completed(vi);
                         }
                     }
-                    if let Err(e) = self.commit() {
+                    if let Err(e) = self.commit_intermediate() {
                         warn!("Intermediate commit failed: {}", e);
                     }
-                    let _ = self.store.checkpoint();
                     state.updated_at = now_unix();
                     let _ = self.store.update_indexing_state(&state);
                     debug!(
@@ -1162,10 +1160,9 @@ impl Engine {
             }
         }
 
-        // Commit any remaining uncommitted files
+        // Commit any remaining uncommitted files before post-processing passes
         if uncommitted_count > 0 {
-            self.commit()?;
-            let _ = self.store.checkpoint();
+            self.commit_intermediate()?;
         }
 
         // Second pass: build tag-based edges with all documents available
@@ -1176,7 +1173,7 @@ impl Engine {
         // Second pass: resolve cross-file code call graph edges now that all symbols are indexed
         let _ = self.resolve_cross_file_code_edges();
 
-        // Final commit and mark Completed
+        // Final commit and mark Completed (saves graph.bin and syncs all edges to SQLite once)
         self.commit()?;
         let _ = self.store.checkpoint();
         state.status = IndexingStatus::Completed;
@@ -1187,6 +1184,14 @@ impl Engine {
         info!("Paginated indexing complete: {} total files indexed/verified", total_files);
 
         Ok(total_files)
+    }
+
+    /// Commit pending lexical updates and checkpoints metadata without
+    /// incurring quadratic graph re-serialization and edge table rewrites.
+    pub fn commit_intermediate(&mut self) -> Result<()> {
+        self.bm25.commit()?;
+        let _ = self.store.checkpoint();
+        Ok(())
     }
 
     /// Commit all pending changes (Tantivy commit, SQLite edges sync, graph save, vector index save).
