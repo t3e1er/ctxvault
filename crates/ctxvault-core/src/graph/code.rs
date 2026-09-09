@@ -553,29 +553,20 @@ impl<'a> CallAndImportVisitor<'a> {
                 });
             }
         } else {
-            let target = match receiver.as_deref() {
-                Some(rec) if !rec.is_empty() => format!("{}.{}", rec, callee),
-                _ => callee.clone(),
-            };
-            let key = (caller.clone(), target.clone());
-            if !self.visited_calls.contains(&key) && caller != &target {
-                self.visited_calls.insert(key);
-                self.edges.push(Edge {
-                    source: caller.clone(),
-                    target: target.clone(),
-                    edge_type: "calls".to_string(),
-                    weight: 0.5,
-                    provenance: EdgeProvenance::CodeCalls,
-                    target_corpus: None,
-                    confidence: Some(ResolutionConfidence::Speculative),
-                    target_path: None,
-                    target_symbol: None,
-                    target_kind: None,
-                });
-                // The callee did not resolve to any in-corpus symbol: capture it as an
-                // external reference for later cross-corpus resolution.
-                let caller = caller.clone();
-                self.record_external_ref(caller, target, ExternalRefKind::Call);
+            // Unresolved callee: do NOT emit a phantom edge to a non-existent node.
+            // Only record as an external reference if it's not a local self/this method,
+            // so cross-corpus federation can link it if exported by another corpus.
+            if receiver.as_deref() != Some("self") && receiver.as_deref() != Some("this") {
+                let target = match receiver.as_deref() {
+                    Some(rec) if !rec.is_empty() => format!("{}.{}", rec, callee),
+                    _ => callee.clone(),
+                };
+                let key = (caller.clone(), target.clone());
+                if !self.visited_calls.contains(&key) && caller != &target {
+                    self.visited_calls.insert(key);
+                    let caller = caller.clone();
+                    self.record_external_ref(caller, target, ExternalRefKind::Call);
+                }
             }
         }
     }
