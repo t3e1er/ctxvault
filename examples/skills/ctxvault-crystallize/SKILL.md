@@ -1,13 +1,13 @@
-﻿---
+---
 name: ctxvault-crystallize
 description: >-
   Distill raw episodic traces, discussion logs, and debugging sessions into permanent semantic knowledge notes.
-  Use this skill to promote concepts, track knowledge lineage, analyze concept density, and identify semantic coverage gaps.
+  Use this skill to crystallize concepts, track knowledge lineage with Cypher-Lite, and ensure graph health.
 ---
 
 # Ctxvault Knowledge Crystallization
 
-This skill teaches agents how to implement **Continuous Knowledge Crystallization**: transforming ephemeral, high-entropy conversational and debugging traces into structured, durable semantic assets with formal provenance.
+This skill teaches agents how to implement **Continuous Knowledge Crystallization (Principle 3)**: transforming ephemeral, high-entropy conversational and debugging traces into structured, durable semantic assets with formal provenance using the 17-tool suite.
 
 ---
 
@@ -20,59 +20,57 @@ When an engineering task, debugging session, or design consensus produces non-ob
    - Root causes of subtle bugs
    - Architecture decisions and trade-offs
    - Recurring implementation patterns or invariants
-2. **Promote to Semantic Concept**:
-   Call `promote_concept` to generate a structured note with formal lineage:
+2. **Discover Available Schema Templates**:
+   Call `list_templates` to select the appropriate schema (e.g. `system_concept`, `decision_record`).
+3. **Crystallize into Semantic Note with Lineage**:
+   Call `write_note` with `mode="create"`, supplying structured frontmatter with `derived_from`:
    ```json
    {
-     "target_path": "concepts/sqlite-concurrency-patterns.md",
-     "source_notes": [
-       "incidents/inc-001-index-lock.md"
-     ],
-     "template": "system_concept",
-     "frontmatter": {
-       "title": "SQLite WAL Concurrency and Shared Cache",
-       "concept_type": "architecture",
-       "derived_from": "incidents/inc-001-index-lock.md",
-       "tags": ["sqlite", "concurrency", "storage"]
-     },
-     "content": "# SQLite WAL Concurrency\n\n## Overview\nMechanisms for multi-reader single-writer SQLite WAL concurrency.\n\n## Mechanisms\n...\n\n## Trade-Offs\n...",
-     "archive_sources": false
+     "path": "concepts/sqlite-concurrency-patterns.md",
+     "mode": "create",
+     "content": "---\ntitle: \"SQLite WAL Concurrency and Shared Cache\"\nstatus: accepted\ntemplate: system_concept\nderived_from: \"incidents/inc-001-index-lock.md\"\ntags:\n  - sqlite\n  - concurrency\n  - storage\n---\n\n# SQLite WAL Concurrency\n\n## Overview\nMechanisms for multi-reader single-writer SQLite WAL concurrency.\n\n## Mechanisms\n...\n\n## Trade-Offs\n..."
    }
    ```
-3. **Trace Knowledge Lineage**:
-   To inspect the origin of a concept and view upstream decisions or source notes, call `traverse_lineage`:
+4. **Validate Immediate Conformance**:
+   Call `validate` on the newly crystallized note:
    ```json
    {
-     "start_path": "concepts/sqlite-concurrency-patterns.md",
-     "edge_type": "DerivedFrom",
-     "direction": "outgoing",
-     "max_depth": 3
+     "path": "concepts/sqlite-concurrency-patterns.md"
+   }
+   ```
+5. **Trace Knowledge Lineage with Cypher-Lite**:
+   To inspect the origin of a concept and view upstream decisions or source notes, call `graph_match`:
+   ```json
+   {
+     "pattern": "(:DocNode {path: \"concepts/sqlite-concurrency-patterns.md\"})-[:derived_from*1..3]->(source)",
+     "edge_class": "semantic"
    }
    ```
 
 ---
 
-## 2. Density & Semantic Gap Auditing
+## 2. Graph Health & Density Auditing
 
-To maintain high knowledge quality and prevent vault bloat:
+To maintain high knowledge quality and graph connectivity:
 
-1. **Calculate Knowledge Density & Graph Hubs**:
-   Call `analyze_density` to inspect top hub nodes, isolated orphans, and graph density metrics:
+1. **Inspect Graph Topology & Density**:
+   Call `status` with `scope="graph"` to review total nodes, edge density, and connected components:
    ```json
    {
-     "top_hubs": 10
+     "scope": "graph"
    }
    ```
-2. **Detect Retrieval Blind Spots & Semantic Gaps**:
-   Call `find_semantic_gaps` with sample test queries to evaluate where BM25 and dense vector search diverge:
+2. **Detect Architectural Clusters**:
+   Call `graph_communities` with `view="architecture"` to verify how the new concept clusters with existing subsystems:
    ```json
    {
-     "queries": [
-       "how to configure fastembed vectors",
-       "sqlite lock contention"
-     ],
-     "top_k": 5
+     "view": "architecture"
    }
    ```
-3. **Refactor Oversized Notes**:
-   If a document covers too many distinct topics, call `suggest_splits` to receive automated modularization recommendations.
+3. **Audit Index Coverage**:
+   Call `status` with `scope="coverage"` to ensure newly added directories and notes are indexed:
+   ```json
+   {
+     "scope": "coverage"
+   }
+   ```

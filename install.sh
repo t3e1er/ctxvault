@@ -40,7 +40,7 @@ esac
 
 # 2. Fetch latest release version from GitHub API
 echo "[*] Resolving latest release for $REPO..."
-TAG=$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+TAG=$(curl -sSL -H "User-Agent: ctxvault-installer" "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
 if [ -z "$TAG" ]; then
     echo "[ERROR] Failed to fetch latest release tag from https://api.github.com/repos/$REPO/releases/latest" >&2
