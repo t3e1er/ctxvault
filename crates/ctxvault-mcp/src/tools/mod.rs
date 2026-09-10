@@ -3,7 +3,7 @@
 //! Each tool is a named handler function that takes `(&mut Engine, Value)` and returns
 //! `Result<Value>`. The [`ToolRegistry`] manages registration and dispatch.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -247,7 +247,7 @@ impl ToolRegistry {
                     "path": { "type": "string", "description": "Relative path — for a DOC chunk fetch (with chunk_index) or a code FILE hint" },
                     "chunk_index": { "type": "integer", "description": "With path, fetch that specific doc chunk (zero-based)" },
                     "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 500)" },
-                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code callers/callees as handles, or adjacent doc chunks (default false)" }
+                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code relationships (incoming/outgoing grouped by edge type) as handles, or adjacent doc chunks (default false)" }
                 },
                 "required": []
             }),
@@ -1676,42 +1676,58 @@ fn fetch_code_symbol(
                 let matches_sym =
                     |candidate: &str| candidate == sym.scope_path || candidate == sym.name;
 
-                // Callers: "calls" edges whose TARGET is this symbol → source is a caller.
-                let mut callers: Vec<Value> = Vec::new();
-                let mut seen_callers = HashSet::new();
-                for e in edges.iter().filter(|e| e.edge_type == "calls" && matches_sym(&e.target)) {
-                    if seen_callers.insert(e.source.clone()) {
-                        if let Some(s) = sym_map.get(&e.source) {
-                            callers.push(code_symbol_handle(s));
+                // Grammar-driven graph relationships grouped by edge_type:
+                // incoming (edges where target is this symbol)
+                // outgoing (edges where source is this symbol)
+                let mut incoming: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+                let mut outgoing: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+                let mut seen_incoming = HashSet::new();
+                let mut seen_outgoing = HashSet::new();
+
+                for e in edges.iter().filter(|e| matches_sym(&e.target)) {
+                    if seen_incoming.insert((e.edge_type.clone(), e.source.clone())) {
+                        let node = if let Some(s) = sym_map.get(&e.source) {
+                            code_symbol_handle(s)
                         } else {
-                            callers.push(serde_json::json!({
+                            serde_json::json!({
                                 "name": e.source,
                                 "scope_path": e.source,
                                 "unresolved": true,
-                            }));
-                        }
+                            })
+                        };
+                        incoming.entry(e.edge_type.clone()).or_default().push(node);
                     }
                 }
 
-                // Callees: "calls" edges whose SOURCE is this symbol → target is a callee.
-                let mut callees: Vec<Value> = Vec::new();
-                let mut seen_callees = HashSet::new();
-                for e in edges.iter().filter(|e| e.edge_type == "calls" && matches_sym(&e.source)) {
-                    if seen_callees.insert(e.target.clone()) {
-                        if let Some(s) = sym_map.get(&e.target) {
-                            callees.push(code_symbol_handle(s));
+                for e in edges.iter().filter(|e| matches_sym(&e.source)) {
+                    if seen_outgoing.insert((e.edge_type.clone(), e.target.clone())) {
+                        let node = if let Some(s) = sym_map.get(&e.target) {
+                            code_symbol_handle(s)
+                        } else if let Some(ref target_corpus) = e.target_corpus {
+                            serde_json::json!({
+                                "name": e.target_symbol.as_deref().unwrap_or(&e.target),
+                                "scope_path": e.target,
+                                "corpus": target_corpus,
+                                "file_path": e.target_path,
+                                "symbol_type": e.target_kind,
+                                "confidence": e.confidence,
+                                "cross_corpus": true,
+                            })
                         } else {
-                            callees.push(serde_json::json!({
+                            serde_json::json!({
                                 "name": e.target,
                                 "scope_path": e.target,
                                 "unresolved": true,
-                            }));
-                        }
+                            })
+                        };
+                        outgoing.entry(e.edge_type.clone()).or_default().push(node);
                     }
                 }
 
-                out["callers"] = Value::Array(callers);
-                out["callees"] = Value::Array(callees);
+                out["relationships"] = serde_json::json!({
+                    "incoming": incoming,
+                    "outgoing": outgoing,
+                });
             }
 
             Ok(out)
@@ -4555,10 +4571,11 @@ pub fn normalize(input: &str) -> Vec<String> {
                 }),
             )
             .unwrap();
-        let callees = sym_nb["callees"].as_array().unwrap();
+        let outgoing = sym_nb["relationships"]["outgoing"].as_object().unwrap();
+        let callees = outgoing.get("calls").and_then(|v| v.as_array()).unwrap();
         assert!(
             callees.iter().any(|c| c["name"] == "normalize" || c["scope_path"] == "normalize"),
-            "dispatch should list normalize as a callee handle"
+            "dispatch should list normalize as an outgoing calls handle"
         );
         // Callees are HANDLES only — no body field.
         assert!(
@@ -4566,7 +4583,7 @@ pub fn normalize(input: &str) -> Vec<String> {
             "neighbors are handles, not bodies"
         );
 
-        // Callers of normalize should include dispatch.
+        // Callers of normalize should include dispatch in incoming calls.
         let normalize_nb = registry
             .execute_read(
                 "get_snippet",
@@ -4574,10 +4591,11 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "qualified_name": "normalize", "include_neighbors": true }),
             )
             .unwrap();
-        let callers = normalize_nb["callers"].as_array().unwrap();
+        let incoming = normalize_nb["relationships"]["incoming"].as_object().unwrap();
+        let callers = incoming.get("calls").and_then(|v| v.as_array()).unwrap();
         assert!(
             callers.iter().any(|c| c["scope_path"] == "Router > dispatch"),
-            "normalize should list Router > dispatch as a caller handle"
+            "normalize should list Router > dispatch as an incoming calls handle"
         );
 
         // Tier 2 bounding: max_lines truncates the body.
@@ -4871,9 +4889,11 @@ pub fn compute_hash(data: &[u8]) -> u64 {
         assert_eq!(res["language"], "rust");
         assert!(res["signature"].as_str().unwrap().contains("pub fn compute_hash"));
         assert!(res["docstring"].as_str().unwrap().contains("Compute hash of input data."));
-        // Empty neighbors serialized cleanly without crash
-        assert_eq!(res["callers"].as_array().unwrap().len(), 0);
-        assert_eq!(res["callees"].as_array().unwrap().len(), 0);
+        // Grammar-driven relationships: incoming defines from hash.rs, 0 callers, 0 outgoing.
+        let incoming = res["relationships"]["incoming"].as_object().unwrap();
+        assert!(incoming.get("calls").is_none());
+        assert!(incoming.contains_key("defines"));
+        assert!(res["relationships"]["outgoing"].as_object().unwrap().is_empty());
 
         // 2. Candidate suggestions on near-miss: query with wrong container "CryptoEngine > compute_hash"
         let sugg_res = registry

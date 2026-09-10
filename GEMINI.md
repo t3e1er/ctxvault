@@ -60,7 +60,7 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
 
 | Category | Count | Tools |
 |---|---|---|
-| **Read** | 3 | `read_file` (Tier 3 polymorphic path/paths batch with line slicing), `get_snippet` (Tier 2 symbol/chunk fetch + caller/callee handles + symbol definition lookup), `list_notes` (note catalog & single note frontmatter inspection) |
+| **Read** | 3 | `read_file` (Tier 3 polymorphic path/paths batch with line slicing), `get_snippet` (Tier 2 symbol/chunk fetch + grammar-driven relationship handles + symbol definition lookup), `list_notes` (note catalog & single note frontmatter inspection) |
 | **Search** | 2 | `search` (Tier 1 retrieval with Turn 1 hybrid snippets across docs & code via `snippets: usize`; `mode` = `hybrid` \| `bm25` \| `semantic` \| `graph` \| `explain`), `search_related` |
 | **Graph** | 2 | `graph_match` (linear Cypher-Lite ASCII path query compiled to recursive SQLite CTEs with cycle guards), `graph_communities` (`algorithm` = `leiden` \| `louvain`, `view` = `architecture` \| `raw`) |
 | **Write** | 3 | `write_note` (`mode` = `create` \| `overwrite` \| `append` \| `prepend`), `delete_note`, `move_note` (wikilink refactoring) |
