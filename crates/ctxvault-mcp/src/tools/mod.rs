@@ -1060,20 +1060,25 @@ fn tag_search_output(output: Value, corpus_name: &str) -> Value {
                 results.into_iter().map(|r| r.with_corpus(Some(corpus_name.to_string()))).collect();
             return serde_json::to_value(tagged).unwrap_or(output);
         }
-    } else if let Ok(mut resp) =
-        serde_json::from_value::<ctxvault_common::types::SearchResponse>(output.clone())
-    {
-        if let Some(ref mut d) = resp.docs {
-            for r in &mut d.results {
-                r.corpus = Some(corpus_name.to_string());
+    } else if output.is_object() && (output.get("docs").is_some() || output.get("code").is_some()) {
+        if let Ok(mut resp) =
+            serde_json::from_value::<ctxvault_common::types::SearchResponse>(output.clone())
+        {
+            if let Some(ref mut d) = resp.docs {
+                for r in &mut d.results {
+                    r.corpus = Some(corpus_name.to_string());
+                }
             }
-        }
-        if let Some(ref mut c) = resp.code {
-            for r in &mut c.results {
-                r.corpus = Some(corpus_name.to_string());
+            if let Some(ref mut c) = resp.code {
+                for r in &mut c.results {
+                    r.corpus = Some(corpus_name.to_string());
+                }
             }
+            return serde_json::to_value(resp).unwrap_or(output);
         }
-        return serde_json::to_value(resp).unwrap_or(output);
+    } else if let Value::Object(mut map) = output {
+        map.entry("corpus").or_insert_with(|| Value::String(corpus_name.to_string()));
+        return Value::Object(map);
     }
     output
 }
