@@ -7,7 +7,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use ctxvault_common::types::{CodeSymbol, Edge, EdgeProvenance, ResolutionConfidence};
+use ctxvault_common::types::{
+    CodeSymbol, Edge, EdgeProvenance, ExternalRef, ExternalRefKind, ResolutionConfidence,
+};
 use tree_sitter::{Node, Parser};
 
 use crate::graph::hybrid_lsp::{clean_type_name, TypeEnvironment};
@@ -29,6 +31,24 @@ pub struct ExtractedCodeEdge {
     pub provenance: EdgeProvenance,
 }
 
+/// Result of extracting structural relationships from a single code file.
+///
+/// Carries the intra-repo structural edges (unchanged from prior behavior) plus
+/// the [`ExternalRef`]s captured for call/import targets that did not resolve to
+/// a local symbol. [`CodeExtraction::edges`] is byte-for-byte identical to the
+/// edge set this extractor produced before external-reference capture was added;
+/// external references are surfaced only via the separate
+/// [`CodeExtraction::external_refs`] channel for a later cross-corpus
+/// reconciliation pass and never alter the emitted `edges`.
+#[derive(Debug, Clone, Default)]
+pub struct CodeExtraction {
+    /// Structural code edges (`defines`, `imports`, `calls`, `implements`, ...).
+    pub edges: Vec<Edge>,
+    /// Unresolved call/import targets ([`ExternalRefKind::Call`] /
+    /// [`ExternalRefKind::Import`]) captured for later cross-corpus resolution.
+    pub external_refs: Vec<ExternalRef>,
+}
+
 /// Polyglot code graph extractor.
 pub struct CodeGraphExtractor;
 
@@ -46,13 +66,17 @@ impl CodeGraphExtractor {
     }
 
     /// Extract all structural edges (defines, imports, calls, implements) for a single code file
-    /// using a pre-computed symbol index.
+    /// using a pre-computed symbol index, alongside any unresolved external references.
+    ///
+    /// The returned [`CodeExtraction::edges`] is byte-for-byte identical to the edge set
+    /// this extractor produced before external-reference capture was added; external references
+    /// are surfaced only via the separate [`CodeExtraction::external_refs`] channel.
     pub fn extract_edges_for_file_with_index(
         file_path: &Path,
         content: &str,
         file_symbols: &[CodeSymbol],
         symbol_index: &HashMap<String, Vec<&CodeSymbol>>,
-    ) -> Vec<Edge> {
+    ) -> CodeExtraction {
         let mut edges = Vec::new();
         let file_path_str = file_path.to_string_lossy().replace('\\', "/");
 
@@ -66,32 +90,60 @@ impl CodeGraphExtractor {
                 provenance: EdgeProvenance::CodeDefines,
                 target_corpus: None,
                 confidence: Some(ResolutionConfidence::High),
+                target_path: None,
+                target_symbol: None,
+                target_kind: None,
             });
         }
 
         // 2. Parse AST for imports and call sites
+        if content.len() > crate::parser::code::chunker::CodeChunker::MAX_CODE_FILE_SIZE_BYTES {
+            return CodeExtraction { edges, external_refs: Vec::new() };
+        }
+
         let Some(lang) = detect_language(file_path) else {
-            return edges;
+            return CodeExtraction { edges, external_refs: Vec::new() };
         };
 
         let mut parser = Parser::new();
         if parser.set_language(&lang.tree_sitter_language()).is_err() {
-            return edges;
+            return CodeExtraction { edges, external_refs: Vec::new() };
         }
 
         let Some(tree) = parser.parse(content, None) else {
-            return edges;
+            return CodeExtraction { edges, external_refs: Vec::new() };
         };
 
         let mut visitor =
             CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, symbol_index);
         visitor.visit(tree.root_node());
 
+        let mut external_refs = visitor.external_refs;
+        let mut seen_imports = HashSet::new();
+        // Import edges always target an out-of-corpus module path (they never resolve to an
+        // in-corpus symbol), so each is an external reference. Derive them from the produced
+        // edges so the edge Vec itself is left untouched.
+        for e in &visitor.edges {
+            if e.provenance == EdgeProvenance::CodeImports
+                && seen_imports.insert((e.source.clone(), e.target.clone()))
+            {
+                external_refs.push(ExternalRef {
+                    caller_scope_path: e.source.clone(),
+                    raw_target: e.target.clone(),
+                    kind: ExternalRefKind::Import,
+                    confidence: ResolutionConfidence::Speculative,
+                });
+            }
+        }
+
         edges.extend(visitor.edges);
-        edges
+        CodeExtraction { edges, external_refs }
     }
 
     /// Extract all structural edges (defines, imports, calls, implements) for a single code file.
+    ///
+    /// Returns only the intra-repo edge set; external-reference capture is a concern of the
+    /// corpus-wide second pass, which calls [`Self::extract_edges_for_file_with_index`] directly.
     pub fn extract_edges_for_file(
         file_path: &Path,
         content: &str,
@@ -100,6 +152,7 @@ impl CodeGraphExtractor {
     ) -> Vec<Edge> {
         let symbol_index = Self::build_symbol_index(all_symbols);
         Self::extract_edges_for_file_with_index(file_path, content, file_symbols, &symbol_index)
+            .edges
     }
 }
 
@@ -112,9 +165,12 @@ struct CallAndImportVisitor<'a> {
     current_caller: Option<String>,
     current_container: Option<String>,
     edges: Vec<Edge>,
+    external_refs: Vec<ExternalRef>,
     visited_calls: HashSet<(String, String)>,
     visited_edges: HashSet<(String, String, String)>,
+    visited_external_refs: HashSet<(String, String, ExternalRefKind)>,
     type_env: TypeEnvironment,
+    depth: usize,
 }
 
 impl<'a> CallAndImportVisitor<'a> {
@@ -134,9 +190,12 @@ impl<'a> CallAndImportVisitor<'a> {
             current_caller: None,
             current_container: None,
             edges: Vec::new(),
+            external_refs: Vec::new(),
             visited_calls: HashSet::new(),
             visited_edges: HashSet::new(),
+            visited_external_refs: HashSet::new(),
             type_env: TypeEnvironment::new(language),
+            depth: 0,
         }
     }
 
@@ -167,6 +226,26 @@ impl<'a> CallAndImportVisitor<'a> {
                 provenance,
                 target_corpus: None,
                 confidence: Some(confidence),
+                target_path: None,
+                target_symbol: None,
+                target_kind: None,
+            });
+        }
+    }
+
+    /// Record an unresolved call/import target as an [`ExternalRef`], de-duped
+    /// per `(caller_scope_path, raw_target, kind)` so re-visits do not duplicate.
+    fn record_external_ref(&mut self, caller: String, raw_target: String, kind: ExternalRefKind) {
+        if caller.is_empty() || raw_target.is_empty() {
+            return;
+        }
+        let key = (caller.clone(), raw_target.clone(), kind);
+        if self.visited_external_refs.insert(key) {
+            self.external_refs.push(ExternalRef {
+                caller_scope_path: caller,
+                raw_target,
+                kind,
+                confidence: ResolutionConfidence::Speculative,
             });
         }
     }
@@ -210,7 +289,18 @@ impl<'a> CallAndImportVisitor<'a> {
         None
     }
 
+    const MAX_AST_DEPTH: usize = 256;
+
     fn visit(&mut self, node: Node) {
+        if self.depth >= Self::MAX_AST_DEPTH {
+            return;
+        }
+        self.depth += 1;
+        self.visit_inner(node);
+        self.depth -= 1;
+    }
+
+    fn visit_inner(&mut self, node: Node) {
         let kind = node.kind();
         let spec = get_language_spec(self.language);
 
@@ -339,6 +429,9 @@ impl<'a> CallAndImportVisitor<'a> {
                             provenance: EdgeProvenance::CodeImports,
                             target_corpus: None,
                             confidence: Some(ResolutionConfidence::Speculative),
+                            target_path: None,
+                            target_symbol: None,
+                            target_kind: None,
                         });
                         self.type_env.register_import(sym, target_str);
                     }
@@ -363,6 +456,9 @@ impl<'a> CallAndImportVisitor<'a> {
                             provenance: EdgeProvenance::CodeImports,
                             target_corpus: None,
                             confidence: Some(ResolutionConfidence::Speculative),
+                            target_path: None,
+                            target_symbol: None,
+                            target_kind: None,
                         });
                     }
                 }
@@ -378,6 +474,9 @@ impl<'a> CallAndImportVisitor<'a> {
                         provenance: EdgeProvenance::CodeImports,
                         target_corpus: None,
                         confidence: Some(ResolutionConfidence::Speculative),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
                     });
                 }
             }
@@ -393,6 +492,9 @@ impl<'a> CallAndImportVisitor<'a> {
                         provenance: EdgeProvenance::CodeImports,
                         target_corpus: None,
                         confidence: Some(ResolutionConfidence::Speculative),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
                     });
                     self.type_env.register_import(pkg, path);
                 }
@@ -418,6 +520,9 @@ impl<'a> CallAndImportVisitor<'a> {
                         provenance: EdgeProvenance::CodeImports,
                         target_corpus: None,
                         confidence: Some(ResolutionConfidence::Speculative),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
                     });
                 }
             }
@@ -425,9 +530,10 @@ impl<'a> CallAndImportVisitor<'a> {
     }
 
     fn extract_call(&mut self, node: Node) {
-        let Some(ref caller) = self.current_caller else {
+        let Some(caller) = self.current_caller.clone() else {
             return;
         };
+        let caller = &caller;
 
         let Some((receiver, callee)) = self.extract_call_parts(node) else {
             return;
@@ -445,25 +551,26 @@ impl<'a> CallAndImportVisitor<'a> {
                     provenance: EdgeProvenance::CodeCalls,
                     target_corpus: None,
                     confidence: Some(confidence),
+                    target_path: None,
+                    target_symbol: None,
+                    target_kind: None,
                 });
             }
         } else {
-            let target = match receiver.as_deref() {
-                Some(rec) if !rec.is_empty() => format!("{}.{}", rec, callee),
-                _ => callee.clone(),
-            };
-            let key = (caller.clone(), target.clone());
-            if !self.visited_calls.contains(&key) && caller != &target {
-                self.visited_calls.insert(key);
-                self.edges.push(Edge {
-                    source: caller.clone(),
-                    target,
-                    edge_type: "calls".to_string(),
-                    weight: 0.5,
-                    provenance: EdgeProvenance::CodeCalls,
-                    target_corpus: None,
-                    confidence: Some(ResolutionConfidence::Speculative),
-                });
+            // Unresolved callee: do NOT emit a phantom edge to a non-existent node.
+            // Only record as an external reference if it's not a local self/this method,
+            // so cross-corpus federation can link it if exported by another corpus.
+            if receiver.as_deref() != Some("self") && receiver.as_deref() != Some("this") {
+                let target = match receiver.as_deref() {
+                    Some(rec) if !rec.is_empty() => format!("{}.{}", rec, callee),
+                    _ => callee.clone(),
+                };
+                let key = (caller.clone(), target.clone());
+                if !self.visited_calls.contains(&key) && caller != &target {
+                    self.visited_calls.insert(key);
+                    let caller = caller.clone();
+                    self.record_external_ref(caller, target, ExternalRefKind::Call);
+                }
             }
         }
     }
@@ -659,6 +766,9 @@ impl<'a> CallAndImportVisitor<'a> {
                         provenance: EdgeProvenance::CodeImplementsTrait,
                         target_corpus: None,
                         confidence: Some(ResolutionConfidence::High),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
                     });
                 }
             }
@@ -1420,5 +1530,53 @@ export class ApiClient {
             .find(|e| e.edge_type == "calls" && e.target == "ApiClient > fetchData")
             .expect("expected a call edge to ApiClient > fetchData");
         assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+    }
+
+    #[test]
+    fn test_external_ref_capture_local_vs_unresolved_call() {
+        // The caller defines `run`, calls the locally-defined `helper` (resolves to a
+        // real in-corpus symbol) and `missing_external` (resolves to nothing).
+        let code = r#"
+pub fn helper() {}
+
+pub fn run() {
+    helper();
+    missing_external();
+}
+"#;
+        let config = ChunkingConfig::default();
+        let res = CodeChunker::parse_and_chunk(Path::new("src/lib.rs"), code, &config).unwrap();
+
+        let symbol_index = CodeGraphExtractor::build_symbol_index(&res.symbols);
+        let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+            Path::new("src/lib.rs"),
+            code,
+            &res.symbols,
+            &symbol_index,
+        );
+
+        // (a) The fully-local call yields a normal `calls` edge...
+        let local_edge = extraction
+            .edges
+            .iter()
+            .find(|e| e.edge_type == "calls" && e.target == "helper")
+            .expect("expected a resolved `calls` edge to the local helper");
+        assert_eq!(local_edge.confidence, Some(ResolutionConfidence::High));
+
+        // ...and NO external ref for the resolved local call.
+        assert!(
+            !extraction.external_refs.iter().any(|r| r.raw_target == "helper"),
+            "a fully-local call must not produce an ExternalRef, got: {:?}",
+            extraction.external_refs
+        );
+
+        // (b) The unresolved external call is captured as an ExternalRef.
+        let ext = extraction
+            .external_refs
+            .iter()
+            .find(|r| r.raw_target == "missing_external" && r.kind == ExternalRefKind::Call)
+            .expect("expected an ExternalRef for the unresolved external call");
+        assert_eq!(ext.caller_scope_path, "run");
+        assert_eq!(ext.confidence, ResolutionConfidence::Speculative);
     }
 }

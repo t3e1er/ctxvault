@@ -577,12 +577,29 @@ async fn main() -> anyhow::Result<()> {
 
     // Cross-corpus symbol linking
     if manager.corpus_count() > 1 {
+        // Doc-frontmatter side: resolve `implements`/`documents` targets to a
+        // unique symbol in a sibling corpus.
         match manager.link_cross_corpus_symbols() {
             Ok(count) => {
                 tracing::info!(cross_corpus_edges = count, "cross-corpus symbol linking complete");
             }
             Err(e) => {
                 tracing::warn!(error = %e, "cross-corpus symbol linking failed");
+            }
+        }
+        // Code side: resolve captured call/import ExternalRefs to a unique symbol
+        // in a sibling corpus, emitting bidirectional cross-corpus edges. Like the
+        // doc pass this mutates the in-memory graphs only; the daemon serves those
+        // graphs for the session, so no extra persistence is performed here.
+        match manager.resolve_external_refs() {
+            Ok(count) => {
+                tracing::info!(
+                    cross_corpus_ref_edges = count,
+                    "cross-corpus external-ref resolution complete"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cross-corpus external-ref resolution failed");
             }
         }
     }

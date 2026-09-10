@@ -48,11 +48,41 @@ pub struct GraphEdge {
     pub target_corpus: Option<String>,
     /// Confidence band for a resolved cross-corpus link (`None` for intra-corpus).
     pub confidence: Option<ResolutionConfidence>,
+    /// Repo-relative path of the target endpoint in `target_corpus`.
+    ///
+    /// `None` for intra-corpus edges; `Some(_)` on a cross-corpus edge so a
+    /// federated traversal can report the hop and continue into the remote
+    /// corpus without re-resolving. Always serialized (graph.bin uses the
+    /// non-self-describing postcard format, so fields must be present on load).
+    pub target_path: Option<String>,
+    /// Fully qualified symbol / endpoint name at the remote target.
+    ///
+    /// `None` for intra-corpus edges; `Some(_)` for cross-corpus edges.
+    pub target_symbol: Option<String>,
+    /// Free-form kind of the remote endpoint (e.g. `"Symbol"`, `"Route"`,
+    /// `"Channel"`, `"RpcEndpoint"`, `"Resource"`).
+    ///
+    /// Left free-form (`Option<String>`) rather than an enum so new endpoint
+    /// kinds are additive data, not a code change. `None` for intra-corpus edges.
+    pub target_kind: Option<String>,
 }
+
+/// On-disk schema version stamped into `GraphData`.
+///
+/// `graph.bin` uses the non-self-describing postcard format, so any change to
+/// the persisted shape of [`GraphNode`] / [`GraphEdge`] (such as adding the
+/// cross-corpus target payload) changes the byte layout. Bump this whenever the
+/// persisted layout changes; [`KnowledgeGraph::load`] rejects a mismatched
+/// version so callers rebuild the (fully derived, disposable) index instead of
+/// misreading stale bytes.
+pub const GRAPH_SCHEMA_VERSION: u32 = 2;
 
 /// Serializable wrapper for persistence.
 #[derive(Serialize, Deserialize)]
 struct GraphData {
+    /// Schema version stamp; see [`GRAPH_SCHEMA_VERSION`].
+    version: u32,
+    /// The serialized directed graph.
     graph: DiGraph<GraphNode, GraphEdge>,
 }
 
@@ -115,9 +145,12 @@ impl KnowledgeGraph {
     /// Add a directed edge carrying optional cross-corpus resolution metadata.
     ///
     /// `target_corpus`/`confidence` are `None` for ordinary intra-corpus edges and
-    /// `Some(_)` for edges resolved to a symbol defined in another corpus. Parallel
-    /// edges of the same `edge_type` between the same nodes are de-duplicated
-    /// (the existing edge is updated in place), keeping this operation idempotent.
+    /// `Some(_)` for edges resolved to a symbol defined in another corpus. The
+    /// remote-endpoint payload (`target_path`/`target_symbol`/`target_kind`) is
+    /// left empty; use [`KnowledgeGraph::add_cross_corpus_edge`] to attach it.
+    /// Parallel edges of the same `edge_type` between the same nodes are
+    /// de-duplicated (the existing edge is updated in place), keeping this
+    /// operation idempotent.
     pub fn add_edge_full(
         &mut self,
         source: &str,
@@ -128,6 +161,78 @@ impl KnowledgeGraph {
         class: EdgeClass,
         target_corpus: Option<String>,
         confidence: Option<ResolutionConfidence>,
+    ) {
+        self.insert_or_update_edge(
+            source,
+            target,
+            edge_type,
+            weight,
+            provenance,
+            class,
+            target_corpus,
+            confidence,
+            None,
+            None,
+            None,
+        );
+    }
+
+    /// Add a cross-corpus edge carrying the full remote-endpoint payload.
+    ///
+    /// This is the richest edge constructor: alongside `target_corpus`/`confidence`
+    /// it records where the target lives (`target_path`), what it is called
+    /// (`target_symbol`), and its free-form kind (`target_kind`, e.g. `"Symbol"`,
+    /// `"Route"`, `"Channel"`). That payload lets a federated traversal report the
+    /// hop and continue into the remote corpus without re-resolving. Shares the
+    /// same de-duplication as [`KnowledgeGraph::add_edge_full`], so re-running a
+    /// linking pass is idempotent.
+    pub fn add_cross_corpus_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
+        target_path: Option<String>,
+        target_symbol: Option<String>,
+        target_kind: Option<String>,
+    ) {
+        self.insert_or_update_edge(
+            source,
+            target,
+            edge_type,
+            weight,
+            provenance,
+            class,
+            target_corpus,
+            confidence,
+            target_path,
+            target_symbol,
+            target_kind,
+        );
+    }
+
+    /// Insert a new edge or update the existing same-type edge in place.
+    ///
+    /// Single code path shared by every public edge constructor so de-duplication
+    /// semantics stay identical regardless of how much cross-corpus payload is
+    /// supplied.
+    fn insert_or_update_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
+        target_path: Option<String>,
+        target_symbol: Option<String>,
+        target_kind: Option<String>,
     ) {
         let src_idx = self.add_node(source, None);
         let tgt_idx = self.add_node(target, None);
@@ -145,6 +250,9 @@ impl KnowledgeGraph {
                 edge_mut.class = class;
                 edge_mut.target_corpus = target_corpus;
                 edge_mut.confidence = confidence;
+                edge_mut.target_path = target_path;
+                edge_mut.target_symbol = target_symbol;
+                edge_mut.target_kind = target_kind;
             }
             return;
         }
@@ -156,13 +264,20 @@ impl KnowledgeGraph {
             class,
             target_corpus,
             confidence,
+            target_path,
+            target_symbol,
+            target_kind,
         };
         let _ = self.graph.add_edge(src_idx, tgt_idx, edge);
     }
 
     /// Add a code edge into the graph with appropriate EdgeClass.
+    ///
+    /// Forwards the full cross-corpus payload so a code edge that already carries
+    /// a remote endpoint (`target_path`/`target_symbol`/`target_kind`) preserves
+    /// it; for ordinary intra-corpus code edges those fields are `None`.
     pub fn add_code_edge(&mut self, edge: &ctxvault_common::types::Edge) {
-        self.add_edge_full(
+        self.add_cross_corpus_edge(
             &edge.source,
             &edge.target,
             &edge.edge_type,
@@ -171,6 +286,9 @@ impl KnowledgeGraph {
             EdgeClass::Code,
             edge.target_corpus.clone(),
             edge.confidence,
+            edge.target_path.clone(),
+            edge.target_symbol.clone(),
+            edge.target_kind.clone(),
         );
     }
 
@@ -261,6 +379,46 @@ impl KnowledgeGraph {
                     provenance: weight_data.provenance.clone(),
                     target_corpus: weight_data.target_corpus.clone(),
                     confidence: weight_data.confidence,
+                    target_path: weight_data.target_path.clone(),
+                    target_symbol: weight_data.target_symbol.clone(),
+                    target_kind: weight_data.target_kind.clone(),
+                });
+            }
+        }
+        edges
+    }
+
+    /// Retrieve a single node's outgoing edges, carrying the full cross-corpus
+    /// payload.
+    ///
+    /// Mirrors [`Self::get_all_edges`]'s [`ctxvault_common::types::Edge`]
+    /// construction (including `target_corpus`, `confidence`, `target_path`,
+    /// `target_symbol`, and `target_kind`) but scans only the edges leaving
+    /// `path` via `edges_directed(idx, Outgoing)` — an O(deg) lookup rather than
+    /// an O(edges) full scan. Returns an empty vector when the node is absent.
+    /// Used by federated (cross-corpus) traversal to expand one node per hop.
+    pub fn outgoing_edges(&self, path: &str) -> Vec<ctxvault_common::types::Edge> {
+        let mut edges = Vec::new();
+        let Some(&idx) = self.node_map.get(path) else {
+            return edges;
+        };
+        for edge in self.graph.edges_directed(idx, Direction::Outgoing) {
+            let target_idx = edge.target();
+            if let (Some(source_node), Some(target_node)) =
+                (self.graph.node_weight(idx), self.graph.node_weight(target_idx))
+            {
+                let weight_data = edge.weight();
+                edges.push(ctxvault_common::types::Edge {
+                    source: source_node.path.clone(),
+                    target: target_node.path.clone(),
+                    edge_type: weight_data.edge_type.clone(),
+                    weight: weight_data.weight,
+                    provenance: weight_data.provenance.clone(),
+                    target_corpus: weight_data.target_corpus.clone(),
+                    confidence: weight_data.confidence,
+                    target_path: weight_data.target_path.clone(),
+                    target_symbol: weight_data.target_symbol.clone(),
+                    target_kind: weight_data.target_kind.clone(),
                 });
             }
         }
@@ -668,7 +826,7 @@ impl KnowledgeGraph {
 
     /// Serialize the graph to a file using postcard.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let data = GraphData { graph: self.graph.clone() };
+        let data = GraphData { version: GRAPH_SCHEMA_VERSION, graph: self.graph.clone() };
         let encoded =
             postcard::to_allocvec(&data).map_err(|e| Error::Graph(format!("serialize: {}", e)))?;
         std::fs::write(path, encoded).map_err(|e| Error::Graph(format!("write: {}", e)))?;
@@ -676,10 +834,24 @@ impl KnowledgeGraph {
     }
 
     /// Deserialize a graph from a file.
+    ///
+    /// Returns [`Error::Graph`] when the persisted `GraphData::version` does not
+    /// match [`GRAPH_SCHEMA_VERSION`]. `graph.bin` is a fully derived, disposable
+    /// artifact, so callers (e.g. the engine builder) treat any load error as a
+    /// signal to start fresh and rebuild from the authoritative source on disk —
+    /// a version bump therefore triggers a safe rebuild rather than misreading a
+    /// stale, incompatible byte layout.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| Error::Graph(format!("read: {}", e)))?;
         let data: GraphData = postcard::from_bytes(&bytes)
             .map_err(|e| Error::Graph(format!("deserialize: {}", e)))?;
+
+        if data.version != GRAPH_SCHEMA_VERSION {
+            return Err(Error::Graph(format!(
+                "graph schema version mismatch: on-disk {} != expected {}; rebuild required",
+                data.version, GRAPH_SCHEMA_VERSION
+            )));
+        }
 
         let mut node_map = HashMap::new();
         for idx in data.graph.node_indices() {
@@ -1770,6 +1942,36 @@ impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
         )
     }
 
+    fn add_cross_corpus_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
+        target_path: Option<String>,
+        target_symbol: Option<String>,
+        target_kind: Option<String>,
+    ) {
+        KnowledgeGraph::add_cross_corpus_edge(
+            self,
+            source,
+            target,
+            edge_type,
+            weight,
+            provenance,
+            class,
+            target_corpus,
+            confidence,
+            target_path,
+            target_symbol,
+            target_kind,
+        )
+    }
+
     fn add_code_edge(&mut self, edge: &ctxvault_common::types::Edge) {
         KnowledgeGraph::add_code_edge(self, edge)
     }
@@ -1804,6 +2006,10 @@ impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
 
     fn get_all_edges(&self) -> Vec<ctxvault_common::types::Edge> {
         KnowledgeGraph::get_all_edges(self)
+    }
+
+    fn outgoing_edges(&self, path: &str) -> Vec<ctxvault_common::types::Edge> {
+        KnowledgeGraph::outgoing_edges(self, path)
     }
 
     fn build_edges_for_document(
@@ -2143,6 +2349,65 @@ mod tests {
         // Verify edge is preserved.
         let fwd = loaded.forwardlinks("a.md", None);
         assert!(fwd.get("Link").unwrap().contains(&"b.md".to_string()));
+    }
+
+    #[test]
+    fn test_cross_corpus_edge_payload_round_trips() {
+        let mut graph = KnowledgeGraph::new();
+        graph.add_node("doc.md", Some("Doc"));
+        graph.add_cross_corpus_edge(
+            "doc.md",
+            "backend::api::create_user",
+            "documents",
+            1.0,
+            EdgeProvenance::DocumentsCode,
+            EdgeClass::Structural,
+            Some("backend".to_string()),
+            Some(ResolutionConfidence::High),
+            Some("src/api/user.rs".to_string()),
+            Some("api::create_user".to_string()),
+            Some("Symbol".to_string()),
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.bin");
+        graph.save(&path).unwrap();
+        let loaded = KnowledgeGraph::load(&path).unwrap();
+
+        // The full remote-endpoint payload must survive save() -> load().
+        let src_idx = loaded.get_node("doc.md").expect("source node present");
+        let edge = loaded
+            .graph
+            .edges_directed(src_idx, Direction::Outgoing)
+            .next()
+            .expect("cross-corpus edge present");
+        let data = edge.weight();
+        assert_eq!(data.target_corpus.as_deref(), Some("backend"));
+        assert_eq!(data.confidence, Some(ResolutionConfidence::High));
+        assert_eq!(data.target_path.as_deref(), Some("src/api/user.rs"));
+        assert_eq!(data.target_symbol.as_deref(), Some("api::create_user"));
+        assert_eq!(data.target_kind.as_deref(), Some("Symbol"));
+    }
+
+    #[test]
+    fn test_load_rejects_schema_version_mismatch() {
+        // A GraphData persisted under a different schema version must be rejected
+        // so callers rebuild the derived index rather than misreading stale bytes.
+        #[derive(Serialize)]
+        struct LegacyGraphData {
+            version: u32,
+            graph: DiGraph<GraphNode, GraphEdge>,
+        }
+        let legacy = LegacyGraphData {
+            version: GRAPH_SCHEMA_VERSION.wrapping_add(1),
+            graph: DiGraph::new(),
+        };
+        let bytes = postcard::to_allocvec(&legacy).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.bin");
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(KnowledgeGraph::load(&path).is_err());
     }
 
     #[test]

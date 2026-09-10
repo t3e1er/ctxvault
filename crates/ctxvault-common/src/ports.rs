@@ -105,9 +105,9 @@ use crate::config::{EdgeClass, EdgeTypeConfig};
 use crate::types::{
     BrokenLink, Chunk, ChunkRecord, CircularDependency, CodeSymbol, CommunityDensity,
     CommunityDetectionResult, Document, Edge, EdgeProvenance, EdgeRecord, EdgeTypeRecord,
-    FileRecord, GraphAffordances, GraphStats, IndexingState, LineageAnnotation, LineageNode,
-    Modality, OrphanAdr, ResolutionConfidence, SearchDepth, SearchExplanation, SearchResult,
-    VectorSearchResult,
+    ExternalRef, FileRecord, GraphAffordances, GraphStats, IndexingState, LineageAnnotation,
+    LineageNode, Modality, OrphanAdr, ResolutionConfidence, SearchDepth, SearchExplanation,
+    SearchResult, VectorSearchResult,
 };
 use crate::Result;
 
@@ -240,6 +240,22 @@ pub trait MetadataCatalog {
 
     /// Retrieve all code symbols in the entire catalog.
     fn get_all_code_symbols(&self) -> Result<Vec<CodeSymbol>>;
+
+    // ------------------------------------------------------------------
+    // External references (unresolved call/import targets)
+    // ------------------------------------------------------------------
+
+    /// Delete all external references captured for a file (for idempotent re-index).
+    fn clear_external_refs_for_file(&self, file_path: &str) -> Result<()>;
+
+    /// Insert a batch of external references for a file within a transaction.
+    fn insert_external_refs(&self, file_path: &str, refs: &[ExternalRef]) -> Result<()>;
+
+    /// Retrieve every external reference in the catalog.
+    fn get_external_refs(&self) -> Result<Vec<ExternalRef>>;
+
+    /// Retrieve the external references captured for a single file.
+    fn get_external_refs_for_file(&self, file_path: &str) -> Result<Vec<ExternalRef>>;
 
     /// Flush the database write-ahead log or checkpoint changes to disk.
     fn checkpoint(&self) -> Result<()> {
@@ -478,6 +494,28 @@ pub trait GraphStore {
         confidence: Option<ResolutionConfidence>,
     );
 
+    /// Add a cross-corpus edge carrying the full remote-endpoint payload.
+    ///
+    /// Extends [`GraphStore::add_edge_full`] with where the target lives
+    /// (`target_path`), what it is called (`target_symbol`), and its free-form
+    /// kind (`target_kind`, e.g. `"Symbol"`, `"Route"`, `"Channel"`) so a
+    /// federated traversal can report and continue the hop without re-resolving.
+    /// Shares the same same-type de-duplication, keeping the operation idempotent.
+    fn add_cross_corpus_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        edge_type: &str,
+        weight: f32,
+        provenance: EdgeProvenance,
+        class: EdgeClass,
+        target_corpus: Option<String>,
+        confidence: Option<ResolutionConfidence>,
+        target_path: Option<String>,
+        target_symbol: Option<String>,
+        target_kind: Option<String>,
+    );
+
     /// Add a code edge into the graph with a structural edge class.
     fn add_code_edge(&mut self, edge: &Edge);
 
@@ -509,6 +547,16 @@ pub trait GraphStore {
 
     /// Retrieve all edges currently in the knowledge graph.
     fn get_all_edges(&self) -> Vec<Edge>;
+
+    /// Retrieve a single node's outgoing edges, carrying the full cross-corpus
+    /// payload (`target_corpus`, `confidence`, `target_path`, `target_symbol`,
+    /// `target_kind`).
+    ///
+    /// An O(deg) per-node lookup (versus scanning every edge via
+    /// [`GraphStore::get_all_edges`]) used to expand one node per hop during a
+    /// federated cross-corpus traversal. Returns an empty vector when the node
+    /// is absent.
+    fn outgoing_edges(&self, path: &str) -> Vec<Edge>;
 
     // ------------------------------------------------------------------
     // Edge construction from documents

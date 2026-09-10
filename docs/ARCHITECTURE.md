@@ -374,7 +374,7 @@ Tool descriptions encode the ordering so agents self-enforce it:
    bodies. `detail=ids` = bare handles for wide sweeps; `default` = a short snippet only.
 2. **Tier 2 — fetch.** `get_snippet` returns exactly one code symbol (by `qualified_name`)
    or one doc chunk (by `path`+`chunk_index`), bounded by `max_lines`, with optional
-   `include_neighbors` (code callers/callees; adjacent doc chunks).
+   `include_neighbors` (code relationships grouped by edge type; adjacent doc chunks).
 3. **Tier 3 — full file.** `read_note` (docs), `read_code_file` (source), `read_multiple`
    (token-efficient batch), only when whole-file context is truly needed.
 

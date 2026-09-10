@@ -4,6 +4,16 @@
 //! directly on Tree-sitter ASTs to disambiguate method calls and receiver invocations
 //! (e.g., `client.query(...)` -> `SearchClient > query`) with [`ResolutionConfidence::High`](ctxvault_common::types::ResolutionConfidence::High),
 //! eliminating speculative cross-file call edges without external LSP daemons.
+//!
+//! # Cross-corpus scope
+//!
+//! [`TypeEnvironment`] is an *intra-file* resolver: its scope frames and type
+//! bindings are built and consumed while walking a single file's AST during
+//! extraction, and are not retained past that. It therefore has no cross-corpus
+//! symbol table of its own. The cross-corpus resolver trust ladder
+//! (`ResolverKind` in [`crate::corpus_manager`]) reserves a `HybridLsp` tier for
+//! when in-engine LSP-grade data becomes queryable across corpora, but keeps the
+//! *live* ladder at SCIP → qualified-name so no do-nothing tier is introduced.
 
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -278,16 +288,20 @@ pub fn clean_type_name(raw: &str) -> String {
     let mut cleaned = raw.trim();
     // Strip Rust reference/pointer markers
     cleaned = cleaned.trim_start_matches('&');
-    cleaned = cleaned.trim_start_matches("mut ");
     cleaned = cleaned.trim_start_matches('*');
+    cleaned = cleaned.trim_start_matches("const ");
+    cleaned = cleaned.trim_start_matches("mut ");
     // Strip TypeScript type prefix colon
     cleaned = cleaned.trim_start_matches(':').trim();
     // Strip generic brackets: `Option<SearchEngine>` -> `SearchEngine`
     if let Some(start) = cleaned.find('<') {
-        if let Some(end) = cleaned.rfind('>') {
-            let inner = &cleaned[start + 1..end];
-            if !inner.contains(',') {
-                return clean_type_name(inner);
+        if let Some(rel_end) = cleaned[start + 1..].rfind('>') {
+            let end = start + 1 + rel_end;
+            if start + 1 < end {
+                let inner = &cleaned[start + 1..end];
+                if !inner.contains(',') {
+                    return clean_type_name(inner);
+                }
             }
         }
     }
@@ -319,5 +333,28 @@ fn infer_rust_value_type(val_node: Node, content: &str) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_type_name_edge_cases() {
+        assert_eq!(clean_type_name("Option<SearchEngine>"), "SearchEngine");
+        assert_eq!(clean_type_name("-> Result<String>"), "String");
+        assert_eq!(clean_type_name("foo > bar <baz>"), "baz");
+        assert_eq!(clean_type_name("a > b && c < d"), "a > b && c < d");
+        assert_eq!(clean_type_name("><"), "><");
+        assert_eq!(clean_type_name("<>"), "<>");
+        assert_eq!(clean_type_name(">>>"), ">>>");
+        assert_eq!(clean_type_name("<<<"), "<<<");
+        assert_eq!(clean_type_name("&mut SearchClient"), "SearchClient");
+        assert_eq!(clean_type_name("*const u8"), "u8");
+        assert_eq!(clean_type_name(": SearchEngine"), "SearchEngine");
+        assert_eq!(clean_type_name("crate::search::SearchEngine"), "SearchEngine");
+        assert_eq!(clean_type_name("Arc<Mutex<SearchEngine>>"), "SearchEngine");
+        assert_eq!(clean_type_name("Result<Engine, Error>"), "Result<Engine, Error>");
     }
 }

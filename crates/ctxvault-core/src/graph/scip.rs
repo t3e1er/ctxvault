@@ -27,6 +27,58 @@ pub struct ScipIngestStats {
     pub edges_added: usize,
 }
 
+/// Extract a bare, comparable leaf identifier from a SCIP moniker string.
+///
+/// A SCIP symbol (moniker) is a space-separated string of the form
+/// `"<scheme> <manager> <package> <version> <descriptors...>"`, e.g.
+/// `"scip-rust cargo ctxvault-core 0.0.22 search()."` or
+/// `"scip-rust cargo ctxvault-core 0.0.22 Engine#"`. The trailing descriptor
+/// segment carries the symbol name plus a suffix marker that encodes its kind
+/// (`().` for a method/function, `#` for a type, `/` for a namespace, `.` for a
+/// term). This strips the scheme/manager/package/version prefix and the trailing
+/// descriptor markers, returning the bare identifier (`search`, `Engine`).
+///
+/// Returns `None` for an empty string, a `local …` moniker, or anything with no
+/// recoverable identifier — callers treat `None` as "not comparable" and skip it.
+/// This is deliberately language-agnostic (invariant I6): it operates purely on
+/// the moniker grammar, not on any single language's naming rules.
+pub fn moniker_leaf(symbol: &str) -> Option<String> {
+    let symbol = symbol.trim();
+    if symbol.is_empty() || symbol.starts_with("local ") {
+        return None;
+    }
+
+    // The descriptor is the final whitespace-separated segment. For a well-formed
+    // moniker the earlier segments are scheme/manager/package/version; a bare
+    // identifier with no spaces is treated as its own descriptor.
+    let descriptor = symbol.rsplit(' ').next().unwrap_or(symbol);
+
+    // Strip trailing descriptor suffix markers: `().` (method/function),
+    // `#` (type), `/` (namespace), `.` (term), and any `()` parameter hint.
+    let leaf =
+        descriptor.trim_end_matches("().").trim_end_matches("()").trim_end_matches(['#', '/', '.']);
+
+    // A descriptor can be nested (`Engine#search().` -> `Engine#search` after the
+    // trim above); take the final `#`/`/`/`.`-separated identifier segment.
+    let leaf = leaf.rsplit(['#', '/', '.', '(']).find(|s| !s.is_empty()).unwrap_or(leaf);
+
+    let leaf = leaf.trim();
+    if leaf.is_empty() {
+        None
+    } else {
+        Some(leaf.to_string())
+    }
+}
+
+/// Heuristic: does `name` look like a SCIP moniker (as opposed to a plain
+/// qualified name)? SCIP monikers are space-separated and carry a scheme token.
+/// Used by the cross-corpus resolver to scan a graph for moniker nodes without a
+/// separate moniker store (invariant I5: no new index-time requirement).
+pub fn looks_like_moniker(name: &str) -> bool {
+    let name = name.trim();
+    name.contains(' ') && (name.starts_with("scip-") || name.starts_with("local "))
+}
+
 /// Ingester for SCIP protobuf index files.
 pub struct ScipIngester;
 
@@ -80,6 +132,9 @@ impl ScipIngester {
                         provenance: EdgeProvenance::CodeDefines,
                         target_corpus: None,
                         confidence: Some(ResolutionConfidence::High),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
                     });
                     definitions.push((start_line, end_line, symbol));
                 } else {
@@ -112,6 +167,9 @@ impl ScipIngester {
                     provenance: EdgeProvenance::CodeCalls,
                     target_corpus: None,
                     confidence: Some(ResolutionConfidence::High),
+                    target_path: None,
+                    target_symbol: None,
+                    target_kind: None,
                 });
             }
         }
@@ -125,6 +183,40 @@ impl ScipIngester {
 mod tests {
     use super::*;
     use scip::types::{Document, Index, Occurrence, SymbolRole};
+
+    #[test]
+    fn test_moniker_leaf_extracts_bare_identifier() {
+        // Function/method moniker: trailing `().`.
+        assert_eq!(
+            moniker_leaf("scip-rust cargo ctxvault-core 0.0.22 search()."),
+            Some("search".to_string())
+        );
+        // Type moniker: trailing `#`.
+        assert_eq!(
+            moniker_leaf("scip-rust cargo ctxvault-core 0.0.22 Engine#"),
+            Some("Engine".to_string())
+        );
+        // Nested descriptor: `Engine#search().` -> leaf `search`.
+        assert_eq!(
+            moniker_leaf("scip-rust cargo ctxvault-core 0.0.22 Engine#search()."),
+            Some("search".to_string())
+        );
+        // Namespace/term markers.
+        assert_eq!(
+            moniker_leaf("scip-typescript npm pkg 1.0.0 search."),
+            Some("search".to_string())
+        );
+        // Absence / non-comparable inputs return None (I5 fall-through).
+        assert_eq!(moniker_leaf(""), None);
+        assert_eq!(moniker_leaf("local 0"), None);
+    }
+
+    #[test]
+    fn test_looks_like_moniker() {
+        assert!(looks_like_moniker("scip-rust cargo ctxvault-core 0.0.22 search()."));
+        assert!(!looks_like_moniker("search"));
+        assert!(!looks_like_moniker("crate::search::Engine"));
+    }
 
     #[test]
     fn test_scip_index_ingestion() {

@@ -622,6 +622,7 @@ dependencies = [
  "serde_yaml",
  "sysinfo",
  "tantivy",
+ "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokenizers",
@@ -674,6 +675,7 @@ dependencies = [
  "tree-sitter-wgsl-bevy",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+ "zstd",
 ]
 
 [[package]]

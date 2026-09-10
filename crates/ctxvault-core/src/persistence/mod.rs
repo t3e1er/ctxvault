@@ -116,6 +116,18 @@ CREATE INDEX IF NOT EXISTS idx_edges_class_source ON edges(edge_class, source);
 CREATE INDEX IF NOT EXISTS idx_edges_class_target ON edges(edge_class, target);
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+
+CREATE TABLE IF NOT EXISTS external_refs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    caller_scope_path TEXT NOT NULL,
+    raw_target TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_refs_file ON external_refs(file_path);
+CREATE INDEX IF NOT EXISTS idx_external_refs_target ON external_refs(raw_target);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -903,6 +915,89 @@ impl Store {
 
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
     }
+
+    // ------------------------------------------------------------------
+    // External references (unresolved call/import targets)
+    // ------------------------------------------------------------------
+
+    /// Delete all external references captured for a file.
+    ///
+    /// Called before re-inserting the fresh set on re-index so that
+    /// re-indexing a file is idempotent (mirrors [`Store::delete_edges_for_node`]).
+    pub fn clear_external_refs_for_file(&self, file_path: &str) -> Result<()> {
+        let _ = self
+            .conn()
+            .execute("DELETE FROM external_refs WHERE file_path = ?1", params![file_path])
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Insert a batch of external references for a file within a single transaction.
+    pub fn insert_external_refs(
+        &self,
+        file_path: &str,
+        refs: &[ctxvault_common::types::ExternalRef],
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(|e| Error::Database(e.to_string()))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO external_refs (file_path, caller_scope_path, raw_target, kind, confidence)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            for r in refs {
+                stmt.execute(params![
+                    file_path,
+                    r.caller_scope_path,
+                    r.raw_target,
+                    external_ref_kind_to_str(r.kind),
+                    resolution_confidence_to_str(r.confidence),
+                ])
+                .map_err(|e| Error::Database(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Retrieve every external reference in the store.
+    pub fn get_external_refs(&self) -> Result<Vec<ctxvault_common::types::ExternalRef>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT caller_scope_path, raw_target, kind, confidence FROM external_refs ORDER BY id",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], external_ref_from_row)
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Retrieve the external references captured for a single file.
+    pub fn get_external_refs_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::ExternalRef>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT caller_scope_path, raw_target, kind, confidence
+                 FROM external_refs WHERE file_path = ?1 ORDER BY id",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![file_path], external_ref_from_row)
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,6 +1132,29 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         Store::get_all_code_symbols(self)
     }
 
+    fn clear_external_refs_for_file(&self, file_path: &str) -> Result<()> {
+        Store::clear_external_refs_for_file(self, file_path)
+    }
+
+    fn insert_external_refs(
+        &self,
+        file_path: &str,
+        refs: &[ctxvault_common::types::ExternalRef],
+    ) -> Result<()> {
+        Store::insert_external_refs(self, file_path, refs)
+    }
+
+    fn get_external_refs(&self) -> Result<Vec<ctxvault_common::types::ExternalRef>> {
+        Store::get_external_refs(self)
+    }
+
+    fn get_external_refs_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ctxvault_common::types::ExternalRef>> {
+        Store::get_external_refs_for_file(self, file_path)
+    }
+
     fn checkpoint(&self) -> Result<()> {
         Store::checkpoint(self)
     }
@@ -1049,6 +1167,59 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
 /// Current Unix timestamp in seconds.
 fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+/// Persisted string tag for an [`ExternalRefKind`](ctxvault_common::types::ExternalRefKind).
+fn external_ref_kind_to_str(kind: ctxvault_common::types::ExternalRefKind) -> &'static str {
+    use ctxvault_common::types::ExternalRefKind;
+    match kind {
+        ExternalRefKind::Call => "call",
+        ExternalRefKind::Import => "import",
+    }
+}
+
+/// Parse a persisted external-reference kind tag, defaulting to `Call`.
+fn external_ref_kind_from_str(s: &str) -> ctxvault_common::types::ExternalRefKind {
+    use ctxvault_common::types::ExternalRefKind;
+    match s {
+        "import" => ExternalRefKind::Import,
+        _ => ExternalRefKind::Call,
+    }
+}
+
+/// Persisted string tag for a [`ResolutionConfidence`](ctxvault_common::types::ResolutionConfidence).
+fn resolution_confidence_to_str(
+    confidence: ctxvault_common::types::ResolutionConfidence,
+) -> &'static str {
+    match confidence {
+        ctxvault_common::types::ResolutionConfidence::High => "high",
+        ctxvault_common::types::ResolutionConfidence::Medium => "medium",
+        ctxvault_common::types::ResolutionConfidence::Speculative => "speculative",
+    }
+}
+
+/// Parse a persisted resolution-confidence tag, defaulting to `Speculative`.
+fn resolution_confidence_from_str(s: &str) -> ctxvault_common::types::ResolutionConfidence {
+    match s {
+        "high" => ctxvault_common::types::ResolutionConfidence::High,
+        "medium" => ctxvault_common::types::ResolutionConfidence::Medium,
+        _ => ctxvault_common::types::ResolutionConfidence::Speculative,
+    }
+}
+
+/// Map an `external_refs` row (`caller_scope_path, raw_target, kind, confidence`)
+/// to a domain [`ExternalRef`](ctxvault_common::types::ExternalRef).
+fn external_ref_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ctxvault_common::types::ExternalRef> {
+    let kind_str: String = row.get(2)?;
+    let conf_str: String = row.get(3)?;
+    Ok(ctxvault_common::types::ExternalRef {
+        caller_scope_path: row.get(0)?,
+        raw_target: row.get(1)?,
+        kind: external_ref_kind_from_str(&kind_str),
+        confidence: resolution_confidence_from_str(&conf_str),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,5 +1627,50 @@ mod tests {
         store.delete_edges_for_node("file_b.rs > func_b").unwrap();
         let remaining = store.get_edges_for_node("file_b.rs > func_b").unwrap();
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_external_refs_round_trip_and_idempotent() {
+        use ctxvault_common::types::{ExternalRef, ExternalRefKind, ResolutionConfidence};
+
+        let store = Store::open_in_memory().unwrap();
+
+        let refs = vec![
+            ExternalRef {
+                caller_scope_path: "src/a.rs > run".to_string(),
+                raw_target: "external_crate::do_thing".to_string(),
+                kind: ExternalRefKind::Call,
+                confidence: ResolutionConfidence::Speculative,
+            },
+            ExternalRef {
+                caller_scope_path: "src/a.rs".to_string(),
+                raw_target: "serde::Serialize".to_string(),
+                kind: ExternalRefKind::Import,
+                confidence: ResolutionConfidence::Speculative,
+            },
+        ];
+
+        store.insert_external_refs("src/a.rs", &refs).unwrap();
+
+        // Round-trip: all rows read back, kind/confidence preserved.
+        let all = store.get_external_refs().unwrap();
+        assert_eq!(all.len(), 2);
+        let call = all.iter().find(|r| r.kind == ExternalRefKind::Call).unwrap();
+        assert_eq!(call.raw_target, "external_crate::do_thing");
+        assert_eq!(call.confidence, ResolutionConfidence::Speculative);
+        let import = all.iter().find(|r| r.kind == ExternalRefKind::Import).unwrap();
+        assert_eq!(import.raw_target, "serde::Serialize");
+
+        // Per-file read.
+        assert_eq!(store.get_external_refs_for_file("src/a.rs").unwrap().len(), 2);
+
+        // Idempotent re-index cycle (clear-then-insert) does not duplicate rows.
+        store.clear_external_refs_for_file("src/a.rs").unwrap();
+        store.insert_external_refs("src/a.rs", &refs).unwrap();
+        assert_eq!(store.get_external_refs().unwrap().len(), 2);
+
+        // Clearing one file leaves it empty.
+        store.clear_external_refs_for_file("src/a.rs").unwrap();
+        assert!(store.get_external_refs().unwrap().is_empty());
     }
 }

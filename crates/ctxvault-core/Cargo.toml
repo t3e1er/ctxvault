@@ -52,6 +52,10 @@ notify = { workspace = true }
 notify-debouncer-full = { workspace = true }
 fs4 = { workspace = true }
 
+# Compression / Packaging
+tar = { workspace = true }
+zstd = { workspace = true }
+
 # Hashing
 blake3 = { workspace = true }
 

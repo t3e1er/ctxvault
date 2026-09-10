@@ -34,7 +34,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
 
 use ctxvault_common::{
-    types::{Chunk, CodeSymbol, Document, Edge},
+    types::{Chunk, CodeSymbol, Document, Edge, ExternalRef},
     Error, Result,
 };
 
@@ -58,6 +58,9 @@ pub struct ParsedFileRecord {
     pub doc_metadata: Option<Document>,
     /// Extracted structural code or markdown edges.
     pub graph_edges: Vec<ASTEdge>,
+    /// Unresolved call/import targets captured for later cross-corpus resolution
+    /// (empty for markdown notes).
+    pub external_refs: Vec<ExternalRef>,
     /// Whether the file is a source code file.
     pub is_code: bool,
 }

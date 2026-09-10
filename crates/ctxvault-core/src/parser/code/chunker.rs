@@ -25,12 +25,27 @@ pub struct CodeParseResult {
 pub struct CodeChunker;
 
 impl CodeChunker {
+    /// Maximum size of a source file eligible for full Tree-sitter AST parsing (2 MB).
+    /// Files exceeding this limit (e.g. 100MB generated C grammars, huge minified bundles)
+    /// are skipped to prevent CPU exhaustion on generated data tables.
+    pub const MAX_CODE_FILE_SIZE_BYTES: usize = 2 * 1024 * 1024;
+
     /// Parse and chunk a source code file.
     pub fn parse_and_chunk(
         file_path: &Path,
         content: &str,
         config: &ChunkingConfig,
     ) -> Option<CodeParseResult> {
+        if content.len() > Self::MAX_CODE_FILE_SIZE_BYTES {
+            tracing::info!(
+                "Skipping Tree-sitter AST parsing for oversized file {} ({} bytes > {} max)",
+                file_path.display(),
+                content.len(),
+                Self::MAX_CODE_FILE_SIZE_BYTES
+            );
+            return None;
+        }
+
         let lang = detect_language(file_path)?;
         let mut parser = Parser::new();
         if let Err(e) = parser.set_language(&lang.tree_sitter_language()) {
@@ -60,6 +75,7 @@ struct AstExtractor<'a> {
     chunks: Vec<Chunk>,
     symbols: Vec<CodeSymbol>,
     chunk_index: usize,
+    depth: usize,
 }
 
 impl<'a> AstExtractor<'a> {
@@ -78,6 +94,7 @@ impl<'a> AstExtractor<'a> {
             chunks: Vec::new(),
             symbols: Vec::new(),
             chunk_index: 0,
+            depth: 0,
         }
     }
 
@@ -89,7 +106,18 @@ impl<'a> AstExtractor<'a> {
         }
     }
 
+    const MAX_AST_DEPTH: usize = 256;
+
     fn traverse(&mut self, node: Node) {
+        if self.depth >= Self::MAX_AST_DEPTH {
+            return;
+        }
+        self.depth += 1;
+        self.traverse_inner(node);
+        self.depth -= 1;
+    }
+
+    fn traverse_inner(&mut self, node: Node) {
         let lang = self.language;
 
         let symbol_info = self.classify_node(node);
@@ -388,6 +416,43 @@ impl<'a> AstExtractor<'a> {
                 }
             }
             return None;
+        }
+
+        // HCL custom block handling: capture block type and labels (e.g. `aws_s3_bucket.b` or `module.vpc`)
+        if lang == SupportedLanguage::Hcl && node.kind() == "block" {
+            let mut cursor = node.walk();
+            let mut block_type = String::new();
+            let mut labels = Vec::new();
+
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" && block_type.is_empty() {
+                    block_type = self.node_text(child).to_string();
+                } else if child.kind() == "string_lit" {
+                    let text = self.node_text(child).trim_matches('"').to_string();
+                    labels.push(text);
+                }
+            }
+
+            let name = match labels.len() {
+                2 => format!("{}.{}", labels[0], labels[1]),
+                1 => {
+                    if block_type.is_empty() || block_type == "resource" || block_type == "data" {
+                        labels[0].clone()
+                    } else {
+                        format!("{}.{}", block_type, labels[0])
+                    }
+                }
+                _ => {
+                    if !block_type.is_empty() {
+                        block_type
+                    } else {
+                        self.find_child_identifier(node).unwrap_or_else(|| "block".to_string())
+                    }
+                }
+            };
+
+            let sig = self.extract_first_line(node);
+            return Some((CodeSymbolType::Struct, name, sig));
         }
 
         let mut sym_type = spec.classify_symbol(node)?;
@@ -1189,5 +1254,24 @@ deploy_app() {
         let tla_code = "---- MODULE Test ----\nEXTENDS Naturals\nVARIABLE x\nInit == x = 0\n====";
         let res = CodeChunker::parse_and_chunk(Path::new("spec.tla"), tla_code, &config).unwrap();
         assert!(!res.chunks.is_empty());
+    }
+
+    #[test]
+    fn test_hcl_resource_extraction() {
+        let config = ChunkingConfig::default();
+        let hcl_code = "resource \"aws_s3_bucket\" \"b\" { bucket = \"my-tf-test-bucket\" }";
+        let res = CodeChunker::parse_and_chunk(Path::new("main.tf"), hcl_code, &config).unwrap();
+        assert!(
+            res.symbols
+                .iter()
+                .any(|s| s.name == "aws_s3_bucket.b" && s.symbol_type == CodeSymbolType::Struct),
+            "HCL resource block must yield Struct symbol named 'aws_s3_bucket.b', got: {:?}",
+            res.symbols
+        );
+        assert!(
+            res.symbols.iter().any(|s| s.scope_path == "aws_s3_bucket.b"),
+            "HCL resource block must have scope_path 'aws_s3_bucket.b', got: {:?}",
+            res.symbols
+        );
     }
 }

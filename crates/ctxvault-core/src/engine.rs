@@ -281,14 +281,25 @@ impl Engine {
 
                 // 5. Code Graph
                 self.graph.remove_edges_for_node(rel_path);
-                let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
-                    path,
-                    content,
-                    &res.symbols,
-                    &res.symbols,
-                );
-                for edge in &edges {
+                let symbol_index =
+                    crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
+                let extraction =
+                    crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                        path,
+                        content,
+                        &res.symbols,
+                        &symbol_index,
+                    );
+                for edge in &extraction.edges {
                     self.graph.add_code_edge(edge);
+                }
+
+                // 6. Persist unresolved external references, replacing any prior
+                //    set so re-indexing this file stays idempotent (mirrors the
+                //    graph edge clear above).
+                self.store.clear_external_refs_for_file(rel_path)?;
+                if !extraction.external_refs.is_empty() {
+                    self.store.insert_external_refs(rel_path, &extraction.external_refs)?;
                 }
             }
 
@@ -545,6 +556,12 @@ impl Engine {
             for edge in &record.graph_edges {
                 self.graph.add_code_edge(edge);
             }
+
+            // 6. Unresolved external references (replace prior set for idempotency).
+            self.store.clear_external_refs_for_file(path)?;
+            if !record.external_refs.is_empty() {
+                self.store.insert_external_refs(path, &record.external_refs)?;
+            }
         } else if let Some(mut doc) = record.doc_metadata {
             // 1. SQLite Store
             self.store.insert_file(
@@ -688,52 +705,56 @@ impl Engine {
             let commit_time_threshold = Duration::from_secs(30);
 
             std::thread::scope(|s| {
-                for _ in 0..num_cpus {
+                for i in 0..num_cpus {
                     let work_rx_clone = work_rx.clone();
                     let ast_tx_clone = ast_tx.clone();
                     let chunk_tx_clone = chunk_tx_opt.clone();
                     let chunking_ref = &chunking_config;
 
-                    s.spawn(move || {
-                        while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                            let content = match Self::read_file_lossy(&full_path) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    warn!("Failed to read {}: {}", rel_path, e);
-                                    continue;
-                                }
-                            };
-                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                    std::thread::Builder::new()
+                        .name(format!("indexer-worker-{}", i))
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn_scoped(s, move || {
+                            while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                                let content = match Self::read_file_lossy(&full_path) {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        warn!("Failed to read {}: {}", rel_path, e);
+                                        continue;
+                                    }
+                                };
+                                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-                            let record = match parse_file_record(
-                                &rel_path,
-                                &content,
-                                hash,
-                                chunking_ref,
-                                index_mode,
-                            ) {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    warn!("Failed to parse {}: {}", rel_path, e);
-                                    continue;
-                                }
-                            };
+                                let record = match parse_file_record(
+                                    &rel_path,
+                                    &content,
+                                    hash,
+                                    chunking_ref,
+                                    index_mode,
+                                ) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        warn!("Failed to parse {}: {}", rel_path, e);
+                                        continue;
+                                    }
+                                };
 
-                            if let Some(ref tx) = chunk_tx_clone {
-                                for chunk in &record.chunks {
-                                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                        if tx.send(chunk.clone()).is_err() {
-                                            break;
+                                if let Some(ref tx) = chunk_tx_clone {
+                                    for chunk in &record.chunks {
+                                        if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                            if tx.send(chunk.clone()).is_err() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            if ast_tx_clone.send(record).is_err() {
-                                break;
+                                if ast_tx_clone.send(record).is_err() {
+                                    break;
+                                }
                             }
-                        }
-                    });
+                        })
+                        .expect("failed to spawn indexer worker thread");
                 }
 
                 // Drop our local handles so channels disconnect when workers finish
@@ -762,10 +783,9 @@ impl Engine {
                                 let _ = pipeline.try_recv_completed(vi);
                             }
                         }
-                        if let Err(e) = self.commit() {
+                        if let Err(e) = self.commit_intermediate() {
                             warn!("Intermediate commit failed: {}", e);
                         }
-                        let _ = self.store.checkpoint();
                         uncommitted_count = 0;
                         last_commit_time = Instant::now();
                     }
@@ -1030,63 +1050,67 @@ impl Engine {
 
         std::thread::scope(|s| {
             // 1. Spawn Stage A Worker Threads
-            for _ in 0..num_cpus {
+            for i in 0..num_cpus {
                 let work_rx_clone = work_rx.clone();
                 let ast_tx_clone = ast_tx.clone();
                 let chunk_tx_clone = chunk_tx_opt.clone();
                 let stored_map_ref = &stored_map;
                 let chunking_ref = &chunking_config;
 
-                s.spawn(move || {
-                    while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                        let content = match Self::read_file_lossy(&full_path) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!("Failed to read {}: {}", rel_path, e);
-                                continue;
-                            }
-                        };
-                        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-
-                        if resume {
-                            if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
-                                if *stored_hash == hash {
+                std::thread::Builder::new()
+                    .name(format!("indexer-worker-{}", i))
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
+                        while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
+                            let content = match Self::read_file_lossy(&full_path) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    warn!("Failed to read {}: {}", rel_path, e);
                                     continue;
                                 }
-                            }
-                        }
+                            };
+                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-                        let record = match parse_file_record(
-                            &rel_path,
-                            &content,
-                            hash,
-                            chunking_ref,
-                            index_mode,
-                        ) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                warn!("Failed to parse {}: {}", rel_path, e);
-                                continue;
-                            }
-                        };
-
-                        // Stream anchor chunks to GPU prefetch worker (Stage B)
-                        if let Some(ref tx) = chunk_tx_clone {
-                            for chunk in &record.chunks {
-                                if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                    if tx.send(chunk.clone()).is_err() {
-                                        break;
+                            if resume {
+                                if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
+                                    if *stored_hash == hash {
+                                        continue;
                                     }
                                 }
                             }
-                        }
 
-                        // Emit parsed record to Stage C storage sink
-                        if ast_tx_clone.send(record).is_err() {
-                            break;
+                            let record = match parse_file_record(
+                                &rel_path,
+                                &content,
+                                hash,
+                                chunking_ref,
+                                index_mode,
+                            ) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!("Failed to parse {}: {}", rel_path, e);
+                                    continue;
+                                }
+                            };
+
+                            // Stream anchor chunks to GPU prefetch worker (Stage B)
+                            if let Some(ref tx) = chunk_tx_clone {
+                                for chunk in &record.chunks {
+                                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                        if tx.send(chunk.clone()).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Emit parsed record to Stage C storage sink
+                            if ast_tx_clone.send(record).is_err() {
+                                break;
+                            }
                         }
-                    }
-                });
+                    })
+                    .expect("failed to spawn indexer worker thread");
             }
 
             // Drop our local handles so channels disconnect when workers finish
@@ -1119,10 +1143,9 @@ impl Engine {
                             let _ = pipeline.try_recv_completed(vi);
                         }
                     }
-                    if let Err(e) = self.commit() {
+                    if let Err(e) = self.commit_intermediate() {
                         warn!("Intermediate commit failed: {}", e);
                     }
-                    let _ = self.store.checkpoint();
                     state.updated_at = now_unix();
                     let _ = self.store.update_indexing_state(&state);
                     debug!(
@@ -1145,10 +1168,9 @@ impl Engine {
             }
         }
 
-        // Commit any remaining uncommitted files
+        // Commit any remaining uncommitted files before post-processing passes
         if uncommitted_count > 0 {
-            self.commit()?;
-            let _ = self.store.checkpoint();
+            self.commit_intermediate()?;
         }
 
         // Second pass: build tag-based edges with all documents available
@@ -1159,7 +1181,7 @@ impl Engine {
         // Second pass: resolve cross-file code call graph edges now that all symbols are indexed
         let _ = self.resolve_cross_file_code_edges();
 
-        // Final commit and mark Completed
+        // Final commit and mark Completed (saves graph.bin and syncs all edges to SQLite once)
         self.commit()?;
         let _ = self.store.checkpoint();
         state.status = IndexingStatus::Completed;
@@ -1170,6 +1192,14 @@ impl Engine {
         info!("Paginated indexing complete: {} total files indexed/verified", total_files);
 
         Ok(total_files)
+    }
+
+    /// Commit pending lexical updates and checkpoints metadata without
+    /// incurring quadratic graph re-serialization and edge table rewrites.
+    pub fn commit_intermediate(&mut self) -> Result<()> {
+        self.bm25.commit()?;
+        let _ = self.store.checkpoint();
+        Ok(())
     }
 
     /// Commit all pending changes (Tantivy commit, SQLite edges sync, graph save, vector index save).
@@ -1250,16 +1280,25 @@ impl Engine {
             };
 
             let file_symbols = self.store.get_code_symbols_for_file(&f.path)?;
-            let edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
-                rel_p,
-                &content,
-                &file_symbols,
-                &symbol_index,
-            );
+            let extraction =
+                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                    rel_p,
+                    &content,
+                    &file_symbols,
+                    &symbol_index,
+                );
 
-            for edge in &edges {
+            for edge in &extraction.edges {
                 self.graph.add_code_edge(edge);
                 edges_added += 1;
+            }
+
+            // Persist unresolved call/import targets as external references for a
+            // later cross-corpus reconciliation pass. Clear-then-insert per file
+            // keeps re-indexing idempotent and does not affect intra-repo edges.
+            self.store.clear_external_refs_for_file(&f.path)?;
+            if !extraction.external_refs.is_empty() {
+                self.store.insert_external_refs(&f.path, &extraction.external_refs)?;
             }
         }
 
@@ -1495,6 +1534,20 @@ impl Engine {
     /// Get a mutable reference to the corpus config.
     pub fn config_mut(&mut self) -> &mut CorpusConfig {
         &mut self.config
+    }
+
+    /// Get the index directory for this engine.
+    pub fn index_dir(&self) -> &Path {
+        &self.index_dir
+    }
+
+    /// Get the embedding dimensions for this engine.
+    pub fn embedding_dimension(&self) -> usize {
+        self.vector_index.as_ref().map(|vi| vi.dimensions()).unwrap_or_else(|| {
+            crate::embedding::ModelName::from_str_name(&self.config.embedding.model)
+                .unwrap_or_default()
+                .dimensions()
+        })
     }
 
     /// Check whether vectors are stale (model version mismatch).
@@ -1791,6 +1844,7 @@ fn parse_file_record(
         let mut raw_chunks = Vec::new();
         let mut symbols = Vec::new();
         let mut graph_edges = Vec::new();
+        let mut external_refs = Vec::new();
 
         if let Some(res) = parse_res {
             for c in &res.chunks {
@@ -1819,12 +1873,17 @@ fn parse_file_record(
                 });
             }
 
-            graph_edges = crate::graph::code::CodeGraphExtractor::extract_edges_for_file(
-                path,
-                content,
-                &res.symbols,
-                &res.symbols,
-            );
+            let symbol_index =
+                crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
+            let extraction =
+                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                    path,
+                    content,
+                    &res.symbols,
+                    &symbol_index,
+                );
+            graph_edges = extraction.edges;
+            external_refs = extraction.external_refs;
 
             raw_chunks = res.chunks;
             symbols = res.symbols;
@@ -1838,6 +1897,7 @@ fn parse_file_record(
             symbols,
             doc_metadata: None,
             graph_edges,
+            external_refs,
             is_code: true,
         })
     } else {
@@ -1883,6 +1943,7 @@ fn parse_file_record(
             symbols: Vec::new(),
             doc_metadata: Some(doc),
             graph_edges: Vec::new(),
+            external_refs: Vec::new(),
             is_code: false,
         })
     }
