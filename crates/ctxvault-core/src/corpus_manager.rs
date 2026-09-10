@@ -485,10 +485,7 @@ impl CorpusManager {
             for node in engine.graph().node_paths() {
                 if crate::graph::scip::looks_like_moniker(&node) {
                     if let Some(leaf) = crate::graph::scip::moniker_leaf(&node) {
-                        scip_by_leaf
-                            .entry(leaf)
-                            .or_default()
-                            .push((corpus_name.clone(), node));
+                        scip_by_leaf.entry(leaf).or_default().push((corpus_name.clone(), node));
                     }
                 }
             }
@@ -748,8 +745,10 @@ impl CorpusManager {
             let refs = engine.store().get_external_refs()?;
             // Cache resolution per raw_target string within this source corpus to avoid
             // redundant cross-corpus lookups and repeated SQLite queries on identical targets.
-            let mut memo: std::collections::HashMap<String, Option<(String, CodeSymbol, ResolverKind)>> =
-                std::collections::HashMap::new();
+            let mut memo: std::collections::HashMap<
+                String,
+                Option<(String, CodeSymbol, ResolverKind)>,
+            > = std::collections::HashMap::new();
 
             for ext in refs {
                 let resolved = match memo.get(&ext.raw_target) {

@@ -716,45 +716,45 @@ impl Engine {
                         .stack_size(16 * 1024 * 1024)
                         .spawn_scoped(s, move || {
                             while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                            let content = match Self::read_file_lossy(&full_path) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    warn!("Failed to read {}: {}", rel_path, e);
-                                    continue;
-                                }
-                            };
-                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                                let content = match Self::read_file_lossy(&full_path) {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        warn!("Failed to read {}: {}", rel_path, e);
+                                        continue;
+                                    }
+                                };
+                                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-                            let record = match parse_file_record(
-                                &rel_path,
-                                &content,
-                                hash,
-                                chunking_ref,
-                                index_mode,
-                            ) {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    warn!("Failed to parse {}: {}", rel_path, e);
-                                    continue;
-                                }
-                            };
+                                let record = match parse_file_record(
+                                    &rel_path,
+                                    &content,
+                                    hash,
+                                    chunking_ref,
+                                    index_mode,
+                                ) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        warn!("Failed to parse {}: {}", rel_path, e);
+                                        continue;
+                                    }
+                                };
 
-                            if let Some(ref tx) = chunk_tx_clone {
-                                for chunk in &record.chunks {
-                                    if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
-                                        if tx.send(chunk.clone()).is_err() {
-                                            break;
+                                if let Some(ref tx) = chunk_tx_clone {
+                                    for chunk in &record.chunks {
+                                        if chunk.embed_policy == ChunkEmbedPolicy::Anchor {
+                                            if tx.send(chunk.clone()).is_err() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            if ast_tx_clone.send(record).is_err() {
-                                break;
+                                if ast_tx_clone.send(record).is_err() {
+                                    break;
+                                }
                             }
-                        }
-                    })
-                    .expect("failed to spawn indexer worker thread");
+                        })
+                        .expect("failed to spawn indexer worker thread");
                 }
 
                 // Drop our local handles so channels disconnect when workers finish
