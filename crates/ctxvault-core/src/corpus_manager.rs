@@ -663,7 +663,7 @@ impl CorpusManager {
         Ok(created)
     }
 
-    /// Post-index linking pass that resolves code [`ExternalRef`]s across corpora.
+    /// Post-index linking pass that resolves code [`ExternalRef`](ctxvault_common::types::ExternalRef)s across corpora.
     ///
     /// Where [`Self::link_cross_corpus_symbols`] links the *doc* side
     /// (frontmatter-provenance targets), this pass links the *code* side. Every
@@ -710,7 +710,7 @@ impl CorpusManager {
     ///
     /// # Idempotency
     ///
-    /// The pass relies solely on [`KnowledgeGraph::add_cross_corpus_edge`]'s
+    /// The pass relies solely on [`crate::graph::KnowledgeGraph::add_cross_corpus_edge`]'s
     /// same-type in-place de-duplication (the exact mechanism the doc pass uses):
     /// re-emitting the same `(source, target, edge_type)` updates the edge in
     /// place rather than adding a parallel one, so the cross-edge count is stable

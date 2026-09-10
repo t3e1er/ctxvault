@@ -67,7 +67,7 @@ pub struct GraphEdge {
     pub target_kind: Option<String>,
 }
 
-/// On-disk schema version stamped into [`GraphData`].
+/// On-disk schema version stamped into `GraphData`.
 ///
 /// `graph.bin` uses the non-self-describing postcard format, so any change to
 /// the persisted shape of [`GraphNode`] / [`GraphEdge`] (such as adding the
@@ -835,7 +835,7 @@ impl KnowledgeGraph {
 
     /// Deserialize a graph from a file.
     ///
-    /// Returns [`Error::Graph`] when the persisted [`GraphData::version`] does not
+    /// Returns [`Error::Graph`] when the persisted `GraphData::version` does not
     /// match [`GRAPH_SCHEMA_VERSION`]. `graph.bin` is a fully derived, disposable
     /// artifact, so callers (e.g. the engine builder) treat any load error as a
     /// signal to start fresh and rebuild from the authoritative source on disk —
