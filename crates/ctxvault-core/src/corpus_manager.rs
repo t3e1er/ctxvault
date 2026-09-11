@@ -226,7 +226,7 @@ impl CorpusManager {
                 chunking: ctxvault_common::config::ChunkingConfig::default(),
                 embedding: ctxvault_common::config::EmbeddingConfig::default(),
                 graph: ctxvault_common::config::GraphConfig::default(),
-                templates_dir: ".templates".to_string(),
+                templates_dir: None,
             }
         };
 
@@ -279,7 +279,7 @@ impl CorpusManager {
                 model: manifest.embedding_model.clone(),
             },
             graph: ctxvault_common::config::GraphConfig::default(),
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
 
         self.add_corpus_with_index_dir(config, &target_index_dir)?;
@@ -1065,7 +1065,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         }
     }
 
@@ -1203,7 +1203,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: vec![implements] },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         }
     }
 

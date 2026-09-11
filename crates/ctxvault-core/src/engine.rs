@@ -29,6 +29,7 @@ use crate::index::{
 use crate::parser;
 use crate::parser::chunker;
 use crate::persistence::Store;
+use crate::template::Template;
 use crate::vector_index::VectorIndex;
 
 /// Detailed indexing status response for client queries and monitoring.
@@ -378,7 +379,8 @@ impl Engine {
 
         // 7. Remove old edges and rebuild from document.
         self.graph.remove_edges_for_node(rel_path);
-        self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
+        let edge_configs = self.effective_edge_configs_for_document(&doc, None);
+        self.graph.build_edges_for_document(&doc, &edge_configs, &[]);
 
         debug!("Staged markdown file: {}", rel_path);
         Ok((pending, Some(doc)))
@@ -504,6 +506,43 @@ impl Engine {
         Ok(())
     }
 
+    /// Load all markdown templates defined in the corpus templates directory,
+    /// using either explicitly configured templates_dir or auto-discovery fallbacks.
+    pub fn load_templates(&self) -> Result<HashMap<String, Template>> {
+        let corpus_path = Path::new(&self.config.path);
+        let (_resolved, templates) =
+            Template::discover_and_load(corpus_path, self.config.templates_dir.as_deref())?;
+        Ok(templates)
+    }
+
+    /// Discover and load all markdown templates along with the resolved relative directory.
+    pub fn discover_templates(
+        &self,
+    ) -> Result<(Option<std::path::PathBuf>, HashMap<String, Template>)> {
+        let corpus_path = Path::new(&self.config.path);
+        Template::discover_and_load(corpus_path, self.config.templates_dir.as_deref())
+    }
+
+    /// Compute the effective edge type configurations for a document, combining
+    /// corpus-level edge configs with any edge declarations in the document's template.
+    pub fn effective_edge_configs_for_document(
+        &self,
+        doc: &Document,
+        templates: Option<&HashMap<String, Template>>,
+    ) -> Vec<ctxvault_common::config::EdgeTypeConfig> {
+        let mut configs = self.config.graph.edge_types.clone();
+        if let Some(ref tmpl_name) = doc.template {
+            let loaded = if templates.is_none() { self.load_templates().ok() } else { None };
+            let tmpl_map = templates.or(loaded.as_ref());
+            if let Some(tmpl) = tmpl_map.and_then(|m| m.get(tmpl_name)) {
+                for edge in &tmpl.edges {
+                    configs.push(edge.to_edge_type_config());
+                }
+            }
+        }
+        configs
+    }
+
     /// Perform a delta scan with default batch size.
     pub fn delta_scan(&mut self) -> Result<DeltaScanResult> {
         self.delta_scan_paginated(50)
@@ -598,7 +637,8 @@ impl Engine {
 
             // 5. Graph
             self.graph.remove_edges_for_node(path);
-            self.graph.build_edges_for_document(&doc, &self.config.graph.edge_types, &[]);
+            let edge_configs = self.effective_edge_configs_for_document(&doc, None);
+            self.graph.build_edges_for_document(&doc, &edge_configs, &[]);
 
             if !tag_configs.is_empty() && !doc.tags.is_empty() {
                 doc.content.clear();
@@ -2042,7 +2082,7 @@ mod tests {
                     allowed_target_templates: None,
                 }],
             },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         }
     }
 

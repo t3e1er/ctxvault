@@ -34,7 +34,7 @@ pub fn export_artifact(
         chunking: Default::default(),
         embedding: Default::default(),
         graph: Default::default(),
-        templates_dir: ".templates".to_string(),
+        templates_dir: None,
     };
 
     let mut engine = ctxvault_core::engine::Engine::open(config, index_dir)?;

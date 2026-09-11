@@ -481,10 +481,13 @@ async fn main() -> anyhow::Result<()> {
 
     if !cli.corpora.is_empty() {
         for spec in &cli.corpora {
-            let (name_override, corpus_path) = parse_corpus_spec(spec);
+            let (name_override, corpus_path, templates_override) = parse_corpus_spec(spec);
             let mut config = load_or_default_config(&corpus_path)?;
             if let Some(name) = name_override {
                 config.name = name;
+            }
+            if let Some(tmpl) = templates_override {
+                config.templates_dir = Some(tmpl);
             }
             if let Some(mode) = cli.index_mode {
                 config.index_mode = mode.into();
@@ -701,12 +704,29 @@ fn spawn_daemon(
     Ok(())
 }
 
-/// Parse a `--corpus` spec of the form `name=path` or a bare `path`.
-fn parse_corpus_spec(spec: &str) -> (Option<String>, PathBuf) {
-    match spec.split_once('=') {
-        Some((name, path)) if !name.is_empty() => (Some(name.to_string()), PathBuf::from(path)),
-        _ => (None, PathBuf::from(spec)),
+/// Parse a `--corpus` spec of the form `name=path[,templates=rel_path]` or a bare `path`.
+fn parse_corpus_spec(spec: &str) -> (Option<String>, PathBuf, Option<String>) {
+    let mut parts = spec.split(',');
+    let first = parts.next().unwrap_or(spec);
+    let mut templates_override = None;
+
+    for opt in parts {
+        if let Some((k, v)) = opt.split_once('=') {
+            let key = k.trim();
+            if key == "templates" || key == "templates_dir" {
+                templates_override = Some(v.trim().to_string());
+            }
+        }
     }
+
+    let (name, path) = match first.split_once('=') {
+        Some((name, path)) if !name.is_empty() => {
+            (Some(name.trim().to_string()), PathBuf::from(path.trim()))
+        }
+        _ => (None, PathBuf::from(first.trim())),
+    };
+
+    (name, path, templates_override)
 }
 
 /// Load `corpus.toml` from the corpus directory, or create a default config.
@@ -756,7 +776,7 @@ fn load_or_default_config(corpus_path: &Path) -> anyhow::Result<CorpusConfig> {
                     },
                 ],
             },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         })
     }
 }

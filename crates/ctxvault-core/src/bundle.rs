@@ -231,7 +231,7 @@ mod tests {
             chunking: Default::default(),
             embedding: EmbeddingConfig { model: "jina-embeddings-v2-base-code".to_string() },
             graph: Default::default(),
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
 
         let mut engine = Engine::open(config, &index_dir).unwrap();

@@ -1,5 +1,3 @@
-<div align="center">
-
 # ctxvault (`ctxv`)
 
 **The Pure Rust Model Context Protocol (MCP) Server for AI Coding Agents**
@@ -16,9 +14,10 @@
 
 [Quickstart](#-quickstart--one-command-setup) • [Why ctxvault?](#-why-ctxvault-the-numbers) • [Trust & Determinism](#-built-on-trust--determinism) • [Core Concepts](#-core-concepts) • [Architecture](#-architecture) • [MCP Tool Surface](#-mcp-tool-surface-17-tools) • [Docs](#-documentation-hub)
 
-</div>
 
----
+<div align="center">
+  <img src="docs/assets/banner.jpg" alt="ctxvault — Pure Rust MCP Server for AI Coding Agents" width="100%" />
+</div>
 
 ## What is `ctxvault`?
 

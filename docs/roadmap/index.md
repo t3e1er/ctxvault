@@ -1,4 +1,4 @@
-﻿---
+---
 title: "Project Roadmap & RFC Archive"
 description: "High-level technical roadmap, feature RFCs, and evolutionary specifications for ctxvault."
 category: "roadmap"
@@ -31,3 +31,4 @@ This section tracks the technical roadmap and Request for Comments (RFC) enginee
 | **[[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]]** | Zero-Copy File Offsets & Packed Vectors | Implemented | Eliminating memory duplication with aligned binary vectors and disk byte offsets. |
 | **[[docs/roadmap/RFC-treesitter-expansion-and-lsp-analysis]]** | Tree-sitter Polyglot AST & Language Expansion | Implemented | cAST chunking across 16+ languages with parent scope breadcrumb injection. |
 | **[[docs/roadmap/RFC-docs-embed-intermediate-indexing-mode]]** | Intermediate Docs-Embed Indexing Mode | Implemented | Fast indexing mode prioritizing markdown doc embeddings over raw code vectors. |
+| **[[docs/roadmap/RFC-markdown-templates-and-frontmatter-edge-schema]]** | Markdown Templates & Frontmatter Edge Schema | Proposed | Native .templates/*.md standard with frontmatter schema, edge synthesis, and scaffolding. |

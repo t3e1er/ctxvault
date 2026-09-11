@@ -27,12 +27,13 @@ pub struct CorpusConfig {
     #[serde(default)]
     pub graph: GraphConfig,
     /// Path to templates directory (relative to corpus root).
-    #[serde(default = "default_templates_dir")]
-    pub templates_dir: String,
-}
-
-fn default_templates_dir() -> String {
-    ".templates".to_string()
+    /// If unset (`None`), automatic candidate discovery probes:
+    /// 1. `docs/.templates`
+    /// 2. `.templates`
+    /// 3. `.ctxvault/templates`
+    /// 4. `docs/templates`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub templates_dir: Option<String>,
 }
 
 /// Indexing mode controlling which index backends are populated.
@@ -220,6 +221,60 @@ pub enum EdgeDirection {
     Outbound,
     /// Edge points FROM the target TO this note.
     Inbound,
+}
+
+fn default_edge_direction() -> EdgeDirection {
+    EdgeDirection::Outbound
+}
+
+/// Declarative edge rule defined directly inside a markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TemplateEdgeSchema {
+    /// Frontmatter field name containing the link target(s).
+    pub field: String,
+    /// Edge type name emitted in the knowledge graph (e.g. "Supersedes").
+    #[serde(rename = "type")]
+    pub edge_type: String,
+    /// Edge class: structural, semantic, code, or crossmodal.
+    #[serde(default)]
+    pub class: EdgeClass,
+    /// Traversal direction relative to this note: outbound or inbound.
+    #[serde(default = "default_edge_direction")]
+    pub direction: EdgeDirection,
+    /// Whether to insert reverse edge automatically.
+    #[serde(default)]
+    pub bidirectional: bool,
+    /// Target must follow a specific template (e.g. "adr").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_template: Option<String>,
+    /// Target must be a specific kind (e.g. "code_symbol", "file", "doc").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<String>,
+    /// Whether this edge field is required in frontmatter.
+    #[serde(default)]
+    pub required: bool,
+    /// Human-readable documentation for this edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl TemplateEdgeSchema {
+    /// Convert this template edge declaration into an [`EdgeTypeConfig`] usable by the knowledge graph.
+    pub fn to_edge_type_config(&self) -> EdgeTypeConfig {
+        EdgeTypeConfig {
+            name: self.edge_type.clone(),
+            source: EdgeSource::Frontmatter,
+            weight: 1.0,
+            bidirectional: self.bidirectional,
+            field: Some(self.field.clone()),
+            direction: Some(self.direction.clone()),
+            max_frequency: None,
+            class: Some(self.class),
+            description: self.description.clone(),
+            allowed_source_templates: None,
+            allowed_target_templates: self.target_template.as_ref().map(|t| vec![t.clone()]),
+        }
+    }
 }
 
 /// Classification of an edge's purpose in the knowledge graph.
@@ -454,6 +509,7 @@ mod tests {
         assert_eq!(config.embedding.model, "BAAI/bge-small-en-v1.5");
         assert_eq!(config.graph.edge_types.len(), 2);
         assert_eq!(config.graph.edge_types[1].name, "Implements");
+        assert_eq!(config.templates_dir, Some(".schemas".to_string()));
     }
 
     #[test]
@@ -464,6 +520,7 @@ mod tests {
             path = "./vault"
         "#;
         let config_min: CorpusConfig = toml::from_str(toml_minimal).unwrap();
+        assert_eq!(config_min.templates_dir, None);
         assert_eq!(config_min.embedding.model, "jina-embeddings-v2-base-code-int8");
 
         // Test using [embedder] instead of [embedding]
