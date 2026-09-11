@@ -1,0 +1,28 @@
+name: "💡 Feature Request"
+description: "Suggest a new feature, search modality, language AST, or MCP enhancement"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We welcome feature ideas that align with our core ethos: pure Rust performance, deterministic graph topology, progressive disclosure, and markdown/source ground truth.
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem or Motivation"
+      description: "Is your feature request related to a problem or agent workflow challenge? Describe what you're trying to achieve."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Proposed Solution"
+      description: "Describe how you envision this working. Include tool signatures, CLI flags, or schema ideas if applicable."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternatives Considered"
+      description: "What alternative solutions or workarounds have you considered?"

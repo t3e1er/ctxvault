@@ -1,0 +1,22 @@
+name: "🔌 New MCP Client / Agent Request"
+description: "Request automated configuration support for an IDE, coding agent, or framework"
+title: "[Client]: Support for "
+labels: ["integration", "enhancement"]
+body:
+  - type: input
+    id: client_name
+    attributes:
+      label: "Client / Agent Name"
+      placeholder: "e.g. Continue.dev, Roo Code, Aider, OpenCode"
+    validations:
+      required: true
+  - type: input
+    id: config_path
+    attributes:
+      label: "Config File Path / Format"
+      placeholder: "e.g. ~/.continue/config.json"
+  - type: textarea
+    id: notes
+    attributes:
+      label: "Transport & Launch Requirements"
+      description: "Does the client support stdio MCP, SSE HTTP, custom environment variables, or specific tool filtering?"
