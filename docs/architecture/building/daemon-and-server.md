@@ -1,4 +1,4 @@
-﻿---
+---
 title: "Auto-Daemon & Shared Server Deployment"
 description: "Deploying ctxvault as a background daemon, hosting multi-corpus servers, and script automation."
 category: "building"
@@ -67,3 +67,40 @@ ctxvault --mode client --server http://127.0.0.1:9090 \
   --call graph_match \
   --args '{"pattern": "(:CodeSymbol {name: \"verify_jwt\"})-[:calls*1..2]->(target)"}'
 ```
+
+---
+
+## 4. Direct CLI Indexing & Incremental Sync
+
+In addition to serving MCP connections, the `ctxvault` CLI provides direct subcommands for building and updating central index stores without launching a daemon:
+
+```bash
+# Index a repository into central storage (~/.cache/ctxvault/corpora/<name>)
+ctxvault index /path/to/project
+
+# Fast indexing (BM25 + Graph only, skip embeddings)
+ctxvault index /path/to/project --fast
+
+# Incremental delta scan for all cached corpora
+ctxvault sync
+
+# Sync a specific corpus
+ctxvault sync --corpus project
+```
+
+---
+
+## 5. Central Storage & SCM Control
+
+* **Zero Repository Pollution**: Index artifacts default to `${CTXV_CACHE_DIR}/corpora/<name>/` (`meta.db`, `tantivy/`, `vectors.bin`, `graph.bin`), keeping git repositories clean. Local `.index/` is used only if already present on disk.
+* **SCM Team Sharing**: Export compact, reproducible index bundles into `.ctxvault/vault.tar.zst` for git tracking or CI artifacts:
+  ```bash
+  # Export active repository index to .ctxvault/vault.tar.zst
+  ctxvault export-artifact
+
+  # Import bundle into central cache
+  ctxvault import-artifact
+  ```
+* **Auto-Bootstrapping**: If a repository contains `.ctxvault/vault.tar.zst` and has not yet been indexed locally in central storage, `ctxvault` automatically unpacks and mounts the bundle upon discovery, avoiding expensive reindexing.
+* **Zero CWD Fallback**: On server startup without explicit `--corpus` arguments, `ctxvault` auto-mounts all existing central corpora. If no cached corpora exist, it starts cleanly with 0 corpora rather than arbitrarily mounting the caller's working directory.
+* **Continuous File Watching**: When `--watch` is enabled, `ctxvault` actively monitors all mounted corpora and automatically attaches file watchers to any new corpora mounted dynamically via `index_corpus`.

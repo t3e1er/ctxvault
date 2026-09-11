@@ -165,6 +165,38 @@ enum Commands {
         #[arg(long)]
         corpus: Option<String>,
     },
+    /// Index a repository into central storage without running an interactive server.
+    Index {
+        /// Path to the repository directory to index.
+        path: PathBuf,
+        /// Optional corpus name override (defaults to directory name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Force full reindex from scratch.
+        #[arg(long)]
+        reindex: bool,
+        /// Fast Mode: skip dense embedding and vector indexing for instant BM25+Graph indexing.
+        #[arg(long)]
+        fast: bool,
+        /// Docs-only embedding mode: compute vector embeddings for markdown docs anchors only.
+        #[arg(long = "docs-embed")]
+        docs_embed: bool,
+        /// Skeleton mode: compute embeddings for doc anchors and code symbol skeletons.
+        #[arg(long)]
+        skeleton: bool,
+        /// Batch size for indexing (default 50).
+        #[arg(long, default_value = "50")]
+        batch_size: usize,
+    },
+    /// Run incremental delta sync on indexed corpora.
+    Sync {
+        /// Target corpus name (if omitted, syncs all mounted/cached corpora).
+        #[arg(long)]
+        corpus: Option<String>,
+        /// Batch size for delta scanning (default 50).
+        #[arg(long, default_value = "50")]
+        batch_size: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -309,13 +341,13 @@ async fn main() -> anyhow::Result<()> {
             },
             Commands::ExportArtifact { corpus, output } => {
                 let cwd = std::env::current_dir()?;
-                let index_dir = if cwd.join(".index").exists() {
+                let index_dir = if let Some(c) = corpus {
+                    ctxvault_common::config::get_corpus_index_dir(c)
+                } else if cwd.join(".index").exists() {
                     cwd.join(".index")
-                } else if let Some(c) = corpus {
-                    ctxvault_common::config::get_corpora_cache_dir().join(c)
                 } else {
                     let name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default");
-                    ctxvault_common::config::get_corpora_cache_dir().join(name)
+                    ctxvault_common::config::get_corpus_index_dir(name)
                 };
                 let exported = artifacts::export_artifact(&index_dir, &cwd, output.as_deref())?;
                 println!("[+] Exported artifact to: {}", exported.display());
@@ -326,12 +358,80 @@ async fn main() -> anyhow::Result<()> {
                 let src_path =
                     input.clone().unwrap_or_else(|| cwd.join(".ctxvault").join("vault.tar.zst"));
                 let dest_dir = if let Some(c) = corpus {
-                    ctxvault_common::config::get_corpora_cache_dir().join(c)
-                } else {
+                    ctxvault_common::config::get_corpus_index_dir(c)
+                } else if cwd.join(".index").exists() {
                     cwd.join(".index")
+                } else {
+                    let name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default");
+                    ctxvault_common::config::get_corpus_index_dir(name)
                 };
                 let imported = artifacts::import_artifact(&src_path, &dest_dir)?;
                 println!("[+] Imported artifact into: {}", imported.display());
+                return Ok(());
+            }
+            Commands::Index { path, name, reindex, fast, docs_embed, skeleton, batch_size } => {
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let mut manager = CorpusManager::new();
+                let active_name = manager.ensure_corpus_with_name(&canonical, name.as_deref())?;
+                let engine = manager.get_engine_mut(&active_name)?;
+                if *fast {
+                    engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Fast;
+                } else if *docs_embed {
+                    engine.config_mut().index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+                } else if *skeleton {
+                    engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Skeleton;
+                }
+
+                println!(
+                    "[*] Indexing corpus '{}' ({}) into central storage...",
+                    active_name,
+                    canonical.display()
+                );
+                let count = if *reindex {
+                    engine.full_reindex_paginated(*batch_size, false)?
+                } else {
+                    let delta = engine.delta_scan_paginated(*batch_size)?;
+                    println!(
+                        "[+] Delta scan: {} new, {} modified, {} deleted",
+                        delta.new_files.len(),
+                        delta.modified_files.len(),
+                        delta.deleted_files.len()
+                    );
+                    delta.new_files.len() + delta.modified_files.len()
+                };
+
+                println!("[+] Successfully indexed '{}' ({} files processed)", active_name, count);
+                return Ok(());
+            }
+            Commands::Sync { corpus, batch_size } => {
+                let mut manager = CorpusManager::new();
+                let mounted = manager.mount_all_cached_corpora()?;
+                if mounted.is_empty() {
+                    println!("[-] No cached corpora found in central storage to sync.");
+                    return Ok(());
+                }
+
+                let targets: Vec<String> = if let Some(target) = corpus {
+                    if !manager.has_corpus(target) {
+                        anyhow::bail!("Corpus '{}' not found in central storage", target);
+                    }
+                    vec![target.clone()]
+                } else {
+                    mounted
+                };
+
+                for target_name in targets {
+                    println!("[*] Syncing corpus '{}'...", target_name);
+                    let engine = manager.get_engine_mut(&target_name)?;
+                    let delta = engine.delta_scan_paginated(*batch_size)?;
+                    println!(
+                        "[+] '{}': {} new, {} modified, {} deleted",
+                        target_name,
+                        delta.new_files.len(),
+                        delta.modified_files.len(),
+                        delta.deleted_files.len()
+                    );
+                }
                 return Ok(());
             }
         }
@@ -499,28 +599,21 @@ async fn main() -> anyhow::Result<()> {
                 config.index_mode = ctxvault_common::config::IndexMode::Fast;
             }
             corpus_names.push(config.name.clone());
-            manager.add_corpus(config)?;
+            let local_index = Path::new(&config.path).join(".index");
+            let index_dir = if local_index.exists() {
+                local_index
+            } else {
+                ctxvault_common::config::get_corpus_index_dir(&config.name)
+            };
+            manager.add_corpus_with_index_dir(config, &index_dir)?;
         }
     } else {
-        // If no --corpus passed, check current directory.
-        if let Ok(cwd) = std::env::current_dir() {
-            if matches!(cli.mode, Mode::Local)
-                || cwd.join(".index").exists()
-                || cwd.join("corpus.toml").exists()
-            {
-                let mut config = load_or_default_config(&cwd)?;
-                if let Some(mode) = cli.index_mode {
-                    config.index_mode = mode.into();
-                } else if cli.skeleton {
-                    config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
-                } else if cli.docs_embed {
-                    config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
-                } else if cli.fast {
-                    config.index_mode = ctxvault_common::config::IndexMode::Fast;
-                }
-                corpus_names.push(config.name.clone());
-                manager.add_corpus(config)?;
-            }
+        // When no explicit --corpus arguments are provided, auto-mount all cached corpora
+        // from central storage. No arbitrary fallback to current_dir() — if no central corpora
+        // exist, the manager starts cleanly with 0 corpora.
+        let mounted = manager.mount_all_cached_corpora()?;
+        for name in mounted {
+            corpus_names.push(name);
         }
     }
 

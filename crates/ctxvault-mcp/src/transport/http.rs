@@ -171,17 +171,22 @@ pub async fn run_http_server_multi_with_options(
     info!(addr = %local_addr, daemon = options.daemon, watch = options.watch, "multi-corpus MCP HTTP server listening");
 
     if options.watch {
+        let mgr_clone = state.manager.clone();
+        let watch_cb = std::sync::Arc::new(move |name: &str, root_path: &std::path::Path| {
+            ctxvault_core::watcher::spawn_corpus_watcher(
+                name.to_string(),
+                root_path.to_path_buf(),
+                mgr_clone.clone(),
+                Duration::from_millis(500),
+            );
+        });
+        state.manager.write().await.set_on_corpus_mounted(watch_cb.clone());
         let paths = {
             let mgr = state.manager.read().await;
             mgr.corpus_paths()
         };
         for (name, root_path) in paths {
-            ctxvault_core::watcher::spawn_corpus_watcher(
-                name,
-                root_path,
-                state.manager.clone(),
-                Duration::from_millis(500),
-            );
+            watch_cb(&name, &root_path);
         }
     }
 
@@ -333,23 +338,6 @@ async fn handle_jsonrpc_multi(
         };
 
         state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
-
-        // If client sends initialize with cwd or rootPath, dynamically mount the active repository.
-        if req.method == "initialize" {
-            if let Some(params) = &req.params {
-                let cwd_opt = params
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .or_else(|| params.get("rootPath").and_then(Value::as_str));
-                if let Some(cwd) = cwd_opt {
-                    let path = std::path::PathBuf::from(cwd);
-                    let mut mgr = state.manager.write().await;
-                    if let Err(e) = mgr.ensure_corpus(&path) {
-                        warn!(path = %path.display(), error = %e, "failed to ensure corpus on initialize");
-                    }
-                }
-            }
-        }
 
         let req_id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let desc = describe_request(&req);

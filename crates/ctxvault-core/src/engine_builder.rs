@@ -49,9 +49,12 @@ impl EngineBuilder {
         // 1. Create index directory if needed.
         fs::create_dir_all(index_dir)?;
 
-        // 2. Open SQLite store.
+        // 2. Open SQLite store and persist active corpus configuration.
         let db_path = index_dir.join("meta.db");
         let store = Store::open(&db_path)?;
+        if let Ok(json_cfg) = serde_json::to_string(&config) {
+            let _ = store.set_config("corpus_config", &json_cfg);
+        }
 
         // 3. Open BM25 index.
         let tantivy_path = index_dir.join("tantivy");

@@ -66,3 +66,22 @@ When code in `gateway` calls an API endpoint defined in `middleware`, `ctxvault`
   * `to_corpus` & `to_node`
   * `edge_type` and `confidence`
 * Traversal depth is bounded deterministically to prevent runaway loops across circular repository dependencies.
+
+---
+
+## 4. Central Storage & SCM Bootstrapping
+
+To keep code repositories clean, index artifacts default to central storage:
+* **Default Central Index Location**: `${CTXV_CACHE_DIR}/corpora/<name>/` (`meta.db`, `tantivy/`, `vectors.bin`, `graph.bin`).
+* **Source Path Tracking**: The originating repository path and active `CorpusConfig` are stored in SQLite `meta.db` under the `corpus_config` key.
+* **SCM Commit Bundles**: Repositories can commit an index artifact at `.ctxvault/vault.tar.zst` (`ctxvault export-artifact`). When a new repository is mounted or indexed, [`CorpusManager::ensure_corpus`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/corpus_manager.rs) checks for this bundle and auto-imports it if the central index is empty.
+* **Server Boot & Zero Fallback**: On boot without `--corpus` arguments, [`CorpusManager::mount_all_cached_corpora`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/corpus_manager.rs) mounts all known cached corpora. If no cached corpora exist, it starts cleanly with 0 corpora.
+
+---
+
+## 5. Dynamic Mounting & Continuous Watchers
+
+When running with `--watch`:
+* Active corpora are monitored for filesystem events (markdown and source files).
+* The MCP server registers a callback via [`CorpusManager::set_on_corpus_mounted`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/corpus_manager.rs).
+* Whenever a client invokes `index_corpus` dynamically, a dedicated [`spawn_corpus_watcher`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/watcher.rs) is automatically spawned, keeping the index synchronized in real time.
