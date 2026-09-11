@@ -49,7 +49,7 @@ pub async fn run_stdio_proxy(server_url: &str) -> Result<()> {
             continue;
         }
 
-        let mut request: JsonRpcRequest = match serde_json::from_str(trimmed) {
+        let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(req) => req,
             Err(e) => {
                 let resp = make_error_response(Value::Null, -32700, &format!("Parse error: {e}"));
@@ -57,24 +57,6 @@ pub async fn run_stdio_proxy(server_url: &str) -> Result<()> {
                 continue;
             }
         };
-
-        // Inject CWD context into initialize handshake so central daemon mounts/routes to the active repository.
-        if request.method == "initialize" {
-            if let Ok(cwd) = std::env::current_dir() {
-                let cwd_str = cwd.to_string_lossy().to_string();
-                match request.params {
-                    Some(Value::Object(ref mut map)) => {
-                        let _ = map.insert("cwd".to_string(), Value::String(cwd_str));
-                    }
-                    None => {
-                        let mut map = serde_json::Map::new();
-                        let _ = map.insert("cwd".to_string(), Value::String(cwd_str));
-                        request.params = Some(Value::Object(map));
-                    }
-                    _ => {}
-                }
-            }
-        }
 
         let start = std::time::Instant::now();
         let req_desc = if request.method == "tools/call" {

@@ -502,6 +502,7 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Filesystem path to the repository/corpus directory" },
+                    "name": { "type": "string", "description": "Optional corpus name override (defaults to directory name)" },
                     "sync": { "type": "boolean", "description": "Run delta sync after mounting (default true)" },
                     "reindex": { "type": "boolean", "description": "Force full reindex from scratch (default false)" },
                     "fast": { "type": "boolean", "description": "Skip dense vector embedding for instant indexing (default false)" },
@@ -1120,9 +1121,11 @@ fn handle_list_corpora_manager(manager: &CorpusManager, args: Value) -> Result<V
     let mut corpora_info: Vec<Value> = loaded
         .into_iter()
         .map(|c| {
+            let index_path = ctxvault_common::config::get_corpus_index_dir(&c.name);
             serde_json::json!({
                 "name": c.name,
                 "path": c.path,
+                "index_path": index_path.to_string_lossy().replace('\\', "/"),
                 "status": "active",
                 "mode": c.mode,
                 "index_mode": c.index_mode,
@@ -1137,10 +1140,17 @@ fn handle_list_corpora_manager(manager: &CorpusManager, args: Value) -> Result<V
     if include_cached {
         for cached in manager.discover_cached_corpora() {
             if !loaded_names.contains(&cached) {
+                let cache_dir = ctxvault_common::config::get_corpus_index_dir(&cached);
+                let source_path =
+                    ctxvault_core::corpus_manager::CorpusManager::get_cached_corpus_source_path(
+                        &cached,
+                    )
+                    .unwrap_or_else(|| cache_dir.to_string_lossy().replace('\\', "/"));
                 corpora_info.push(serde_json::json!({
                     "name": cached,
                     "status": "cached",
-                    "path": ctxvault_common::config::get_corpora_cache_dir().join(&cached).to_string_lossy().replace('\\', "/"),
+                    "path": source_path,
+                    "index_path": cache_dir.to_string_lossy().replace('\\', "/"),
                 }));
             }
         }
@@ -1161,7 +1171,8 @@ fn handle_index_corpus_manager(manager: &mut CorpusManager, args: Value) -> Resu
         .ok_or_else(|| Error::Config("missing required argument 'path'".to_string()))?;
 
     let corpus_path = PathBuf::from(path_str);
-    let name = manager.ensure_corpus(&corpus_path)?;
+    let name_override = args.get("name").and_then(Value::as_str);
+    let name = manager.ensure_corpus_with_name(&corpus_path, name_override)?;
 
     let do_reindex = args.get("reindex").and_then(Value::as_bool).unwrap_or(false);
     let do_sync = args.get("sync").and_then(Value::as_bool).unwrap_or(true);
