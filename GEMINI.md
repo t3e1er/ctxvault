@@ -1,6 +1,6 @@
 # ctxvault — Gemini & Antigravity Steering Guide
 
-> **Authoritative Source of Truth**: This steering document is synchronized with `.kiro/steering/` (`product.md`, `engineering-principles.md`, `mcp-tools.md`, `structure.md`, `tech.md`). It governs AI pair programming, architectural discipline, and Model Context Protocol (MCP) interactions for `ctxvault`.
+> **Authoritative Source of Truth**: This steering document governs AI pair programming, architectural discipline, and Model Context Protocol (MCP) interactions for `ctxvault`.
 
 ---
 
@@ -97,9 +97,9 @@ ctxvault/
 ├── crates/
 │   ├── ctxvault-common/  # Domain types, ports traits, config, errors
 │   ├── ctxvault-core/    # Engine, Tantivy, embeddings (DirectML/ort), Petgraph, AST chunkers
-│   ├── ctxvault-mcp/     # Stdio & HTTP transport, MCP protocol, tool registry (39 tools)
+│   ├── ctxvault-mcp/     # Stdio & HTTP transport, MCP protocol, tool registry (17 tools)
 │   └── ctxvault-cli/     # Composition root binary, multi-corpus CLI
-├── docs/                 # Authoritative architecture, cAST chunking, and search docs
+├── docs/                 # Authoritative architecture, concepts, and roadmap docs
 └── .index/               # Derived indices: meta.db, tantivy/, vectors.json, graph.bin
 ```
 
@@ -132,8 +132,22 @@ ctxvault/
 
 ---
 
-## 6. SCM, Branching & Versioning Protocols
-
-- **Branch Naming**: `feature/<name>`, `fix/<name>`, `refactor/<name>`, `chore/<name>`, `release/vX.Y.Z`. Never commit directly to `master`.
-- **Commit Messages**: Imperative Conventional Commits: `<type>(<scope>): <summary>` (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `chore`).
 - **Hooks**: Git hooks enabled via `just setup-hooks` (`.githooks/pre-push` enforces formatting, clippy, tests, and tag alignment with `Cargo.toml`).
+
+---
+
+## 7. Evergreen Documentation & Bidirectional Code Links
+
+Documentation in `ctxvault` is not passive prose; it is a **compiled, structured knowledge corpus** that dogfoods `ctxvault`'s own semantic indexing and graph retrieval (Principle 3).
+
+### Strict 3-Pillar Documentation Hierarchy
+All documentation must conform to the 3-pillar directory layout:
+* `docs/architecture/`: Systems engineering, build operations (`building/`), security/trust (`trust/`), backend internals (`implementation/`), and Architectural Decision Records (`adr/`).
+* `docs/concepts/`: Theoretical paradigms, 3-tier progressive disclosure contracts (`progressive-disclosure/`), and multimodal retrieval theory (`search/`).
+* `docs/roadmap/`: Long-term engineering roadmaps (`coderoadmap.md`) and technical specifications (`RFC-*.md`).
+
+### Invariants for AI Pair Programming
+1. **Never Let Documentation Rot**: Whenever modifying a port trait, tool signature, CLI argument, indexing pipeline, or core data structure, you MUST update the corresponding documentation under `docs/` in the same commit.
+2. **Bidirectional Code Linking**: Technical documentation must link directly to active Rust source files and symbols using `[Symbol](file:///c:/dev/ctx/ctxvault/crates/...)` syntax to provide ground-truth provenance.
+3. **Wikilink & Frontmatter Integrity**: Every document must maintain valid YAML frontmatter (`title`, `category`, `status`, `tags`, `related`) and valid `[[wikilinks]]`. Never create broken links.
+

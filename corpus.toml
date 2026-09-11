@@ -1,5 +1,5 @@
 name = "ctxvault"
-path = "C:/dev/ctx/ctxvault"
+path = "."
 mode = "read-write"
 
 [chunking]
@@ -23,4 +23,44 @@ source = "tag"
 weight = 0.5
 bidirectional = true
 max_frequency = 50
+class = "semantic"
+
+[[graph.edge_types]]
+name = "ParentChild"
+source = "frontmatter"
+field = "parent"
+weight = 1.0
+direction = "inbound"
+class = "structural"
+
+[[graph.edge_types]]
+name = "Supersedes"
+source = "frontmatter"
+field = "supersedes"
+weight = 1.0
+direction = "outbound"
+class = "semantic"
+
+[[graph.edge_types]]
+name = "DerivedFrom"
+source = "frontmatter"
+field = "derived_from"
+weight = 0.9
+direction = "outbound"
+class = "semantic"
+
+[[graph.edge_types]]
+name = "Implements"
+source = "frontmatter"
+field = "implements"
+weight = 0.8
+direction = "outbound"
+class = "crossmodal"
+
+[[graph.edge_types]]
+name = "Related"
+source = "frontmatter"
+field = "related"
+weight = 0.7
+bidirectional = true
 class = "semantic"

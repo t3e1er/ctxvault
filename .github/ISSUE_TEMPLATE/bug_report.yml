@@ -1,0 +1,77 @@
+name: "🐛 Bug Report"
+description: "Report an issue, unexpected behavior, or crash in ctxvault"
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please check existing issues first to avoid duplicates.
+  - type: input
+    id: version
+    attributes:
+      label: "ctxvault Version"
+      description: "Run `ctxvault --version` or specify your commit/release"
+      placeholder: "e.g. ctxvault 0.0.2 or commit 06d7c64"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: "Operating System"
+      options:
+        - "Windows (x86_64)"
+        - "macOS (Apple Silicon / aarch64)"
+        - "macOS (Intel / x86_64)"
+        - "Linux (Ubuntu / Debian x86_64)"
+        - "Linux (aarch64)"
+        - "Other"
+    validations:
+      required: true
+  - type: dropdown
+    id: mcp_client
+    attributes:
+      label: "MCP Client / Coding Agent"
+      options:
+        - "Cursor"
+        - "Claude Desktop"
+        - "Claude Code (CLI)"
+        - "Antigravity IDE / Gemini CLI"
+        - "Windsurf"
+        - "VS Code (Copilot / Cline / Roo Code)"
+        - "Zed"
+        - "CLI / HTTP Daemon"
+        - "Other"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the Bug"
+      description: "A clear and concise description of what the bug is."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Steps to Reproduce"
+      description: "How can we reproduce this behavior?"
+      placeholder: |
+        1. Run `ctxvault --corpus ...`
+        2. Execute tool call `search` with query `...`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior"
+      description: "What did you expect to happen?"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Relevant Logs / Terminal Output"
+      description: "Paste logs from stderr, terminal, or MCP client output log."
+      render: shell

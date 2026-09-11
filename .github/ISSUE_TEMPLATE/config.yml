@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/t3e1er/ctxvault/discussions
+    about: Ask questions, discuss architectures, share agent workflows, and connect with the community.
+  - name: Documentation Hub
+    url: https://github.com/t3e1er/ctxvault/tree/master/docs
+    about: Read comprehensive guides on progressive disclosure, hybrid search, cAST parsing, and deployment.
