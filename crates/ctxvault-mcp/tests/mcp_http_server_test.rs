@@ -28,7 +28,7 @@ fn build_manager(name: &str, corpus_path: &std::path::Path) -> CorpusManager {
         chunking: ChunkingConfig::default(),
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
+        templates_dir: None,
     };
 
     let mut manager = CorpusManager::new();

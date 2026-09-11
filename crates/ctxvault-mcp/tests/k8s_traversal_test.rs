@@ -27,7 +27,7 @@ fn test_kubernetes_traversal_with_code_edge_class() {
         chunking: ChunkingConfig::default(),
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
+        templates_dir: None,
     };
 
     let start_open = std::time::Instant::now();

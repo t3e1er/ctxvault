@@ -2803,9 +2803,7 @@ fn walk_dir_for_rewrite(
 
 /// Load templates for the corpus.
 fn load_corpus_templates(engine: &Engine) -> Result<HashMap<String, Template>> {
-    let corpus_path = PathBuf::from(&engine.config().path);
-    let templates_dir = corpus_path.join(&engine.config().templates_dir);
-    Template::load_from_dir(&templates_dir)
+    engine.load_templates()
 }
 
 /// Validate a single note against its declared template.
@@ -2826,7 +2824,24 @@ fn validate_single_note(
     let (valid, issues, tmpl_name) = if let Some(ref name) = template_name {
         let templates = load_corpus_templates(engine)?;
         if let Some(tmpl) = templates.get(name) {
-            let issues = tmpl.validate(&doc.frontmatter, &doc.content);
+            let mut issues = tmpl.validate(&doc.frontmatter, &doc.content);
+
+            let files = engine.store().list_files().unwrap_or_default();
+            let mut note_templates: HashMap<String, Option<String>> = HashMap::new();
+            for f in files {
+                let _ = note_templates.insert(f.path, f.template);
+            }
+            let edge_issues =
+                tmpl.validate_edge_targets(&doc.frontmatter, &note_templates, |sym| {
+                    engine.store().find_symbols_by_name(sym).map(|v| !v.is_empty()).unwrap_or(false)
+                        || engine
+                            .store()
+                            .find_symbols_by_qualified_name(sym)
+                            .map(|v| !v.is_empty())
+                            .unwrap_or(false)
+                });
+            issues.extend(edge_issues);
+
             let valid =
                 !issues.iter().any(|i| i.severity == ctxvault_core::template::Severity::Error);
             (valid, issues, Some(name.clone()))
@@ -2859,6 +2874,11 @@ fn validate_corpus_notes(
     let files = engine.store().list_files()?;
     let corpus_path = PathBuf::from(&engine.config().path);
 
+    let mut note_templates: HashMap<String, Option<String>> = HashMap::new();
+    for f in &files {
+        let _ = note_templates.insert(f.path.clone(), f.template.clone());
+    }
+
     let mut results: Vec<ctxvault_core::template::ValidationResult> = Vec::new();
 
     for file in &files {
@@ -2879,7 +2899,18 @@ fn validate_corpus_notes(
         };
 
         let issues = if let Some(tmpl) = templates.get(&tmpl_name) {
-            tmpl.validate(&doc.frontmatter, &doc.content)
+            let mut issues = tmpl.validate(&doc.frontmatter, &doc.content);
+            let edge_issues =
+                tmpl.validate_edge_targets(&doc.frontmatter, &note_templates, |sym| {
+                    engine.store().find_symbols_by_name(sym).map(|v| !v.is_empty()).unwrap_or(false)
+                        || engine
+                            .store()
+                            .find_symbols_by_qualified_name(sym)
+                            .map(|v| !v.is_empty())
+                            .unwrap_or(false)
+                });
+            issues.extend(edge_issues);
+            issues
         } else {
             vec![ctxvault_core::template::ValidationIssue {
                 severity: ctxvault_core::template::Severity::Warning,
@@ -3038,7 +3069,7 @@ mod tests {
                     allowed_target_templates: None,
                 }],
             },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         }
     }
 
@@ -3606,7 +3637,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
         manager.add_corpus(config).unwrap();
 
@@ -3654,7 +3685,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
         let docs_config = CorpusConfig {
             name: "docs".to_string(),
@@ -3664,7 +3695,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
 
         manager.add_corpus(wiki_config).unwrap();
@@ -3748,7 +3779,7 @@ mod tests {
                 chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
                 embedding: EmbeddingConfig::default(),
                 graph: GraphConfig { edge_types: Vec::new() },
-                templates_dir: ".templates".to_string(),
+                templates_dir: None,
             };
             manager.add_corpus(config).unwrap();
         }
@@ -3833,7 +3864,7 @@ mod tests {
                     allowed_target_templates: None,
                 }],
             },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         }
     }
 
@@ -4031,7 +4062,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
         manager.add_corpus(config).unwrap();
 
@@ -4061,7 +4092,7 @@ mod tests {
             chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
-            templates_dir: ".templates".to_string(),
+            templates_dir: None,
         };
         manager.add_corpus(config).unwrap();
 
@@ -4156,6 +4187,110 @@ mod tests {
         assert_eq!(result["valid"], false);
         assert!(result["taxonomy"]["broken_links_count"].as_u64().unwrap() >= 1);
         assert!(result["taxonomy"]["circular_dependencies_count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn test_list_templates_and_validate_markdown_template() {
+        let tmp = TempDir::new().unwrap();
+        let mut engine = create_test_engine(&tmp);
+        let corpus_dir = tmp.path().join("corpus");
+        let templates_dir = corpus_dir.join(".templates");
+        fs::create_dir_all(&templates_dir).unwrap();
+
+        let adr_template = r#"---
+template:
+  name: adr
+  description: "Architecture Decision Record"
+
+schema:
+  fields:
+    status:
+      type: enum
+      required: true
+      values: [proposed, accepted, rejected]
+    date:
+      type: date
+      required: true
+  edges:
+    - field: supersedes
+      type: Supersedes
+      class: structural
+      direction: outbound
+      target_template: adr
+      required: false
+
+  sections:
+    required: ["Context", "Decision"]
+  min_words: 20
+---
+# ADR-{id}: {Title}
+
+## Context
+Describe context.
+
+## Decision
+State decision.
+"#;
+        fs::write(templates_dir.join("adr.md"), adr_template).unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. list_templates returns schema + scaffold
+        let tmpl_list =
+            registry.execute("list_templates", &mut engine, serde_json::json!({})).unwrap();
+        let list_arr = tmpl_list.as_array().unwrap();
+        assert_eq!(list_arr.len(), 1);
+        assert_eq!(list_arr[0]["name"], "adr");
+        assert!(list_arr[0]["scaffold"].as_str().unwrap().contains("# ADR-{id}: {Title}"));
+        assert_eq!(list_arr[0]["edges"][0]["field"], "supersedes");
+
+        // 2. Validate a valid note
+        let note_content = r#"---
+template: adr
+status: accepted
+date: 2026-09-11
+---
+# ADR-001: First Decision
+
+## Context
+This is a comprehensive context section that satisfies the minimum word count requirement for this template.
+
+## Decision
+We decide to adopt the markdown template standard across all repositories.
+"#;
+        fs::write(corpus_dir.join("001.md"), note_content).unwrap();
+        engine.index_file("001.md", note_content).unwrap();
+        engine.commit().unwrap();
+
+        let val_res = registry
+            .execute(
+                "validate",
+                &mut engine,
+                serde_json::json!({ "path": "001.md", "check_taxonomy": false }),
+            )
+            .unwrap();
+        assert_eq!(val_res["valid"], true, "Note should be valid: {:?}", val_res);
+
+        // 3. Validate a note with missing required field and missing section
+        let invalid_note = r#"---
+template: adr
+status: accepted
+---
+# ADR-002: Incomplete
+
+## Context
+Only context, missing decision and date.
+"#;
+        fs::write(corpus_dir.join("002.md"), invalid_note).unwrap();
+        let val_invalid = registry
+            .execute(
+                "validate",
+                &mut engine,
+                serde_json::json!({ "path": "002.md", "check_taxonomy": false }),
+            )
+            .unwrap();
+        assert_eq!(val_invalid["valid"], false, "Note should be invalid: {:?}", val_invalid);
     }
 
     #[test]

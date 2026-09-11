@@ -73,7 +73,10 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
 - **`all`** (17 tools): Full suite including mutating writes (`write_note`, `delete_note`, `move_note`, `sync_corpus`, `index_corpus`, `unload_corpus`).
 
 ### Agent Directives
-1. **Files are ground truth**: Trust file content on disk over cached search snippets.
+1. **MCP Retrieval-First Invariant (No Direct File Dumps)**:
+   - **Never** begin code/docs exploration, search, or architectural discovery with raw file reads (`view_file`), full file dumps, or directory-wide grep searches.
+   - **Always** use `ctxvault` MCP tools (`search`, `get_snippet`, `graph_match`, `search_related`) as the primary intake mechanism for high-signal, token-efficient context.
+   - Direct file reads (`read_file` or native `view_file`) are strictly a **Tier 3 last resort**, permitted only when actively preparing a code edit or when exhaustive contiguous context is proven necessary after Tier 1 & 2 elaboration. Files on disk remain authoritative for applying modifications, but discovery must be mediated via MCP.
 2. **Select optimal `search` mode & leverage Turn 1 snippets**:
    - `mode="hybrid"`: Default for broad exploratory queries (3-way RRF fusion).
    - `mode="bm25"`: Exact symbols, identifiers, struct names, error strings, verbatim tokens.
@@ -84,7 +87,10 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
 3. **Turn 1 Affordance Grounding & Turn 2 Path Expansion**:
    - Turn 1: `search` returns partitioned results (`docs` and `code`) enriched with `graph_affordances` (degree counts: `calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`, etc.) and `schema_envelope` (active node labels and edge types).
    - Turn 2: Follow information scents with `graph_match` using linear Cypher-Lite ASCII patterns, e.g. `(:CodeSymbol {name: "foo"})-[:calls*1..2]->(target)` or `(:DocNode {path: "adrs/002.md"})-[:supersedes]->(target)`. Use `graph_communities(view="architecture")` for high-level architectural component mapping.
-4. **Progressive disclosure**: Query `search` (receives top $K$ snippets + handles) $\to$ fetch targeted code/doc sections or symbol definitions via `get_snippet` $\to$ read whole files or line slices via `read_file` only when necessary.
+4. **Progressive disclosure (Strict 3-Tier Pipeline)**:
+   - Tier 1: Query `search` (receives top $K$ source snippets + handles + affordance degree counts).
+   - Tier 2: Fetch targeted symbol definitions or doc chunks via `get_snippet(symbol="...")` / `get_snippet(path="...", chunk_id=N)`.
+   - Tier 3: Read whole files or bounded line slices (`read_file(path="...", line_range=[start, end])`) *only* when necessary for line-exact editing.
 5. **Schema discipline on writes**: Query `list_templates` before authoring, write via `write_note`, and confirm validity with `validate(path="...")`.
 6. **Destructive operations**: `delete_note` permanently removes files and index entries; confirm with user before executing.
 

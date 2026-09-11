@@ -21,7 +21,7 @@ fn fast_corpus_config(name: &str, corpus_path: &Path) -> CorpusConfig {
         chunking: ChunkingConfig { min_chunk_tokens: 1, ..Default::default() },
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
-        templates_dir: ".templates".to_string(),
+        templates_dir: None,
     }
 }
 
