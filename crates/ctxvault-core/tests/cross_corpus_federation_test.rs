@@ -28,7 +28,9 @@ fn fast_corpus_config(name: &str, corpus_path: &Path) -> CorpusConfig {
 fn add_corpus(manager: &mut CorpusManager, name: &str, root: &Path) {
     let dir = root.join(name);
     fs::create_dir_all(&dir).expect("create corpus root");
-    manager.add_corpus(fast_corpus_config(name, &dir)).expect("add corpus to manager");
+    let config = fast_corpus_config(name, &dir);
+    let index_dir = dir.join(".index");
+    manager.add_corpus_with_index_dir(config, &index_dir).expect("add corpus to manager");
 }
 
 #[test]

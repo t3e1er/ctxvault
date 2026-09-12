@@ -4,6 +4,7 @@ mod artifacts;
 mod config_cmd;
 mod installer;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -274,6 +275,43 @@ enum LogFormat {
     Json,
 }
 
+/// Prompt interactive user to extract compressed index bundle into central storage if present and unextracted.
+fn prompt_bundle_extraction(
+    corpus_root: &Path,
+    name: &str,
+    index_dir: &Path,
+) -> anyhow::Result<()> {
+    if let Some(bundle) = ctxvault_core::bundle::detect_bundle(corpus_root) {
+        if !index_dir.join("meta.db").exists() {
+            let should_extract = if std::io::stdin().is_terminal() {
+                print!(
+                    "[?] Found compressed index bundle for '{}' at '{}'. Extract into central storage? [Y/n]: ",
+                    name,
+                    bundle.display()
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let mut input = String::new();
+                let _ = std::io::stdin().read_line(&mut input);
+                let trimmed = input.trim().to_lowercase();
+                trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+            } else {
+                true
+            };
+
+            if should_extract {
+                println!(
+                    "[*] Extracting bundle '{}' into central storage ({})...",
+                    bundle.display(),
+                    index_dir.display()
+                );
+                ctxvault_core::bundle::import_bundle(&bundle, index_dir, None, None)?;
+                println!("[+] Successfully extracted bundle into central storage.");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Enable full backtraces on panic (writes to stderr, not stdout/JSON-RPC channel).
@@ -341,36 +379,41 @@ async fn main() -> anyhow::Result<()> {
             },
             Commands::ExportArtifact { corpus, output } => {
                 let cwd = std::env::current_dir()?;
-                let index_dir = if let Some(c) = corpus {
-                    ctxvault_common::config::get_corpus_index_dir(c)
-                } else if cwd.join(".index").exists() {
-                    cwd.join(".index")
-                } else {
-                    let name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default");
-                    ctxvault_common::config::get_corpus_index_dir(name)
-                };
+                let name = corpus.as_deref().unwrap_or_else(|| {
+                    cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default")
+                });
+                let index_dir = ctxvault_common::config::get_corpus_index_dir(name);
+                if !index_dir.exists() {
+                    anyhow::bail!(
+                        "No central index found for corpus '{}' at '{}'. Run indexing first.",
+                        name,
+                        index_dir.display()
+                    );
+                }
                 let exported = artifacts::export_artifact(&index_dir, &cwd, output.as_deref())?;
                 println!("[+] Exported artifact to: {}", exported.display());
                 return Ok(());
             }
             Commands::ImportArtifact { input, corpus } => {
                 let cwd = std::env::current_dir()?;
+                let name = corpus.as_deref().unwrap_or_else(|| {
+                    cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default")
+                });
                 let src_path =
                     input.clone().unwrap_or_else(|| cwd.join(".ctxvault").join("vault.tar.zst"));
-                let dest_dir = if let Some(c) = corpus {
-                    ctxvault_common::config::get_corpus_index_dir(c)
-                } else if cwd.join(".index").exists() {
-                    cwd.join(".index")
-                } else {
-                    let name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("default");
-                    ctxvault_common::config::get_corpus_index_dir(name)
-                };
+                let dest_dir = ctxvault_common::config::get_corpus_index_dir(name);
                 let imported = artifacts::import_artifact(&src_path, &dest_dir)?;
-                println!("[+] Imported artifact into: {}", imported.display());
+                println!("[+] Imported artifact into central storage: {}", imported.display());
                 return Ok(());
             }
             Commands::Index { path, name, reindex, fast, docs_embed, skeleton, batch_size } => {
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let dir_name =
+                    canonical.file_name().and_then(|n| n.to_str()).unwrap_or("corpus").to_string();
+                let active_name = name.clone().unwrap_or(dir_name);
+                let index_dir = ctxvault_common::config::get_corpus_index_dir(&active_name);
+                prompt_bundle_extraction(&canonical, &active_name, &index_dir)?;
+
                 let mut manager = CorpusManager::new();
                 let active_name = manager.ensure_corpus_with_name(&canonical, name.as_deref())?;
                 let engine = manager.get_engine_mut(&active_name)?;
@@ -599,12 +642,11 @@ async fn main() -> anyhow::Result<()> {
                 config.index_mode = ctxvault_common::config::IndexMode::Fast;
             }
             corpus_names.push(config.name.clone());
-            let local_index = Path::new(&config.path).join(".index");
-            let index_dir = if local_index.exists() {
-                local_index
-            } else {
-                ctxvault_common::config::get_corpus_index_dir(&config.name)
-            };
+            let canonical = Path::new(&config.path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&config.path));
+            let index_dir = ctxvault_common::config::get_corpus_index_dir(&config.name);
+            prompt_bundle_extraction(&canonical, &config.name, &index_dir)?;
             manager.add_corpus_with_index_dir(config, &index_dir)?;
         }
     } else {

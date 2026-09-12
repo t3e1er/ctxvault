@@ -3707,6 +3707,14 @@ mod tests {
         assert!(registry.registry().get("get_indexing_status").is_none());
     }
 
+    fn add_test_corpus(
+        manager: &mut ctxvault_core::corpus_manager::CorpusManager,
+        config: CorpusConfig,
+    ) {
+        let index_dir = PathBuf::from(&config.path).join(".index");
+        manager.add_corpus_with_index_dir(config, &index_dir).unwrap();
+    }
+
     #[test]
     fn test_multi_corpus_routing_default() {
         let tmp = TempDir::new().unwrap();
@@ -3724,7 +3732,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         // Index a file in wiki.
         {
@@ -3783,8 +3791,8 @@ mod tests {
             templates_dir: None,
         };
 
-        manager.add_corpus(wiki_config).unwrap();
-        manager.add_corpus(docs_config).unwrap();
+        add_test_corpus(&mut manager, wiki_config);
+        add_test_corpus(&mut manager, docs_config);
 
         // Index different content in each corpus.
         {
@@ -3866,7 +3874,7 @@ mod tests {
                 graph: GraphConfig { edge_types: Vec::new() },
                 templates_dir: None,
             };
-            manager.add_corpus(config).unwrap();
+            add_test_corpus(&mut manager, config);
         }
 
         // Both corpora contain a doc mentioning "shared" (BM25-only; no embedder).
@@ -3982,8 +3990,8 @@ mod tests {
         fs::create_dir_all(&b_dir).unwrap();
 
         let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
-        manager.add_corpus(fast_corpus_config("A", &a_dir)).unwrap();
-        manager.add_corpus(fast_corpus_config("B", &b_dir)).unwrap();
+        add_test_corpus(&mut manager, fast_corpus_config("A", &a_dir));
+        add_test_corpus(&mut manager, fast_corpus_config("B", &b_dir));
 
         // Each corpus has a doc that shares the query token "shared" and links
         // to a neighbor so graph search (which returns discovered neighbors) has nodes.
@@ -4075,8 +4083,8 @@ mod tests {
         fs::create_dir_all(&b_dir).unwrap();
 
         let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
-        manager.add_corpus(fast_corpus_config("A", &a_dir)).unwrap();
-        manager.add_corpus(fast_corpus_config("B", &b_dir)).unwrap();
+        add_test_corpus(&mut manager, fast_corpus_config("A", &a_dir));
+        add_test_corpus(&mut manager, fast_corpus_config("B", &b_dir));
 
         // B uniquely defines `leaf`; A's `top` calls `leaf` (unresolved locally).
         {
@@ -4149,7 +4157,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         let registry = MultiCorpusToolRegistry::new();
 
@@ -4179,7 +4187,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         let registry = MultiCorpusToolRegistry::new();
 
