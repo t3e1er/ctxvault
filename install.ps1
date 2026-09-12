@@ -127,7 +127,7 @@ try {
     }
 
     # Auto-configure installed coding agents
-    Write-Host "[*] Auto-configuring coding agents..." -ForegroundColor Cyan
+    Write-Host "[*] Auto-configuring coding agents (Cursor, Claude, Antigravity, Kiro CLI, VS Code, Windsurf, Zed)..." -ForegroundColor Cyan
     & "$InstallDir\ctxvault.exe" install -y --dir="$InstallDir"
 
     Write-Host "[>] Run 'ctxvault --version' to verify your installation." -ForegroundColor Cyan

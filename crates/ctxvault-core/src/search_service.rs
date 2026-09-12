@@ -218,8 +218,8 @@ impl SearchService for CoreSearchService<'_> {
         }?;
 
         for r in &mut results {
-            let affordances = self.graph.compute_affordances(&r.path);
-            r.graph_affordances = Some(affordances);
+            r.graph = self.graph.format_cypher_affordances(&r.path, 3);
+            r.graph_affordances = None;
         }
 
         Ok(results)
@@ -273,7 +273,8 @@ impl SearchService for CoreSearchService<'_> {
         let mut results =
             search::search_related(self.graph, seeds, limit, 0.85, 20, modality, &self.code_paths)?;
         for r in &mut results {
-            r.graph_affordances = Some(self.graph.compute_affordances(&r.path));
+            r.graph = self.graph.format_cypher_affordances(&r.path, 3);
+            r.graph_affordances = None;
         }
         Ok(results)
     }

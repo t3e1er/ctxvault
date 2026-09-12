@@ -16,6 +16,8 @@ You have access to the `ctxvault` Model Context Protocol (MCP) server (17 author
 1. Retrieval Strategy & Turn 1 Snippets:
    - Use `search` with `mode="hybrid"` as your default exploratory discovery tool (3-way RRF across BM25 lexical, ONNX dense vectors, and graph).
    - `search` automatically returns Turn 1 inline text and code snippets (`snippets: 3` by default) along with graph affordances (`calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`). Work directly from these snippets whenever possible to avoid unnecessary round-trips.
+   - For fast bare-identifier or file handle sweeps, pass `detail="ids"` to strip snippets, affordances, and score breakdowns for minimum token footprint (<250 tokens).
+   - For quick structural repository census or architecture overviews, call `status(scope="census")` or `status(scope="architecture")` for instant counts of symbols, edges, languages, and files (<2ms).
    - Use `search` with `mode="bm25"` when searching for exact identifier names, error strings, struct symbols, or CLI flags.
    - Use `search` with `mode="semantic"` for abstract natural-language concepts.
    - Use `search_related` for Personalized PageRank expansion around known seed notes or symbols.
@@ -191,6 +193,14 @@ pub fn detect_agents() -> Vec<AgentTarget> {
             .push(AgentTarget { name: "Zed", path: config_dir.join("zed").join("settings.json") });
     }
 
+    // 7. Kiro CLI
+    let kiro_home =
+        std::env::var("KIRO_HOME").map(PathBuf::from).unwrap_or_else(|_| home_path.join(".kiro"));
+    targets.push(AgentTarget {
+        name: "Kiro CLI (Global Settings)",
+        path: kiro_home.join("settings").join("mcp.json"),
+    });
+
     targets
 }
 
@@ -220,12 +230,32 @@ pub fn detect_rule_targets(workspace_dir: Option<&Path>) -> Vec<RuleTarget> {
     let claude_rules = home_path.join(".claude").join("CLAUDE.md");
     targets.push(RuleTarget { name: "Claude Code Home Rules", path: claude_rules });
 
-    // 5. Workspace-specific rules if workspace_dir provided
+    // 5. Kiro CLI global rules & steering
+    let kiro_home =
+        std::env::var("KIRO_HOME").map(PathBuf::from).unwrap_or_else(|_| home_path.join(".kiro"));
+    targets.push(RuleTarget {
+        name: "Kiro CLI Global Rules",
+        path: kiro_home.join("rules").join("ctxvault.md"),
+    });
+    targets.push(RuleTarget {
+        name: "Kiro CLI Global Steering",
+        path: kiro_home.join("steering").join("ctxvault.md"),
+    });
+
+    // 6. Workspace-specific rules if workspace_dir provided
     if let Some(ws) = workspace_dir {
         targets.push(RuleTarget { name: "Workspace GEMINI.md", path: ws.join("GEMINI.md") });
         targets.push(RuleTarget { name: "Workspace .cursorrules", path: ws.join(".cursorrules") });
         targets
             .push(RuleTarget { name: "Workspace .windsurfrules", path: ws.join(".windsurfrules") });
+        targets.push(RuleTarget {
+            name: "Workspace Kiro Rules",
+            path: ws.join(".kiro").join("rules").join("ctxvault.md"),
+        });
+        targets.push(RuleTarget {
+            name: "Workspace Kiro Steering",
+            path: ws.join(".kiro").join("steering").join("ctxvault.md"),
+        });
     }
 
     targets
@@ -246,7 +276,13 @@ pub fn run_install(
         "ctxvault".to_string()
     };
 
-    let targets = detect_agents();
+    let mut targets = detect_agents();
+    if let Some(ws) = workspace_dir {
+        targets.push(AgentTarget {
+            name: "Kiro CLI (Workspace Settings)",
+            path: ws.join(".kiro").join("settings").join("mcp.json"),
+        });
+    }
     let mut summary = InstallSummary::default();
 
     for target in targets {
@@ -329,5 +365,137 @@ pub fn run_install(
         }
     }
 
+    // Configure Kiro subagent profiles (scout & analysis) if Kiro is detected
+    let kiro_dirs = {
+        let mut dirs = Vec::new();
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        let kiro_home = std::env::var("KIRO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(&home).join(".kiro"));
+        if kiro_home.exists() {
+            dirs.push(kiro_home.join("agents"));
+        }
+        if let Some(ws) = workspace_dir {
+            let ws_kiro = ws.join(".kiro");
+            if ws_kiro.exists() {
+                dirs.push(ws_kiro.join("agents"));
+            }
+        }
+        dirs
+    };
+
+    for agents_dir in kiro_dirs {
+        let scout_profile = json!({
+            "name": "ctxvault-scout",
+            "description": "Fast exploratory code & doc scout agent using ctxvault scout profile",
+            "prompt": "You are a lightweight code scout. Use ctxvault tools (search, get_snippet, status) for high-signal retrieval without full file dumps.",
+            "tools": ["read", "grep", "glob"],
+            "includeMcpJson": false,
+            "mcpServers": {
+                "ctxvault": {
+                    "command": binary_command,
+                    "args": ["--profile", "scout"]
+                }
+            }
+        });
+        let analysis_profile = json!({
+            "name": "ctxvault-analysis",
+            "description": "Deep architectural & graph analysis agent using ctxvault analysis profile",
+            "prompt": "You are an architectural analyst. Use ctxvault graph_match, graph_communities, search, and validate for system mapping and dependency tracing.",
+            "tools": ["read", "grep", "glob"],
+            "includeMcpJson": false,
+            "mcpServers": {
+                "ctxvault": {
+                    "command": binary_command,
+                    "args": ["--profile", "analysis"]
+                }
+            }
+        });
+
+        let scout_path = agents_dir.join("ctxvault-scout.json");
+        let analysis_path = agents_dir.join("ctxvault-analysis.json");
+
+        if dry_run {
+            summary.dry_run_detected.push(format!(
+                "Kiro Subagents -> Would write scout & analysis profiles to: {}",
+                agents_dir.display()
+            ));
+        } else {
+            let _ = fs::create_dir_all(&agents_dir);
+            if let Ok(content) = serde_json::to_string_pretty(&scout_profile) {
+                let _ = fs::write(&scout_path, content);
+            }
+            if let Ok(content) = serde_json::to_string_pretty(&analysis_profile) {
+                let _ = fs::write(&analysis_path, content);
+            }
+            summary.configured.push(format!("Kiro Subagent Profiles [{}]", agents_dir.display()));
+        }
+    }
+
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_detect_agents_includes_kiro() {
+        let agents = detect_agents();
+        assert!(
+            agents.iter().any(|a| a.name.contains("Kiro")),
+            "Expected Kiro CLI in detected agents: {:?}",
+            agents.iter().map(|a| a.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_kiro_installer_auto_configuration() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+
+        // Create workspace .kiro directory to simulate an active Kiro workspace
+        let ws_kiro = ws.join(".kiro");
+        let ws_kiro_settings = ws_kiro.join("settings");
+        fs::create_dir_all(&ws_kiro_settings).unwrap();
+
+        let summary = run_install(None, false, true, true, Some(&ws)).unwrap();
+
+        // 1. Verify workspace Kiro mcp.json was created/configured
+        let mcp_json_path = ws_kiro_settings.join("mcp.json");
+        assert!(mcp_json_path.exists(), "mcp.json should be written");
+        let mcp_content: Value =
+            serde_json::from_str(&fs::read_to_string(&mcp_json_path).unwrap()).unwrap();
+        assert!(
+            mcp_content["mcpServers"]["ctxvault"]["command"].is_string(),
+            "ctxvault server command should be configured in mcpServers"
+        );
+
+        // 2. Verify Kiro subagent profiles were generated
+        let scout_agent_path = ws_kiro.join("agents").join("ctxvault-scout.json");
+        let analysis_agent_path = ws_kiro.join("agents").join("ctxvault-analysis.json");
+        assert!(scout_agent_path.exists(), "ctxvault-scout.json should be created");
+        assert!(analysis_agent_path.exists(), "ctxvault-analysis.json should be created");
+
+        let scout_agent: Value =
+            serde_json::from_str(&fs::read_to_string(&scout_agent_path).unwrap()).unwrap();
+        assert_eq!(scout_agent["name"], "ctxvault-scout");
+        let scout_args = scout_agent["mcpServers"]["ctxvault"]["args"].as_array().unwrap();
+        assert_eq!(scout_args, &vec![json!("--profile"), json!("scout")]);
+
+        // 3. Verify Kiro steering rule was installed
+        let rules_path = ws_kiro.join("rules").join("ctxvault.md");
+        let steering_path = ws_kiro.join("steering").join("ctxvault.md");
+        assert!(rules_path.exists(), "rules/ctxvault.md should be written");
+        assert!(steering_path.exists(), "steering/ctxvault.md should be written");
+        assert!(fs::read_to_string(&rules_path)
+            .unwrap()
+            .contains("ctxvault MCP Steering Protocol"));
+
+        assert!(!summary.configured.is_empty());
+    }
 }

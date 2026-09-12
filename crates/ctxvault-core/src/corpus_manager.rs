@@ -152,9 +152,10 @@ impl CorpusManager {
         let corpus_path = PathBuf::from(&config.path);
 
         // Auto-bootstrap from committed SCM artifact if central cache is empty
-        let scm_bundle = corpus_path.join(".ctxvault").join("vault.tar.zst");
-        if scm_bundle.exists() && !index_dir.join("meta.db").exists() {
-            let _ = crate::bundle::import_bundle(&scm_bundle, index_dir, None, None);
+        if let Some(scm_bundle) = crate::bundle::detect_bundle(&corpus_path) {
+            if !index_dir.join("meta.db").exists() {
+                let _ = crate::bundle::import_bundle(&scm_bundle, index_dir, None, None);
+            }
         }
 
         let engine = crate::engine_builder::EngineBuilder::open(config, index_dir)?;
@@ -175,10 +176,9 @@ impl CorpusManager {
     /// Add a corpus to the manager.
     ///
     /// Opens or creates the engine for the given corpus config.
-    /// Index artifacts default to central storage (`${CTXV_CACHE_DIR}/corpora/<name>`)
-    /// unless an explicit `.index` directory already exists in the repository.
+    /// Index artifacts default to central storage (`${CTXV_CACHE_DIR}/corpora/<name>`).
     pub fn add_corpus(&mut self, config: CorpusConfig) -> Result<()> {
-        let index_dir = PathBuf::from(&config.path).join(".index");
+        let index_dir = ctxvault_common::config::get_corpus_index_dir(&config.name);
         self.add_corpus_with_index_dir(config, &index_dir)
     }
 
@@ -227,19 +227,15 @@ impl CorpusManager {
             counter += 1;
         }
 
-        // Index storage: local .index if present, otherwise central cache
-        let local_index = canonical.join(".index");
+        // Index storage: always central storage in ${CTXV_CACHE_DIR}/corpora/<name>
         let local_config = canonical.join("corpus.toml");
-        let index_dir = if local_index.exists() {
-            local_index
-        } else {
-            ctxvault_common::config::get_corpus_index_dir(&name)
-        };
+        let index_dir = ctxvault_common::config::get_corpus_index_dir(&name);
 
-        // Auto-bootstrap from committed SCM artifact if cache is empty
-        let scm_bundle = canonical.join(".ctxvault").join("vault.tar.zst");
-        if scm_bundle.exists() && !index_dir.join("meta.db").exists() {
-            let _ = crate::bundle::import_bundle(&scm_bundle, &index_dir, None, None);
+        // Auto-bootstrap from committed SCM artifact if central cache is empty
+        if let Some(scm_bundle) = crate::bundle::detect_bundle(&canonical) {
+            if !index_dir.join("meta.db").exists() {
+                let _ = crate::bundle::import_bundle(&scm_bundle, &index_dir, None, None);
+            }
         }
 
         let config = if local_config.exists() {
@@ -366,13 +362,14 @@ impl CorpusManager {
         crate::bundle::export_bundle(engine, out_path, source_commit)
     }
 
-    /// Import an index bundle, unpack it into `<target_corpus_dir>/.index`, and mount it.
+    /// Import an index bundle into central storage (`${CTXV_CACHE_DIR}/corpora/<name>`) and mount it.
     pub fn import_corpus(
         &mut self,
         bundle_path: &Path,
         target_corpus_dir: &Path,
     ) -> Result<crate::bundle::BundleManifest> {
-        let target_index_dir = target_corpus_dir.join(".index");
+        let manifest = crate::bundle::validate_bundle(bundle_path, None, None)?;
+        let target_index_dir = ctxvault_common::config::get_corpus_index_dir(&manifest.corpus_name);
         let manifest = crate::bundle::import_bundle(bundle_path, &target_index_dir, None, None)?;
 
         let config = CorpusConfig {
@@ -1175,6 +1172,11 @@ mod tests {
         }
     }
 
+    fn add_test_corpus(manager: &mut CorpusManager, config: CorpusConfig) {
+        let index_dir = PathBuf::from(&config.path).join(".index");
+        manager.add_corpus_with_index_dir(config, &index_dir).unwrap();
+    }
+
     #[test]
     fn test_create_empty_manager() {
         let manager = CorpusManager::new();
@@ -1190,7 +1192,7 @@ mod tests {
 
         let mut manager = CorpusManager::new();
         let config = test_config("wiki", &corpus_dir);
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         assert_eq!(manager.corpus_count(), 1);
         assert_eq!(manager.default_corpus_name(), Some("wiki"));
@@ -1206,8 +1208,8 @@ mod tests {
         fs::create_dir_all(&docs_dir).unwrap();
 
         let mut manager = CorpusManager::new();
-        manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
-        manager.add_corpus(test_config("docs", &docs_dir)).unwrap();
+        add_test_corpus(&mut manager, test_config("wiki", &wiki_dir));
+        add_test_corpus(&mut manager, test_config("docs", &docs_dir));
 
         assert_eq!(manager.corpus_count(), 2);
 
@@ -1245,8 +1247,8 @@ mod tests {
         fs::create_dir_all(&docs_dir).unwrap();
 
         let mut manager = CorpusManager::new();
-        manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
-        manager.add_corpus(test_config("docs", &docs_dir)).unwrap();
+        add_test_corpus(&mut manager, test_config("wiki", &wiki_dir));
+        add_test_corpus(&mut manager, test_config("docs", &docs_dir));
 
         // None resolves to default (wiki, since it was added first).
         {
@@ -1271,7 +1273,7 @@ mod tests {
         fs::create_dir_all(&wiki_dir).unwrap();
 
         let mut manager = CorpusManager::new();
-        manager.add_corpus(test_config("wiki", &wiki_dir)).unwrap();
+        add_test_corpus(&mut manager, test_config("wiki", &wiki_dir));
 
         let list = manager.list_corpora();
         assert_eq!(list.len(), 1);
@@ -1329,7 +1331,9 @@ mod tests {
     fn add_fast_corpus(manager: &mut CorpusManager, name: &str, root: &Path) {
         let dir = root.join(name);
         fs::create_dir_all(&dir).unwrap();
-        manager.add_corpus(linking_config(name, &dir)).unwrap();
+        let config = linking_config(name, &dir);
+        let index_dir = dir.join(".index");
+        manager.add_corpus_with_index_dir(config, &index_dir).unwrap();
     }
 
     #[test]

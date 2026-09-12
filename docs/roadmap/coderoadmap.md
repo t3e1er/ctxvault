@@ -1,4 +1,4 @@
-﻿# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
+# Codebase Semantic Indexing & Cross-Modal Retrieval Roadmap (`CODEROADMAP.md`)
 
 This roadmap defines the architectural specification, academic foundations, tooling evaluation, and phased engineering plan for integrating **polyglot codebases** into the **Enterprise Semantic MCP** engine (`ctxvault-core`, `ctxvault-common`, `ctxvault-mcp`).
 
@@ -410,4 +410,19 @@ Identified during disk footprint profiling on the 14k-file Kubernetes index run 
      - All snippet fetches (`search`, `get_snippet`, `read_file`) read direct byte-range slices from the authoritative source file on disk. Modern OS page cache keeps hot working files in memory (<50µs read latency).
    - *Impact*: Slashes SQLite `meta.db` from 1.36 GB down to **~350 MB** and shrinks Tantivy `.store` files by **~60%**, dropping total index footprint on 14k files from 2.15 GB down to **<700 MB** (reducing overall expansion from 7.2x to ~2.3x).
 
+---
 
+### 10.6 Token-Optimal Agent Responses: Lean Multiline Text Emission (Roadmap)
+*Authoritative RFC*: [[docs/roadmap/RFC-lean-multiline-text-emission]]
+
+Identified during LLM agent context profiling and benchmark evaluation against `codebase-memory-mcp`'s `compact_out` architecture:
+
+1. **The JSON Context Tax**:
+   - *Problem*: In the MCP specification, tool results are delivered as raw text (`content[0].text`). Serializing complex AST structures to JSON forces coding agents to ingest repetitive schema keys (`"node":`, `"rel":`, `"file":`, `"line":`, `"hop":`, `"branches":`), quotes, and closing delimiter cascades (`}]}}`). On deep multi-hop traversals, **50% to 70% of response tokens are purely structural boilerplate**.
+   - *Solution*: Emit indented, human-and-LLM-readable ASCII Cypher trees for `graph_match`, and metadata-headed Markdown code blocks for `search` and `get_snippet`.
+   - *Impact*: Reduces context consumption from **~420 tokens down to ~130 tokens per 14-node tree (~69% reduction)**, slashing attention noise and maximizing available reasoning context.
+
+2. **Unified Progressive Disclosure Text Formats**:
+   - *Tier 1 (`search`)*: Partitioned Markdown sections with hit ranking, scores, affordance counts, and Turn 1 syntax-highlighted snippets.
+   - *Tier 2A (`get_snippet`)*: Bounded source blocks with single-line metadata header (`path:start-end (lines: N)`).
+   - *Tier 2B (`graph_match`)*: 2-space indented Cypher ASCII trees with quantified blast radius summary header (`[direct: D, transitive: T, files: F, depth: H]`) and hub suppression annotations (`[hub: +N more]`).

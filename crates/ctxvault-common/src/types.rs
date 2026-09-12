@@ -673,6 +673,12 @@ pub struct SearchResult {
     /// Graph degree affordances for Turn 2 expansion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_affordances: Option<GraphAffordances>,
+    /// Immediate 1-hop neighborhood in Cypher-Lite ASCII notation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+    /// Code symbol identifier (provided when snippet is omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
 }
 
 impl SearchResult {
@@ -689,7 +695,21 @@ impl SearchResult {
             language: None,
             corpus: None,
             graph_affordances: None,
+            graph: None,
+            symbol: None,
         }
+    }
+
+    /// Set Cypher-Lite graph representation.
+    pub fn with_graph(mut self, graph: Option<String>) -> Self {
+        self.graph = graph;
+        self
+    }
+
+    /// Set symbol identifier.
+    pub fn with_symbol(mut self, symbol: Option<String>) -> Self {
+        self.symbol = symbol;
+        self
     }
 
     /// Set snippet text.
@@ -769,17 +789,35 @@ pub struct VectorSearchResult {
     pub modality: String,
 }
 
+fn is_zero_f64(v: &f64) -> bool {
+    v.abs() < 1e-9
+}
+
 /// Breakdown of how a search score was computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreBreakdown {
     /// BM25 component (0.0 if not applicable).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub bm25: f64,
     /// Vector cosine similarity component.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub vector: f64,
     /// Graph proximity boost.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub graph_boost: f64,
     /// Number of hops from seed in graph traversal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_hops: Option<usize>,
+}
+
+impl ScoreBreakdown {
+    /// Returns true if all numerical components are zero and graph_hops is None.
+    pub fn is_empty(&self) -> bool {
+        is_zero_f64(&self.bm25)
+            && is_zero_f64(&self.vector)
+            && is_zero_f64(&self.graph_boost)
+            && self.graph_hops.is_none()
+    }
 }
 
 /// Depth level for dual-level retrieval.
@@ -980,10 +1018,13 @@ pub struct GraphAffordances {
     /// Dynamic counts for language-specific or extended edge types (e.g. decorates, extends, foreign_key).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub edge_counts: HashMap<String, usize>,
+    /// Count of edges suppressed due to hub degree thresholds, keyed by edge type.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub suppressed_edges: HashMap<String, usize>,
 }
 
 impl GraphAffordances {
-    /// Returns true if all affordance counts are None or zero and edge_counts is empty.
+    /// Returns true if all affordance counts are None or zero, and edge_counts and suppressed_edges are empty.
     pub fn is_empty(&self) -> bool {
         self.calls_in.unwrap_or(0) == 0
             && self.calls_out.unwrap_or(0) == 0
@@ -993,6 +1034,7 @@ impl GraphAffordances {
             && self.wikilinks_out.unwrap_or(0) == 0
             && self.documents_code.unwrap_or(0) == 0
             && self.edge_counts.is_empty()
+            && self.suppressed_edges.is_empty()
     }
 }
 
@@ -1052,56 +1094,59 @@ pub struct EdgeRecord {
     pub metadata: Option<String>,
 }
 
-/// Result of a `graph_match` path query.
+/// Result of a `graph_match` traversal query formatted as a hierarchical branching tree.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraphMatchResult {
-    /// Matched paths from anchor to terminal node.
-    pub matches: Vec<PathMatch>,
-    /// Total matched path instances.
+    /// Root node from which the pattern query expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// Source file and line of the root entity if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// High-signal cardinality summary (direct & transitive impact, files affected, max depth).
+    pub summary: GraphImpactSummary,
+    /// Hierarchical branching tree of traversed paths.
+    pub tree: Vec<GraphTreeNode>,
+    /// Total matches / paths reached.
     pub total_matches: usize,
-    /// Distinct nodes in the matched subgraph.
-    pub nodes: Vec<MatchedNode>,
-    /// Distinct edges in the matched subgraph.
-    pub edges: Vec<MatchedEdge>,
 }
 
-/// A single matched path traversal.
+/// Summary metrics of graph impact / blast radius.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PathMatch {
-    /// Identifier or scope path of the terminal node.
+pub struct GraphImpactSummary {
+    /// Number of immediate 1-hop connections.
+    pub direct: usize,
+    /// Total number of unique transitive nodes reached.
+    pub transitive: usize,
+    /// Number of unique files affected across the traversed subgraph.
+    pub files: usize,
+    /// Maximum hop depth reached.
+    pub max_depth: usize,
+}
+
+/// A node in the hierarchical graph traversal tree.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphTreeNode {
+    /// Node identifier or scope path.
     pub node: String,
-    /// Traversal depth (hops) from the anchor.
-    pub depth: usize,
-    /// Linear path representation (e.g. "A -> B <- C").
-    pub path: String,
-    /// Symbol type or node label if known.
+    /// Relationship type leading to this node (e.g. "calls", "implements", "extends").
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub symbol_type: Option<String>,
-    /// File path where the terminal entity lives.
+    pub rel: Option<String>,
+    /// File path where this entity is defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
-}
-
-/// A node in the matched subgraph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedNode {
-    /// Node identifier (path or scope path).
-    pub id: String,
-    /// Node label (e.g. "CodeSymbol", "DocNode", "Interface").
-    pub label: String,
-    /// Node properties.
-    pub properties: std::collections::HashMap<String, String>,
-}
-
-/// An edge in the matched subgraph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedEdge {
-    /// Source node ID.
-    pub source: String,
-    /// Target node ID.
-    pub target: String,
-    /// Edge type (e.g. "calls", "implements").
-    pub edge_type: String,
-    /// Direction relative to traversal ("outgoing", "incoming").
-    pub direction: String,
+    pub file: Option<String>,
+    /// Starting line number in the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    /// Hop distance from the root.
+    pub hop: usize,
+    /// Child branches expanding from this node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<GraphTreeNode>,
+    /// Number of suppressed branches if this node is a high-degree hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppressed: Option<usize>,
+    /// Whether this node was identified and capped as a high-degree hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<bool>,
 }

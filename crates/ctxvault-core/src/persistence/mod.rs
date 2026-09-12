@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_file_chunk ON chunks(file_path, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_chunks_file_covering ON chunks(file_path, chunk_index, start_line, end_line, start_byte, end_byte);
 
 CREATE TABLE IF NOT EXISTS edge_types (
     name TEXT PRIMARY KEY,
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS code_symbols (
 CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_code_symbols_scope ON code_symbols(scope_path);
+CREATE INDEX IF NOT EXISTS idx_code_symbols_file_covering ON code_symbols(file_path, scope_path, symbol_type, start_line, end_line);
 
 CREATE TABLE IF NOT EXISTS edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,12 +160,18 @@ impl Store {
 
     /// Common initialization: pragmas + schema.
     fn initialize(conn: Connection) -> Result<Self> {
-        conn.execute_batch("PRAGMA journal_mode = WAL;")
-            .map_err(|e| Error::Database(e.to_string()))?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|e| Error::Database(e.to_string()))?;
-        conn.execute_batch("PRAGMA busy_timeout = 5000;")
-            .map_err(|e| Error::Database(e.to_string()))?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout = 10000;
+            PRAGMA mmap_size = 268435456;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA cache_size = -65536;
+            PRAGMA synchronous = NORMAL;
+            "#,
+        )
+        .map_err(|e| Error::Database(e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL).map_err(|e| Error::Database(e.to_string()))?;
         Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
@@ -742,6 +750,57 @@ impl Store {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
     }
 
+    /// Retrieve all code symbols defined across a batch of files in a single batch query.
+    pub fn get_code_symbols_for_files(
+        &self,
+        file_paths: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<ctxvault_common::types::CodeSymbol>>> {
+        let mut map: std::collections::HashMap<String, Vec<ctxvault_common::types::CodeSymbol>> =
+            std::collections::HashMap::with_capacity(file_paths.len());
+        if file_paths.is_empty() {
+            return Ok(map);
+        }
+
+        let conn = self.conn();
+        for chunk in file_paths.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line
+                 FROM code_symbols WHERE file_path IN ({placeholders}) ORDER BY file_path, start_line"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| Error::Database(e.to_string()))?;
+            let params_vec: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+            let rows = stmt
+                .query_map(params_vec.as_slice(), |row| {
+                    let type_str: String = row.get(3)?;
+                    let symbol_type: ctxvault_common::types::CodeSymbolType =
+                        serde_json::from_str(&format!("\"{type_str}\""))
+                            .unwrap_or(ctxvault_common::types::CodeSymbolType::Function);
+                    Ok(ctxvault_common::types::CodeSymbol {
+                        file_path: row.get(0)?,
+                        name: row.get(1)?,
+                        scope_path: row.get(2)?,
+                        symbol_type,
+                        language: row.get(4)?,
+                        signature: row.get(5)?,
+                        docstring: row.get(6)?,
+                        start_line: row.get::<_, i64>(7)? as usize,
+                        end_line: row.get::<_, i64>(8)? as usize,
+                    })
+                })
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            for sym in rows {
+                let s = sym.map_err(|e| Error::Database(e.to_string()))?;
+                map.entry(s.file_path.clone()).or_default().push(s);
+            }
+        }
+
+        Ok(map)
+    }
+
     /// Find code symbols matching a name pattern.
     pub fn find_symbols_by_name(
         &self,
@@ -1105,6 +1164,13 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         file_path: &str,
     ) -> Result<Vec<ctxvault_common::types::CodeSymbol>> {
         Store::get_code_symbols_for_file(self, file_path)
+    }
+
+    fn get_code_symbols_for_files(
+        &self,
+        file_paths: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<ctxvault_common::types::CodeSymbol>>> {
+        Store::get_code_symbols_for_files(self, file_paths)
     }
 
     fn find_symbols_by_name(

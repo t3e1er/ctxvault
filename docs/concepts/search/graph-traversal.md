@@ -43,21 +43,48 @@ Traversals can filter across dedicated graph layers:
 * `crossmodal`: Links between code and documentation (`documents`, `implements_spec`).
 * `hybrid`: Blended multi-layer traversals.
 
-### Sub-Millisecond SQLite Execution
-Cypher-Lite queries compile down to recursive SQL with cycle guards:
-```sql
-WITH RECURSIVE traversal(src, dst, depth, path) AS (
-    SELECT source, target, 1, source || '->' || target
-    FROM code_edges WHERE source = ?
-    UNION ALL
-    SELECT e.source, e.target, t.depth + 1, t.path || '->' || e.target
-    FROM code_edges e
-    JOIN traversal t ON e.source = t.dst
-    WHERE t.depth < 2 AND instr(t.path, e.target) = 0
-)
-SELECT * FROM traversal;
+### Hierarchical Branching Tree & Hub Suppression
+Rather than returning flat Cartesian path lists that duplicate prefixes and waste context tokens, [`graph_match`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs) returns a hierarchical branching tree modeled by [`GraphMatchResult`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/types.rs):
+
+```json
+{
+  "root": "detect_bundle",
+  "file": "crates/ctxvault-core/src/bundle.rs:32",
+  "summary": {
+    "direct": 2,
+    "transitive": 3,
+    "files": 2,
+    "max_depth": 2
+  },
+  "tree": [
+    {
+      "node": "build_pipeline",
+      "rel": "calls",
+      "file": "crates/ctxvault-core/src/pipeline.rs",
+      "line": 45,
+      "hop": 1,
+      "branches": [
+        {
+          "node": "main",
+          "rel": "calls",
+          "file": "crates/ctxvault-cli/src/main.rs",
+          "line": 110,
+          "hop": 2
+        }
+      ]
+    }
+  ],
+  "total_matches": 3
+}
 ```
-Execution finishes in **under 1.8ms**.
+
+#### Key Capabilities:
+* **Quantified Blast Radius (`summary`)**: Instant structural signal informing the agent of `direct` (1-hop), `transitive` (multi-hop ripple), `files` affected, and `max_depth` traversed.
+* **Hub Suppression**: High-degree utilities (e.g. logging/formatting/error helpers with >10 callers) are automatically capped at 10 branches, flagged with `"hub": true`, and annotated with `"suppressed": <count>` to prevent combinatorial explosion.
+* **Cycle Guarded**: Path ancestry sets prevent cycles and infinite loops across mutual call chains.
+* **Zero Semantic Duplication**: Redundant properties and syntax wrappers are omitted; file and line references provide direct jump targets.
+
+Execution by [`QueryEngine`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/graph/query.rs) finishes in **under 1.8ms**.
 
 ---
 

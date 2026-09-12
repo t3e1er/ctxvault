@@ -380,11 +380,8 @@ fn search_hybrid_single(
             if hops == 0 {
                 continue;
             }
-            // Hub suppression / in-degree penalty to guard against noisy neighbors
-            let affordances = graph.compute_affordances(&neighbor_path);
-            let in_degree = affordances.calls_in.unwrap_or(0)
-                + affordances.wikilinks_in.unwrap_or(0)
-                + affordances.implements.unwrap_or(0);
+            // Hub suppression / in-degree penalty to guard against noisy neighbors (O(1) in-degree)
+            let in_degree = graph.in_degree(&neighbor_path);
             let hub_dampener = 1.0 / (1.0 + (in_degree as f64 / 10.0)).sqrt();
             let boost = (1.0 / (hops as f64)) * hub_dampener;
             let entry = graph_boost_map.entry(neighbor_path).or_insert((0.0, hops));
@@ -621,11 +618,8 @@ fn search_hybrid_full_single(
             if hops == 0 {
                 continue;
             }
-            // Hub suppression / in-degree penalty to guard against noisy neighbors
-            let affordances = graph.compute_affordances(&neighbor_path);
-            let in_degree = affordances.calls_in.unwrap_or(0)
-                + affordances.wikilinks_in.unwrap_or(0)
-                + affordances.implements.unwrap_or(0);
+            // Hub suppression / in-degree penalty to guard against noisy neighbors (O(1) in-degree)
+            let in_degree = graph.in_degree(&neighbor_path);
             let hub_dampener = 1.0 / (1.0 + (in_degree as f64 / 10.0)).sqrt();
             let boost = (1.0 / (hops as f64)) * hub_dampener;
             let entry = graph_boost_map.entry(neighbor_path).or_insert((0.0, hops));

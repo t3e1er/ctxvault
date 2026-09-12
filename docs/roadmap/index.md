@@ -32,3 +32,4 @@ This section tracks the technical roadmap and Request for Comments (RFC) enginee
 | **[[docs/roadmap/RFC-treesitter-expansion-and-lsp-analysis]]** | Tree-sitter Polyglot AST & Language Expansion | Implemented | cAST chunking across 16+ languages with parent scope breadcrumb injection. |
 | **[[docs/roadmap/RFC-docs-embed-intermediate-indexing-mode]]** | Intermediate Docs-Embed Indexing Mode | Implemented | Fast indexing mode prioritizing markdown doc embeddings over raw code vectors. |
 | **[[docs/roadmap/RFC-markdown-templates-and-frontmatter-edge-schema]]** | Markdown Templates & Frontmatter Edge Schema | Proposed | Native .templates/*.md standard with frontmatter schema, edge synthesis, and scaffolding. |
+| **[[docs/roadmap/RFC-lean-multiline-text-emission]]** | Lean Multiline Text Emission Protocol | Proposed | Eliminating JSON context overhead via indented Cypher ASCII trees and markdown blocks (~69% token savings). |

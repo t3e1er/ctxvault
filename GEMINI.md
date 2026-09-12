@@ -84,9 +84,11 @@ Authoritative tool registry: `crates/ctxvault-mcp/src/tools/mod.rs`. Handlers ar
    - `mode="graph"`: Typed graph traversal; filter by `edge_types` or `edge_class` (`code`, `structural`, `semantic`, `crossmodal`, `hybrid`).
    - `mode="explain"`: Introspect scoring breakdowns (BM25 vs vector vs graph).
    - `snippets=K`: Search automatically inlines source snippets for the top $K$ results (default 3) directly in Turn 1 across docs and code. Set `snippets=0` for pure handle sweeps.
-3. **Turn 1 Affordance Grounding & Turn 2 Path Expansion**:
+   - `detail="ids"`: Strips Turn 1 snippets, graph affordances, and zero score breakdowns for minimal token consumption (<250 tokens) during wide identifier sweeps.
+3. **Turn 1 Affordance Grounding, Path Expansion & Structural Census**:
+   - Census: Use `status(scope="census" | "architecture")` for instant (<2ms) whole-repository structural inventory (symbol counts, edge counts, language breakdown, and total file counts).
    - Turn 1: `search` returns partitioned results (`docs` and `code`) enriched with `graph_affordances` (degree counts: `calls_in`, `calls_out`, `implements`, `imports`, `wikilinks_in`, etc.) and `schema_envelope` (active node labels and edge types).
-   - Turn 2: Follow information scents with `graph_match` using linear Cypher-Lite ASCII patterns, e.g. `(:CodeSymbol {name: "foo"})-[:calls*1..2]->(target)` or `(:DocNode {path: "adrs/002.md"})-[:supersedes]->(target)`. Use `graph_communities(view="architecture")` for high-level architectural component mapping.
+   - Turn 2: Follow information scents with `graph_match` using linear Cypher-Lite ASCII patterns, e.g. `(:CodeSymbol {name: "foo"})-[:calls*1..2]->(target)` or `(:DocNode {path: "adrs/002.md"})-[:supersedes]->(target)`. Use `graph_communities(view="architecture")` for high-level architectural component mapping (summarized key nodes, no full member dump).
 4. **Progressive disclosure (Strict 3-Tier Pipeline)**:
    - Tier 1: Query `search` (receives top $K$ source snippets + handles + affordance degree counts).
    - Tier 2: Fetch targeted symbol definitions or doc chunks via `get_snippet(symbol="...")` / `get_snippet(path="...", chunk_id=N)`.

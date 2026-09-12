@@ -312,7 +312,7 @@ impl ToolRegistry {
         // Graph tools
         self.register_read(
             "graph_match",
-            "Linear Cypher-Lite graph path query compiled to recursive SQLite CTEs. Traverses heterogeneous relations across code symbols and documentation notes. Cycle-safe with depth bounding.",
+            "Hierarchical Cypher-Lite graph traversal query compiled to SQLite recursive CTEs. Returns a branching tree representation with blast radius impact summary and hub suppression. Cycle-safe with depth bounding.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -345,13 +345,15 @@ impl ToolRegistry {
 
         self.register_read(
             "graph_communities",
-            "Detect communities in the knowledge graph. Defaults to Leiden partition. Pass view='architecture' for a high-level subsystem component overview with top key nodes, or view='raw' for raw community assignments.",
+            "Detect communities in the knowledge graph. Defaults to Leiden partition. Pass view='architecture' for a high-level subsystem component overview with top key nodes (summarized, no raw member dump), or pass community_id to inspect members of a specific community.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" },
                     "view": { "type": "string", "enum": ["architecture", "raw"], "description": "View mode: 'architecture' for high-level components with top key nodes, 'raw' for raw community clusters (default: 'raw')" },
-                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
+                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" },
+                    "community_id": { "type": "integer", "description": "Optional community ID to inspect member nodes for that specific community" },
+                    "limit": { "type": "integer", "description": "Maximum number of communities to return in overview (default 10) or member nodes when community_id is specified (default 50)" }
                 },
                 "required": []
             }),
@@ -368,8 +370,8 @@ impl ToolRegistry {
                     "path": { "type": "string", "description": "Relative path for the note (e.g. 'projects/my-note.md')" },
                     "content": { "type": "string", "description": "Body content of the note (markdown)" },
                     "mode": { "type": "string", "enum": ["create", "overwrite", "append", "prepend"], "description": "Write mode: 'create' (default, fails if file exists), 'overwrite', 'append', or 'prepend'" },
-                    "frontmatter": { "type": "object", "description": "YAML frontmatter fields as key-value pairs" },
-                    "template": { "type": "string", "description": "Template schema to associate in frontmatter" }
+                    "frontmatter": { "type": "object", "description": "Optional YAML frontmatter fields as a JSON object (title, tags, etc.)" },
+                    "template": { "type": "string", "description": "Optional template name to validate against before writing" }
                 },
                 "required": ["path", "content"]
             }),
@@ -378,11 +380,11 @@ impl ToolRegistry {
 
         self.register_write(
             "delete_note",
-            "Delete a note from disk and remove it from all indices.",
+            "Delete a note from the corpus and purge it from all indices (Tantivy, vector store, graph, metadata).",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note to delete" }
+                    "path": { "type": "string", "description": "Relative path of the note to delete" }
                 },
                 "required": ["path"]
             }),
@@ -391,37 +393,22 @@ impl ToolRegistry {
 
         self.register_write(
             "move_note",
-            "Move/rename a note, updating wikilinks in other notes that reference it.",
+            "Move or rename a note, automatically updating inbound wikilinks across the corpus and all indices.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "from": { "type": "string", "description": "Current relative path of the note" },
-                    "to": { "type": "string", "description": "New relative path for the note" }
+                    "to": { "type": "string", "description": "New relative path of the note" }
                 },
                 "required": ["from", "to"]
             }),
             handle_move_note,
         );
 
-        // Validation tools
-        self.register_read(
-            "validate",
-            "Validate a single note schema (if 'path' provided) or the entire corpus against declared templates and structural graph integrity (broken wikilinks, DAG cycles, orphan ADRs).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Optional relative path to validate a single note. If omitted, validates the entire corpus." },
-                    "check_taxonomy": { "type": "boolean", "description": "When validating corpus, also check structural graph taxonomy: broken links, cycles, orphan ADRs (default true)" },
-                    "limit": { "type": "number", "description": "Maximum issues to return when validating corpus" }
-                },
-                "required": []
-            }),
-            handle_validate,
-        );
-
+        // Validation / Template tools
         self.register_read(
             "list_templates",
-            "List all available templates with their field schemas and content rules.",
+            "List registered note templates with their required and optional frontmatter fields, valid types, and regex rules.",
             serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -430,14 +417,28 @@ impl ToolRegistry {
             handle_list_templates,
         );
 
-        // System tools
         self.register_read(
-            "status",
-            "Corpus, indexing, graph topology, and coverage status in one tool via `scope`: corpus = per-corpus statistics and configuration; indexing = progress/throughput; graph = topology stats, density, and orphans; coverage = path-level index and parse status (requires 'paths'); all (default) = combined. When no specific corpus is targeted the multi-corpus overview is returned.",
+            "validate",
+            "Run schema validation. Pass 'path' to validate a single note against its template; omit 'path' to scan the entire corpus. Pass check_taxonomy=true to enforce the corpus-defined tag/category taxonomy.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "coverage", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats & density; coverage = path-level index & parse status; all (default) = combined." },
+                    "path": { "type": "string", "description": "Optional relative path of a note to validate. If omitted, validates the entire corpus." },
+                    "check_taxonomy": { "type": "boolean", "description": "Enforce the corpus-defined tag and category taxonomy (default false)" }
+                },
+                "required": []
+            }),
+            handle_validate,
+        );
+
+        // System / Corpus tools
+        self.register_read(
+            "status",
+            "Report corpus health, indexing progress, graph topology, coverage status, or high-level architecture census.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "coverage", "census", "architecture", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats & density; coverage = path-level index & parse status; census/architecture = instant structural census (symbols, edges, languages, routes); all (default) = combined." },
                     "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Scope 'coverage' only: paths or path prefixes to check for index coverage and parse status." }
                 },
@@ -660,6 +661,16 @@ fn build_dynamic_schema_envelope(
                     }
                 }
             }
+            if let Some(ref g) = item.graph {
+                for part in g.split("[:") {
+                    if let Some(end) = part.find(['*', ']', ' ', '-']) {
+                        let rel = &part[..end];
+                        if !rel.is_empty() {
+                            edges.insert(rel.to_string());
+                        }
+                    }
+                }
+            }
         }
     } else {
         labels.insert("DocNode".to_string());
@@ -693,6 +704,16 @@ fn build_dynamic_schema_envelope(
                     if *count > 0 {
                         let clean = edge_name.strip_suffix("_in").unwrap_or(edge_name);
                         edges.insert(clean.to_string());
+                    }
+                }
+            }
+            if let Some(ref g) = item.graph {
+                for part in g.split("[:") {
+                    if let Some(end) = part.find(['*', ']', ' ', '-']) {
+                        let rel = &part[..end];
+                        if !rel.is_empty() {
+                            edges.insert(rel.to_string());
+                        }
                     }
                 }
             }
@@ -1373,6 +1394,8 @@ pub(crate) struct GraphCommunitiesParams {
     pub algorithm: Option<String>,
     pub view: Option<String>,
     pub include_density: Option<bool>,
+    pub community_id: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1659,20 +1682,22 @@ fn fetch_code_symbol(
                 (String::new(), false)
             };
 
+            let total_lines = file_lines.len();
             let mut out = serde_json::json!({
-                "kind": "code_symbol",
                 "path": sym.file_path,
-                "scope_path": sym.scope_path,
-                "name": sym.name,
-                "language": sym.language,
-                "symbol_type": sym.symbol_type,
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
-                "signature": sym.signature,
-                "docstring": sym.docstring,
+                "total_lines": total_lines,
                 "source": source,
-                "truncated": truncated,
             });
+            if let Some(ref doc) = sym.docstring {
+                if !doc.trim().is_empty() {
+                    out["docstring"] = serde_json::Value::String(doc.clone());
+                }
+            }
+            if truncated {
+                out["truncated"] = serde_json::Value::Bool(true);
+            }
 
             if include_neighbors {
                 let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
@@ -1779,15 +1804,19 @@ fn fetch_doc_chunk(
     let text_lines: Vec<&str> = chunk_text.lines().collect();
     let (text, truncated) = cap_lines(&text_lines, max_lines);
 
+    let full_doc_path = Path::new(&engine.config().path).join(path);
+    let total_lines =
+        read_file_lossy(&full_doc_path).map(|c| c.lines().count()).unwrap_or(text_lines.len());
+
     let mut out = serde_json::json!({
-        "kind": "doc_chunk",
         "path": path,
         "chunk_index": chunk.chunk_index,
-        "start_byte": chunk.start_byte,
-        "end_byte": chunk.end_byte,
+        "total_lines": total_lines,
         "text": text,
-        "truncated": truncated,
     });
+    if truncated {
+        out["truncated"] = serde_json::Value::Bool(true);
+    }
 
     if include_neighbors {
         let neighbor_cap = (max_lines / 2).max(1);
@@ -2075,142 +2104,146 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             }
         }
 
+        let is_lean = params.detail.as_deref() == Some("ids");
         let k =
-            if params.detail.as_deref() == Some("ids") { 0 } else { params.snippets.unwrap_or(3) };
+            if is_lean { 0 } else { params.snippets.unwrap_or_else(|| params.limit.unwrap_or(10)) };
 
-        populate_top_snippets(engine, &mut docs_items, k, 40);
-        populate_top_snippets(engine, &mut code_items, k, 40);
+        populate_top_snippets(engine, &mut docs_items, k, 20);
+        populate_top_snippets(engine, &mut code_items, k, 20);
 
-        for item in &mut docs_items {
-            if item.entity_kind.is_none() {
-                item.entity_kind = Some(ctxvault_common::types::EntityKind::Documentation);
+        if is_lean {
+            for item in &mut docs_items {
+                item.graph_affordances = None;
+                item.graph = None;
+                item.score_components = None;
+                item.language = None;
+                item.entity_kind = None;
+                item.chunk_index = None;
+                item.symbol = None;
             }
-            if item.graph_affordances.is_none() {
-                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+        } else {
+            for item in &mut docs_items {
+                item.language = None;
+                item.entity_kind = None;
+                item.chunk_index = None;
+                item.symbol = None;
+                item.graph_affordances = None;
+                item.graph = engine.format_cypher_affordances(&item.path, 3);
             }
         }
 
+        let code_paths: Vec<&str> = code_items.iter().map(|item| item.path.as_str()).collect();
+        let symbols_by_file =
+            engine.store().get_code_symbols_for_files(&code_paths).unwrap_or_default();
+
         for item in &mut code_items {
-            if item.graph_affordances.is_none() {
-                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
-            }
-            if item.entity_kind.is_none()
-                || matches!(
-                    item.entity_kind,
-                    Some(ctxvault_common::types::EntityKind::CodeChunk {
-                        start_line: 0,
-                        end_line: 0,
-                        ..
-                    })
-                )
-            {
-                if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
-                    if let Some(chunk_index) = item.chunk_index {
-                        if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
-                            if let Some(chunk) =
-                                chunks.iter().find(|c| c.chunk_index == chunk_index)
-                            {
-                                if let Some(sym) = file_symbols.iter().find(|s| {
-                                    s.start_line <= chunk.end_line && s.end_line >= chunk.start_line
-                                }) {
-                                    item.entity_kind =
-                                        Some(ctxvault_common::types::EntityKind::CodeSymbol {
-                                            language: sym.language.clone(),
-                                            symbol_type: sym.symbol_type,
-                                            scope_path: sym.scope_path.clone(),
-                                            signature: sym.signature.clone(),
-                                        });
-                                    item.language = Some(sym.language.clone());
-                                } else {
-                                    item.entity_kind =
-                                        Some(ctxvault_common::types::EntityKind::CodeChunk {
-                                            language: item.language.clone().unwrap_or_default(),
-                                            scope_path: item.path.clone(),
-                                            start_line: chunk.start_line,
-                                            end_line: chunk.end_line,
-                                        });
-                                }
+            let mut matched_symbol: Option<String> = None;
+            let mut target_scope_path: Option<String> = None;
+
+            if let Some(file_symbols) = symbols_by_file.get(&item.path) {
+                if let Some(chunk_index) = item.chunk_index {
+                    if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
+                        if let Some(chunk) = chunks.iter().find(|c| c.chunk_index == chunk_index) {
+                            if let Some(sym) = file_symbols.iter().find(|s| {
+                                s.start_line <= chunk.end_line && s.end_line >= chunk.start_line
+                            }) {
+                                matched_symbol = Some(sym.name.clone());
+                                target_scope_path = Some(sym.scope_path.clone());
                             }
                         }
                     }
-                    if item.language.is_none() {
-                        if let Some(first_sym) = file_symbols.first() {
-                            item.language = Some(first_sym.language.clone());
+                }
+                if matched_symbol.is_none() {
+                    if let Some(first_sym) = file_symbols.first() {
+                        matched_symbol = Some(first_sym.name.clone());
+                        target_scope_path = Some(first_sym.scope_path.clone());
+                    }
+                }
+            } else if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
+                if let Some(sym) = symbols.first() {
+                    matched_symbol = Some(sym.name.clone());
+                    target_scope_path = Some(sym.scope_path.clone());
+                }
+            }
+
+            if is_lean {
+                item.graph_affordances = None;
+                item.graph = None;
+                item.score_components = None;
+            } else {
+                let cypher = if let Some(ref scope) = target_scope_path {
+                    engine.format_cypher_affordances(scope, 3)
+                } else {
+                    None
+                };
+
+                let cypher = cypher.or_else(|| {
+                    if let Some(file_symbols) = symbols_by_file.get(&item.path) {
+                        for sym in file_symbols {
+                            if let Some(c) = engine.format_cypher_affordances(&sym.scope_path, 3) {
+                                return Some(c);
+                            }
                         }
                     }
-                } else if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
-                    if let Some(sym) = symbols.first() {
-                        item.entity_kind = Some(ctxvault_common::types::EntityKind::CodeSymbol {
-                            language: sym.language.clone(),
-                            symbol_type: sym.symbol_type,
-                            scope_path: sym.scope_path.clone(),
-                            signature: sym.signature.clone(),
-                        });
-                        item.language = Some(sym.language.clone());
-                    }
-                }
+                    engine.format_cypher_affordances(&item.path, 3)
+                });
+
+                item.graph = cypher;
+                item.graph_affordances = None;
+            }
+
+            // Zero semantic duplication:
+            // 1. Language is omitted (file extension in `path` conveys it).
+            item.language = None;
+            // 2. Entity kind is omitted (implied by snippet/symbol).
+            item.entity_kind = None;
+            // 3. Chunk index is omitted.
+            item.chunk_index = None;
+            // 4. Bare symbol identifier is surfaced only when snippet is omitted (trailing hits or snippets: 0)
+            //    for Tier 2 progressive disclosure (get_snippet(symbol=...) or graph_match).
+            if item.snippet.is_none() {
+                item.symbol = matched_symbol;
+            } else {
+                item.symbol = None;
             }
         }
 
-        for item in &mut code_items {
-            if let Some(ctxvault_common::types::EntityKind::CodeSymbol { ref scope_path, .. }) =
-                item.entity_kind
-            {
-                item.graph_affordances = Some(engine.compute_affordances(scope_path));
-            } else if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
-                let mut combined_aff = item.graph_affordances.clone().unwrap_or_default();
-                for sym in file_symbols {
-                    let sym_aff = engine.compute_affordances(&sym.scope_path);
-                    for (k, v) in sym_aff.edge_counts {
-                        *combined_aff.edge_counts.entry(k).or_insert(0) += v;
-                    }
-                    if let Some(c) = sym_aff.calls_out {
-                        combined_aff.calls_out = Some(combined_aff.calls_out.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.calls_in {
-                        combined_aff.calls_in = Some(combined_aff.calls_in.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.implements {
-                        combined_aff.implements = Some(combined_aff.implements.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.imports {
-                        combined_aff.imports = Some(combined_aff.imports.unwrap_or(0) + c);
-                    }
-                }
-                item.graph_affordances = Some(combined_aff);
-            }
-        }
-
-        let active_doc_edges =
-            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Structural));
+        let active_doc_edges = if is_lean {
+            Vec::new()
+        } else {
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Structural))
+        };
         let docs_partition =
             if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: docs_items.len(),
                     top_k_returned: docs_items.len(),
-                    schema_envelope: build_dynamic_schema_envelope(
-                        &docs_items,
-                        false,
-                        &active_doc_edges,
-                    ),
+                    schema_envelope: if is_lean {
+                        ctxvault_common::types::SchemaEnvelope::default()
+                    } else {
+                        build_dynamic_schema_envelope(&docs_items, false, &active_doc_edges)
+                    },
                     results: docs_items,
                 })
             } else {
                 None
             };
 
-        let active_code_edges =
-            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Code));
+        let active_code_edges = if is_lean {
+            Vec::new()
+        } else {
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Code))
+        };
         let code_partition =
             if !code_items.is_empty() || modality != ctxvault_common::types::Modality::Docs {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: code_items.len(),
                     top_k_returned: code_items.len(),
-                    schema_envelope: build_dynamic_schema_envelope(
-                        &code_items,
-                        true,
-                        &active_code_edges,
-                    ),
+                    schema_envelope: if is_lean {
+                        ctxvault_common::types::SchemaEnvelope::default()
+                    } else {
+                        build_dynamic_schema_envelope(&code_items, true, &active_code_edges)
+                    },
                     results: code_items,
                 })
             } else {
@@ -2279,26 +2312,39 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
         let density_map: HashMap<usize, f64> =
             densities.into_iter().map(|d| (d.community_id, d.density)).collect();
 
-        let mut clusters = Vec::new();
-        let edges = engine.graph().get_all_edges();
+        // If a specific community is requested, return that community with its members
+        if let Some(target_id) = params.community_id {
+            if let Some(comm) = result.communities.iter().find(|c| c.id == target_id) {
+                let mut nodes = comm.members.clone();
+                nodes.sort();
+                let density = density_map.get(&target_id).copied().unwrap_or(0.0);
+                let mem_limit = params.limit.unwrap_or(50).min(nodes.len());
+                return Ok(serde_json::json!({
+                    "component_id": target_id,
+                    "node_count": nodes.len(),
+                    "internal_density": density,
+                    "members": &nodes[..mem_limit],
+                    "total_members": nodes.len(),
+                }));
+            } else {
+                return Err(Error::NotFound(format!("community_id {target_id} not found")));
+            }
+        }
 
-        for comm in &result.communities {
+        let mut clusters = Vec::new();
+        let limit = params.limit.unwrap_or(10);
+
+        let mut sorted_comms = result.communities.clone();
+        sorted_comms.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+
+        for comm in sorted_comms.into_iter().take(limit) {
             let comm_id = comm.id;
-            let mut nodes = comm.members.clone();
+            let mut nodes = comm.members;
             nodes.sort();
             let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
 
-            let mut node_degree: HashMap<String, usize> = HashMap::new();
-            for edge in &edges {
-                if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
-                    *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
-                    *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
-                }
-            }
-            let mut key_nodes: Vec<_> = nodes
-                .iter()
-                .filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg)))
-                .collect();
+            let mut key_nodes: Vec<_> =
+                nodes.iter().map(|n| (n.clone(), engine.graph().in_degree(n))).collect();
             key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
             let top_key_nodes: Vec<String> =
                 key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
@@ -2308,13 +2354,14 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
                 "node_count": nodes.len(),
                 "internal_density": density,
                 "top_nodes": top_key_nodes,
-                "members": nodes,
             }));
         }
 
         return Ok(serde_json::json!({
             "algorithm": "leiden",
             "component_count": clusters.len(),
+            "total_communities": result.communities.len(),
+            "top_components_returned": clusters.len(),
             "modularity": result.modularity,
             "components": clusters,
         }));
@@ -2477,6 +2524,29 @@ fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
         "coverage" => {
             let paths = params.paths.unwrap_or_default();
             check_index_coverage_inner(engine, &paths)
+        }
+        "census" | "architecture" => {
+            let stats = engine.graph().stats();
+            let symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+            let mut symbol_types: HashMap<String, usize> = HashMap::new();
+            let mut languages: HashMap<String, usize> = HashMap::new();
+            for s in &symbols {
+                *symbol_types.entry(format!("{:?}", s.symbol_type)).or_insert(0) += 1;
+                *languages.entry(s.language.clone()).or_insert(0) += 1;
+            }
+            let active_edges = engine.active_edge_types(None);
+            let files = engine.store().list_files().unwrap_or_default();
+            Ok(serde_json::json!({
+                "corpus_name": engine.config().name,
+                "corpus_path": engine.config().path,
+                "total_files": files.len(),
+                "total_symbols": symbols.len(),
+                "total_graph_nodes": stats.node_count,
+                "total_graph_edges": stats.edge_count,
+                "symbol_types": symbol_types,
+                "languages": languages,
+                "active_edge_types": active_edges,
+            }))
         }
         _ => {
             let corpus = corpus_stats(engine)?;
@@ -3302,7 +3372,7 @@ mod tests {
         let docs = resp.docs.unwrap();
         assert!(!docs.results.is_empty(), "Should find indexed file via search");
         assert_eq!(docs.results[0].path, "rust.md");
-        assert!(docs.results[0].graph_affordances.is_some());
+        assert!(docs.results[0].snippet.is_some());
     }
 
     #[test]
@@ -3633,6 +3703,14 @@ mod tests {
         assert!(registry.registry().get("get_indexing_status").is_none());
     }
 
+    fn add_test_corpus(
+        manager: &mut ctxvault_core::corpus_manager::CorpusManager,
+        config: CorpusConfig,
+    ) {
+        let index_dir = PathBuf::from(&config.path).join(".index");
+        manager.add_corpus_with_index_dir(config, &index_dir).unwrap();
+    }
+
     #[test]
     fn test_multi_corpus_routing_default() {
         let tmp = TempDir::new().unwrap();
@@ -3650,7 +3728,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         // Index a file in wiki.
         {
@@ -3709,8 +3787,8 @@ mod tests {
             templates_dir: None,
         };
 
-        manager.add_corpus(wiki_config).unwrap();
-        manager.add_corpus(docs_config).unwrap();
+        add_test_corpus(&mut manager, wiki_config);
+        add_test_corpus(&mut manager, docs_config);
 
         // Index different content in each corpus.
         {
@@ -3792,7 +3870,7 @@ mod tests {
                 graph: GraphConfig { edge_types: Vec::new() },
                 templates_dir: None,
             };
-            manager.add_corpus(config).unwrap();
+            add_test_corpus(&mut manager, config);
         }
 
         // Both corpora contain a doc mentioning "shared" (BM25-only; no embedder).
@@ -3908,8 +3986,8 @@ mod tests {
         fs::create_dir_all(&b_dir).unwrap();
 
         let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
-        manager.add_corpus(fast_corpus_config("A", &a_dir)).unwrap();
-        manager.add_corpus(fast_corpus_config("B", &b_dir)).unwrap();
+        add_test_corpus(&mut manager, fast_corpus_config("A", &a_dir));
+        add_test_corpus(&mut manager, fast_corpus_config("B", &b_dir));
 
         // Each corpus has a doc that shares the query token "shared" and links
         // to a neighbor so graph search (which returns discovered neighbors) has nodes.
@@ -4001,8 +4079,8 @@ mod tests {
         fs::create_dir_all(&b_dir).unwrap();
 
         let mut manager = ctxvault_core::corpus_manager::CorpusManager::new();
-        manager.add_corpus(fast_corpus_config("A", &a_dir)).unwrap();
-        manager.add_corpus(fast_corpus_config("B", &b_dir)).unwrap();
+        add_test_corpus(&mut manager, fast_corpus_config("A", &a_dir));
+        add_test_corpus(&mut manager, fast_corpus_config("B", &b_dir));
 
         // B uniquely defines `leaf`; A's `top` calls `leaf` (unresolved locally).
         {
@@ -4075,7 +4153,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         let registry = MultiCorpusToolRegistry::new();
 
@@ -4105,7 +4183,7 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
         };
-        manager.add_corpus(config).unwrap();
+        add_test_corpus(&mut manager, config);
 
         let registry = MultiCorpusToolRegistry::new();
 
@@ -4152,7 +4230,7 @@ mod tests {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(result).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert_eq!(match_res.matches[0].node, "docs/adrs/001.md");
+        assert_eq!(match_res.tree[0].node, "docs/adrs/001.md");
     }
 
     #[test]
@@ -4336,9 +4414,8 @@ pub fn tokenize(input: &str) -> Vec<String> {
             .execute_read("get_snippet", &engine, serde_json::json!({ "name": "parse_query" }))
             .unwrap();
 
-        assert_eq!(def_res["kind"], "code_symbol");
-        assert_eq!(def_res["name"], "parse_query");
         assert_eq!(def_res["path"], "parser.rs");
+        assert!(def_res["total_lines"].as_u64().unwrap() >= 1);
         assert!(def_res["source"].as_str().unwrap().contains("tokenize(raw)"));
 
         // 2. Test callers via graph_match
@@ -4352,7 +4429,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(callers_res).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert_eq!(match_res.matches[0].node, "tokenize");
+        assert_eq!(match_res.tree[0].node, "tokenize");
 
         // 3. Test graph_communities view='architecture' (absorbed get_architecture)
         let arch_res = registry
@@ -4669,7 +4746,8 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "path": "notes.md", "chunk_index": 0, "max_lines": 100 }),
             )
             .unwrap();
-        assert_eq!(chunk_res["kind"], "doc_chunk");
+        assert_eq!(chunk_res["path"], "notes.md");
+        assert!(chunk_res["total_lines"].as_u64().unwrap() >= 1);
         assert_eq!(chunk_res["chunk_index"], 0);
         assert!(chunk_res["text"].as_str().unwrap().contains("Alpha"));
 
@@ -4697,8 +4775,8 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "qualified_name": "Router > dispatch" }),
             )
             .unwrap();
-        assert_eq!(sym_res["kind"], "code_symbol");
         assert_eq!(sym_res["path"], "router.rs");
+        assert!(sym_res["total_lines"].as_u64().unwrap() >= 1);
         assert!(sym_res["source"].as_str().unwrap().contains("normalize(q)"));
         assert!(sym_res["start_line"].as_u64().unwrap() >= 1);
         assert!(
@@ -4955,9 +5033,8 @@ impl<'a, A> OtherBinder<'a, A> {
                 serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
             )
             .unwrap();
-        assert_eq!(res["kind"], "code_symbol");
-        assert_eq!(res["name"], "instantiate");
-        assert!(res["scope_path"].as_str().unwrap().contains("EarlyBinder"));
+        assert_eq!(res["path"], "binder.rs");
+        assert!(res["total_lines"].as_u64().unwrap() >= 1);
         assert!(res["source"].as_str().unwrap().contains("&self.value"));
 
         // 2. Nonexistent symbol returns clean 404 Not Found error
@@ -5029,11 +5106,11 @@ pub fn compute_hash(data: &[u8]) -> u64 {
                 serde_json::json!({ "qualified_name": "compute_hash", "include_neighbors": true }),
             )
             .unwrap();
-        assert_eq!(res["kind"], "code_symbol");
         assert_eq!(res["path"], "hash.rs");
-        assert_eq!(res["scope_path"], "compute_hash");
-        assert_eq!(res["language"], "rust");
-        assert!(res["signature"].as_str().unwrap().contains("pub fn compute_hash"));
+        assert_eq!(res["start_line"], 3);
+        assert_eq!(res["end_line"], 5);
+        assert_eq!(res["total_lines"], 5);
+        assert!(res["source"].as_str().unwrap().contains("pub fn compute_hash"));
         assert!(res["docstring"].as_str().unwrap().contains("Compute hash of input data."));
         // Grammar-driven relationships: incoming defines from hash.rs, 0 callers, 0 outgoing.
         let incoming = res["relationships"]["incoming"].as_object().unwrap();
@@ -5156,14 +5233,13 @@ export class UserService extends BaseService implements IUserService {
             code.schema_envelope.active_edges
         );
 
-        // Verify graph_affordances on the UserService hit
+        // Verify Cypher-Lite graph representation on the UserService hit
         let hit = &code.results[0];
-        let affordances = hit.graph_affordances.as_ref().expect("graph affordances");
+        let graph = hit.graph.as_ref().expect("expected graph affordances");
         assert!(
-            affordances.edge_counts.contains_key("extends")
-                || affordances.edge_counts.contains_key("decorates"),
-            "Expected extends or decorates in edge_counts: {:?}",
-            affordances.edge_counts
+            graph.contains("extends") || graph.contains("decorates"),
+            "Expected extends or decorates in graph: {}",
+            graph
         );
 
         // 2. Cypher-Lite graph_match traversal across new edge types
@@ -5178,6 +5254,6 @@ export class UserService extends BaseService implements IUserService {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(match_val).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert!(!match_res.matches.is_empty(), "Expected graph_match path for -[:extends]->");
+        assert!(!match_res.tree.is_empty(), "Expected graph_match path for -[:extends]->");
     }
 }

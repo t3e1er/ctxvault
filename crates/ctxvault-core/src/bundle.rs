@@ -212,6 +212,16 @@ pub fn import_bundle(
     Ok(manifest)
 }
 
+/// Detect portable compressed index bundle (.ctxvault/vault.tar.zst) in the repository.
+pub fn detect_bundle(corpus_root: &Path) -> Option<PathBuf> {
+    let bundle = corpus_root.join(".ctxvault").join("vault.tar.zst");
+    if bundle.is_file() {
+        Some(bundle)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +295,19 @@ mod tests {
 
         // Wrong dimension
         assert!(validate_bundle(&bundle_file, None, Some(1536)).is_err());
+    }
+
+    #[test]
+    fn test_detect_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        assert!(detect_bundle(root).is_none());
+
+        let bundle_dir = root.join(".ctxvault");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        let bundle_path = bundle_dir.join("vault.tar.zst");
+        fs::write(&bundle_path, b"dummy-bundle").unwrap();
+        assert_eq!(detect_bundle(root), Some(bundle_path));
     }
 }

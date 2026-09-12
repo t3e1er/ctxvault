@@ -43,6 +43,9 @@ zstd = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [features]
 default = []
 

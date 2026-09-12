@@ -1119,6 +1119,109 @@ impl KnowledgeGraph {
         affordances
     }
 
+    /// Format immediate 1-hop graph neighborhood as a compact Cypher-Lite ASCII expression.
+    ///
+    /// Surfaces directional relationships (e.g. `<-[:calls]-(a, b), -[:calls]->(c)`),
+    /// neighborhood density counts, and suppression metadata for high-degree hubs.
+    pub fn format_cypher_affordances(&self, path: &str, max_neighbors: usize) -> Option<String> {
+        let &idx = self.node_map.get(path)?;
+
+        let mut incoming_by_type: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut outgoing_by_type: HashMap<&str, Vec<String>> = HashMap::new();
+
+        for edge_ref in self.graph.edges_directed(idx, Direction::Incoming) {
+            let edge_type = edge_ref.weight().edge_type.as_str();
+            let source_name = clean_node_name(&self.graph[edge_ref.source()].path);
+            incoming_by_type.entry(edge_type).or_default().push(source_name);
+        }
+
+        for edge_ref in self.graph.edges_directed(idx, Direction::Outgoing) {
+            let edge_type = edge_ref.weight().edge_type.as_str();
+            let target_name = clean_node_name(&self.graph[edge_ref.target()].path);
+            outgoing_by_type.entry(edge_type).or_default().push(target_name);
+        }
+
+        if incoming_by_type.is_empty() && outgoing_by_type.is_empty() {
+            return None;
+        }
+
+        let mut clauses = Vec::new();
+
+        // Format incoming: <-[:rel*N (suppressed M)]-(nodes)
+        let mut in_keys: Vec<_> = incoming_by_type.keys().copied().collect();
+        in_keys.sort();
+        for edge_type in in_keys {
+            let mut neighbors = incoming_by_type.remove(edge_type).unwrap_or_default();
+            neighbors.sort();
+            neighbors.dedup();
+            let total = neighbors.len();
+            if total > max_neighbors {
+                let suppressed = total - max_neighbors;
+                let preview =
+                    neighbors.into_iter().take(max_neighbors).collect::<Vec<_>>().join(", ");
+                clauses.push(format!(
+                    "<-[:{}*{} (suppressed {})]-({})",
+                    edge_type, total, suppressed, preview
+                ));
+            } else if total > 1 {
+                let preview = neighbors.join(", ");
+                clauses.push(format!("<-[:{}*{}]-({})", edge_type, total, preview));
+            } else if let Some(single) = neighbors.first() {
+                clauses.push(format!("<-[:{}]-({})", edge_type, single));
+            }
+        }
+
+        // Format outgoing: -[:rel*N (suppressed M)]->(nodes)
+        let mut out_keys: Vec<_> = outgoing_by_type.keys().copied().collect();
+        out_keys.sort();
+        for edge_type in out_keys {
+            let mut neighbors = outgoing_by_type.remove(edge_type).unwrap_or_default();
+            neighbors.sort();
+            neighbors.dedup();
+            let total = neighbors.len();
+            if total > max_neighbors {
+                let suppressed = total - max_neighbors;
+                let preview =
+                    neighbors.into_iter().take(max_neighbors).collect::<Vec<_>>().join(", ");
+                clauses.push(format!(
+                    "-[:{}*{} (suppressed {})]->({})",
+                    edge_type, total, suppressed, preview
+                ));
+            } else if total > 1 {
+                let preview = neighbors.join(", ");
+                clauses.push(format!("-[:{}*{}]->({})", edge_type, total, preview));
+            } else if let Some(single) = neighbors.first() {
+                clauses.push(format!("-[:{}]->({})", edge_type, single));
+            }
+        }
+
+        Some(clauses.join(", "))
+    }
+}
+
+fn clean_node_name(path: &str) -> String {
+    // If it's a file path like "crates/ctxvault-core/src/bundle.rs" or "docs/architecture.md", take basename
+    if path.contains('/') || path.contains('\\') {
+        if let Some(pos) = path.rfind(['/', '\\']) {
+            return path[pos + 1..].to_string();
+        }
+    }
+    // If it's a scoped symbol like "CorpusManager > ensure_corpus", format as "ensure_corpus"
+    if let Some(pos) = path.rfind(" > ") {
+        return path[pos + 3..].to_string();
+    }
+    path.to_string()
+}
+
+impl KnowledgeGraph {
+    /// Return the total in-degree of a node directly without allocating affordance maps.
+    pub fn in_degree(&self, path: &str) -> usize {
+        let Some(&idx) = self.node_map.get(path) else {
+            return 0;
+        };
+        self.graph.edges_directed(idx, Direction::Incoming).count()
+    }
+
     // ─── Structural Lineage & Taxonomy ───────────────────────────────────────
 
     /// Deterministically traverse the graph along a specified structural edge type.
@@ -2067,6 +2170,10 @@ impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
 
     fn compute_affordances(&self, path: &str) -> ctxvault_common::types::GraphAffordances {
         KnowledgeGraph::compute_affordances(self, path)
+    }
+
+    fn in_degree(&self, path: &str) -> usize {
+        KnowledgeGraph::in_degree(self, path)
     }
 
     fn traverse_lineage(

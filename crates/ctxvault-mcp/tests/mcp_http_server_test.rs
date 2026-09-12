@@ -32,7 +32,8 @@ fn build_manager(name: &str, corpus_path: &std::path::Path) -> CorpusManager {
     };
 
     let mut manager = CorpusManager::new();
-    manager.add_corpus(config).expect("add corpus");
+    let index_dir = corpus_path.join(".index");
+    manager.add_corpus_with_index_dir(config, &index_dir).expect("add corpus");
     let engine = manager.default_engine_mut().expect("default engine");
     let _ = engine.full_reindex().expect("reindex");
     manager

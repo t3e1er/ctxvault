@@ -107,7 +107,7 @@ echo "[+] Successfully installed 'ctxvault' to $INSTALL_DIR/ctxvault"
 echo ""
 
 # Auto-configure installed coding agents
-echo "[*] Auto-configuring coding agents..."
+echo "[*] Auto-configuring coding agents (Cursor, Claude, Antigravity, Kiro CLI, VS Code, Windsurf, Zed)..."
 "$INSTALL_DIR/ctxvault" install -y --dir="$INSTALL_DIR"
 
 # 3. Path hint
