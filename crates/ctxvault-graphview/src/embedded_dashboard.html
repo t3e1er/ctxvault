@@ -6,11 +6,11 @@
   <title>ctxvault GraphView — 3D Knowledge Graph & Multi-Agent Activations</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
   <style>
     :root {
@@ -266,6 +266,12 @@
         <button class="pill-btn" data-mode="code">Code</button>
       </div>
 
+      <!-- Cluster Anchors Selection (Requirement: 1: Directory, 2: Community) -->
+      <div class="pill-group" id="cluster-group" title="Cluster Anchor Strategy">
+        <button class="pill-btn active" data-cluster="directory">Directory</button>
+        <button class="pill-btn" data-cluster="community">Community</button>
+      </div>
+
       <!-- Multi-Corpus Selection (Requirement 6) -->
       <select id="corpus-select" style="background: rgba(15,23,42,0.8); color: #fff; border: 1px solid var(--panel-border); padding: 6px 12px; border-radius: 8px; outline: none; font-size: 0.85rem;">
         <option value="all">Galaxy: All Corpora</option>
@@ -358,6 +364,7 @@
     // State
     let currentCorpus = 'all';
     let currentMode = 'hybrid';
+    let currentClusterMode = 'directory';
     let selectedType = 'all';
     let graphData = { nodes: [], edges: [] };
     let activations = new Map(); // path -> { time, intensity }
@@ -418,10 +425,10 @@
     }
 
     // Binary wire protocol parser (32 bytes per node, 12 bytes per edge)
-    async function fetchGraphData(corpus, mode) {
+    async function fetchGraphData(corpus, mode, clusterMode = currentClusterMode) {
       let url = corpus === 'all' 
-        ? '/api/graph/overview?format=binary' 
-        : `/api/graph/corpus/${encodeURIComponent(corpus)}?budget=35000&format=binary`;
+        ? `/api/graph/overview?format=binary&cluster_mode=${encodeURIComponent(clusterMode)}` 
+        : `/api/graph/corpus/${encodeURIComponent(corpus)}?budget=35000&format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`;
       
       const res = await fetch(url);
       const buffer = await res.arrayBuffer();
@@ -664,6 +671,15 @@
       });
     });
 
+    document.querySelectorAll('#cluster-group .pill-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        document.querySelectorAll('#cluster-group .pill-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        currentClusterMode = e.target.dataset.cluster;
+        refreshGraph();
+      });
+    });
+
     document.getElementById('corpus-select').addEventListener('change', (e) => {
       currentCorpus = e.target.value;
       refreshGraph();
@@ -797,7 +813,11 @@
         }
       }
 
-      composer.render();
+      try {
+        composer.render();
+      } catch (err) {
+        renderer.render(scene, camera);
+      }
     }
 
     // Startup

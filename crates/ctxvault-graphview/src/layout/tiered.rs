@@ -11,7 +11,7 @@ use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 
 use crate::layout::{
-    assign_color_and_type, compute_force_layout, GraphLayout, LayoutConfig, NodeLayout,
+    assign_color_and_type, compute_force_layout, ClusterMode, GraphLayout, LayoutConfig, NodeLayout,
 };
 use crate::loader::{CorpusCatalog, CorpusSnapshot};
 
@@ -21,7 +21,7 @@ pub const TIER_0_BUDGET: usize = 1000;
 pub const TIER_1_DEFAULT_BUDGET: usize = 25000;
 
 /// Compute Tier 0: Galaxy Overview across all loaded corpora or a specific corpus.
-pub fn build_tier_0_overview(catalog: &CorpusCatalog) -> GraphLayout {
+pub fn build_tier_0_overview(catalog: &CorpusCatalog, cluster_mode: ClusterMode) -> GraphLayout {
     let mut all_nodes = Vec::new();
     let mut all_edges = Vec::new();
 
@@ -35,7 +35,7 @@ pub fn build_tier_0_overview(catalog: &CorpusCatalog) -> GraphLayout {
 
         // Budget per corpus in multi-corpus mode
         let per_corpus_budget = (TIER_0_BUDGET / num_corpora).max(50);
-        let layout = build_tier_1_corpus(&snapshot, per_corpus_budget);
+        let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
         // Position offset for galaxy separation: distribute corpora around a wide circle
         let angle = 2.0 * std::f32::consts::PI * (c_idx as f32) / (num_corpora as f32);
@@ -75,7 +75,11 @@ pub fn build_tier_0_overview(catalog: &CorpusCatalog) -> GraphLayout {
 }
 
 /// Compute Tier 1: Corpus Shell layout bounded by a maximum node budget.
-pub fn build_tier_1_corpus(snapshot: &CorpusSnapshot, budget: usize) -> GraphLayout {
+pub fn build_tier_1_corpus(
+    snapshot: &CorpusSnapshot,
+    budget: usize,
+    cluster_mode: ClusterMode,
+) -> GraphLayout {
     let pet_graph = snapshot.graph.inner();
     let total_nodes = pet_graph.node_count();
 
@@ -111,8 +115,12 @@ pub fn build_tier_1_corpus(snapshot: &CorpusSnapshot, budget: usize) -> GraphLay
     let mut communities = Vec::new();
     let mut idx_to_local: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
 
-    // Run community detection on full or sampled graph
-    let community_res = snapshot.graph.detect_communities();
+    // Detect communities using Leiden or Louvain
+    let community_res = match cluster_mode {
+        ClusterMode::Community => snapshot.graph.detect_communities_leiden(),
+        ClusterMode::Directory => snapshot.graph.detect_communities(),
+    };
+
     let mut node_to_comm: HashMap<String, u32> = HashMap::new();
     for (comm_id, comm) in community_res.communities.iter().enumerate() {
         for member in &comm.members {
@@ -147,7 +155,12 @@ pub fn build_tier_1_corpus(snapshot: &CorpusSnapshot, budget: usize) -> GraphLay
     }
 
     let config = LayoutConfig {
-        iterations: if paths.len() > 10000 { 20 } else { 35 },
+        iterations: if paths.len() > 10000 { 25 } else { 40 },
+        cluster_mode,
+        anchor_strength: match cluster_mode {
+            ClusterMode::Directory => 0.25,
+            ClusterMode::Community => 0.22,
+        },
         ..Default::default()
     };
 
@@ -189,6 +202,7 @@ pub fn build_tier_2_local(
     snapshot: &CorpusSnapshot,
     center_path: &str,
     max_hops: usize,
+    cluster_mode: ClusterMode,
 ) -> Option<GraphLayout> {
     let pet_graph = snapshot.graph.inner();
     let center_idx = snapshot.graph.get_node(center_path)?;
@@ -250,7 +264,13 @@ pub fn build_tier_2_local(
         }
     }
 
-    let config = LayoutConfig { iterations: 45, spring_length: 35.0, ..Default::default() };
+    let config = LayoutConfig {
+        iterations: 45,
+        spring_length: 35.0,
+        cluster_mode,
+        anchor_strength: 0.2,
+        ..Default::default()
+    };
 
     let (positions, edges) =
         compute_force_layout(&paths, &titles, &degrees, &communities, &raw_edges, &config);

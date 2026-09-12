@@ -20,7 +20,7 @@ use tracing::info;
 use crate::layout::tiered::{
     build_tier_0_overview, build_tier_1_corpus, build_tier_2_local, TIER_1_DEFAULT_BUDGET,
 };
-use crate::layout::GraphLayout;
+use crate::layout::{ClusterMode, GraphLayout};
 use crate::server::state::ServerState;
 use crate::telemetry::AgentActivation;
 use crate::wire::BinaryWireEncoder;
@@ -30,6 +30,8 @@ use crate::wire::BinaryWireEncoder;
 pub struct FormatQuery {
     /// Desired response format: "binary" (default) or "json".
     pub format: Option<String>,
+    /// Clustering mode: "directory" or "community".
+    pub cluster_mode: Option<ClusterMode>,
 }
 
 /// Query parameters for corpus graph retrieval.
@@ -39,6 +41,8 @@ pub struct CorpusQuery {
     pub budget: Option<usize>,
     /// Desired response format: "binary" or "json".
     pub format: Option<String>,
+    /// Clustering mode: "directory" or "community".
+    pub cluster_mode: Option<ClusterMode>,
 }
 
 /// Query parameters for local ego subgraph.
@@ -52,6 +56,8 @@ pub struct SubgraphQuery {
     pub hops: Option<usize>,
     /// Desired response format: "binary" or "json".
     pub format: Option<String>,
+    /// Clustering mode: "directory" or "community".
+    pub cluster_mode: Option<ClusterMode>,
 }
 
 /// Search/query request payload.
@@ -128,7 +134,8 @@ pub async fn handle_overview(
     State(state): State<ServerState>,
     Query(q): Query<FormatQuery>,
 ) -> Response {
-    let cache_key = "overview:all".to_string();
+    let mode = q.cluster_mode.unwrap_or_default();
+    let cache_key = format!("overview:all:{:?}", mode);
     {
         let cache = state.layout_cache.read().await;
         if let Some(cached) = cache.get(&cache_key) {
@@ -137,7 +144,7 @@ pub async fn handle_overview(
     }
 
     let catalog = state.catalog.read().await;
-    let layout = build_tier_0_overview(&catalog);
+    let layout = build_tier_0_overview(&catalog, mode);
     drop(catalog);
 
     {
@@ -155,7 +162,8 @@ pub async fn handle_corpus(
     Query(q): Query<CorpusQuery>,
 ) -> Response {
     let budget = q.budget.unwrap_or(TIER_1_DEFAULT_BUDGET);
-    let cache_key = format!("corpus:{}:{}", name, budget);
+    let mode = q.cluster_mode.unwrap_or_default();
+    let cache_key = format!("corpus:{}:{}:{:?}", name, budget, mode);
 
     {
         let cache = state.layout_cache.read().await;
@@ -169,7 +177,7 @@ pub async fn handle_corpus(
         return (StatusCode::NOT_FOUND, format!("Corpus '{}' not found", name)).into_response();
     };
 
-    let layout = build_tier_1_corpus(&snapshot, budget);
+    let layout = build_tier_1_corpus(&snapshot, budget, mode);
     drop(catalog);
 
     {
@@ -186,6 +194,7 @@ pub async fn handle_subgraph(
     Query(q): Query<SubgraphQuery>,
 ) -> Response {
     let hops = q.hops.unwrap_or(2).clamp(1, 4);
+    let mode = q.cluster_mode.unwrap_or_default();
     let catalog = state.catalog.read().await;
 
     let snapshot = if let Some(ref c_name) = q.corpus {
@@ -210,7 +219,7 @@ pub async fn handle_subgraph(
             .into_response();
     };
 
-    match build_tier_2_local(&snapshot, &q.center, hops) {
+    match build_tier_2_local(&snapshot, &q.center, hops, mode) {
         Some(layout) => format_layout_response(&layout, q.format.as_deref()),
         None => (StatusCode::NOT_FOUND, format!("Failed to build subgraph for '{}'", q.center))
             .into_response(),

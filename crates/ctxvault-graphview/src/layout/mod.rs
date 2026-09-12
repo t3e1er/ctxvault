@@ -1,10 +1,29 @@
-//! 3D force-directed layout computation using Barnes-Hut n-body simulation.
+//! 3D force-directed layout computation using Barnes-Hut n-body simulation
+//! with directory module and community anchor springs.
 
 pub mod octree;
 pub mod tiered;
 
+use std::collections::HashMap;
+
 use octree::Octree;
 use serde::{Deserialize, Serialize};
+
+/// Method used to group nodes into spatial cluster anchors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterMode {
+    /// Group by filesystem directory module hierarchy (first 2–3 path components).
+    Directory,
+    /// Group by topological graph communities (Leiden/Louvain modularity).
+    Community,
+}
+
+impl Default for ClusterMode {
+    fn default() -> Self {
+        Self::Directory
+    }
+}
 
 /// 3D position and visual properties for a single graph node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,20 +91,48 @@ pub struct LayoutConfig {
     pub theta: f32,
     /// Center gravity pulling towards coordinate origin [0,0,0].
     pub center_gravity: f32,
+    /// Anchor spring stiffness pulling nodes to their module/community center.
+    pub anchor_strength: f32,
+    /// Active clustering mode (Directory or Community).
+    pub cluster_mode: ClusterMode,
 }
 
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             iterations: 40,
-            repulsion: 8000.0,
-            spring_stiffness: 0.05,
-            spring_length: 50.0,
+            repulsion: 6000.0,
+            spring_stiffness: 0.06,
+            spring_length: 45.0,
             damping: 0.85,
             theta: 0.8,
-            center_gravity: 0.002,
+            center_gravity: 0.001,
+            anchor_strength: 0.22,
+            cluster_mode: ClusterMode::Directory,
         }
     }
+}
+
+/// Extract a 2-3 component directory cluster key from a relative path.
+pub fn extract_directory_key(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 1 {
+        return "root".to_string();
+    }
+    let dir_parts = &parts[..parts.len() - 1];
+    let take_count = dir_parts.len().min(3);
+    dir_parts[..take_count].join("/")
+}
+
+/// FNV-1a 32-bit hash for cluster strings.
+pub fn fnv1a_hash(s: &str) -> u32 {
+    let mut hash: u32 = 0x811c9dc5;
+    for byte in s.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
 }
 
 /// Assign distinct aesthetic neon colors based on entity type and community.
@@ -96,7 +143,7 @@ pub fn assign_color_and_type(path: &str, community: u32) -> (String, u32) {
         ("Function".to_string(), 0x10b981) // Emerald Neon
     } else if path.contains("struct ") || path.contains("class ") || path.contains("interface ") {
         ("Struct".to_string(), 0x8b5cf6) // Electric Purple
-    } else if path.contains("mod ") || path.contains("/") && !path.contains('.') {
+    } else if path.contains("mod ") || (path.contains('/') && !path.contains('.')) {
         ("Module".to_string(), 0x06b6d4) // Cyan
     } else {
         // Community-based gradient fallback
@@ -109,7 +156,74 @@ pub fn assign_color_and_type(path: &str, community: u32) -> (String, u32) {
     }
 }
 
-/// Run force simulation relaxation on given nodes and edges.
+/// Compute 3D anchor positions for each node based on the selected cluster mode.
+pub fn compute_cluster_anchors(
+    paths: &[String],
+    communities: &[u32],
+    mode: ClusterMode,
+    base_radius: f32,
+) -> Vec<[f32; 3]> {
+    let n = paths.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    match mode {
+        ClusterMode::Directory => {
+            let mut key_to_idx: HashMap<String, usize> = HashMap::new();
+            let mut keys = Vec::new();
+            let mut node_keys = Vec::with_capacity(n);
+
+            for p in paths {
+                let key = extract_directory_key(p);
+                let next_idx = keys.len();
+                let idx = *key_to_idx.entry(key.clone()).or_insert_with(|| {
+                    keys.push(key);
+                    next_idx
+                });
+                node_keys.push(idx);
+            }
+
+            let mut anchors = Vec::with_capacity(n);
+            for &k_idx in &node_keys {
+                let h = fnv1a_hash(&keys[k_idx]);
+                let angle = ((h & 0xFFFF) as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
+                let r = base_radius + (((h >> 16) & 0xFF) as f32 / 255.0) * (base_radius * 0.4);
+                let z_layer = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * (base_radius * 0.6);
+
+                anchors.push([r * angle.cos(), r * angle.sin(), z_layer]);
+            }
+            anchors
+        }
+        ClusterMode::Community => {
+            let mut comm_to_idx: HashMap<u32, usize> = HashMap::new();
+            let mut distinct_comms = Vec::new();
+            for &c in communities {
+                let next_idx = distinct_comms.len();
+                comm_to_idx.entry(c).or_insert_with(|| {
+                    distinct_comms.push(c);
+                    next_idx
+                });
+            }
+
+            let num_comms = distinct_comms.len().max(1);
+            let mut anchors = Vec::with_capacity(n);
+
+            for &c in communities {
+                let c_order = *comm_to_idx.get(&c).unwrap_or(&0);
+                let angle = (c_order as f32 / num_comms as f32) * 2.0 * std::f32::consts::PI;
+                let h = fnv1a_hash(&format!("community_{}", c));
+                let r = base_radius + (((h >> 16) & 0xFF) as f32 / 255.0) * (base_radius * 0.4);
+                let z_layer = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * (base_radius * 0.6);
+
+                anchors.push([r * angle.cos(), r * angle.sin(), z_layer]);
+            }
+            anchors
+        }
+    }
+}
+
+/// Run force simulation relaxation on given nodes and edges with anchor springs.
 pub fn compute_force_layout(
     paths: &[String],
     _titles: &[Option<String>],
@@ -123,32 +237,26 @@ pub fn compute_force_layout(
         return (Vec::new(), Vec::new());
     }
 
-    // 1. Deterministic initial placement on a Fibonacci sphere
+    // 1. Calculate cluster anchors based on Directory or Community mode
+    let base_radius = (n as f32).cbrt() * 45.0 + 350.0;
+    let anchors = compute_cluster_anchors(paths, communities, config.cluster_mode, base_radius);
+
+    // 2. Initial placement: anchor center + small deterministic jitter
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n);
     let mut velocities: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0]; n];
     let masses: Vec<f32> = degrees.iter().map(|&d| 1.0 + (d as f32).sqrt()).collect();
 
-    let radius = (n as f32).cbrt() * 40.0 + 30.0;
-    let phi = (1.0 + 5.0f32.sqrt()) / 2.0;
-
     for i in 0..n {
-        let theta = 2.0 * std::f32::consts::PI * (i as f32) / phi;
-        let y = 1.0 - (i as f32 / (n as f32).max(1.0)) * 2.0;
-        let r_circle = (1.0 - y * y).max(0.0).sqrt();
-        let x = theta.cos() * r_circle;
-        let z = theta.sin() * r_circle;
+        let a = anchors[i];
+        let h = fnv1a_hash(&paths[i]);
+        let j_angle = ((h & 0xFFFF) as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
+        let j_r = 10.0 + (((h >> 16) & 0xFF) as f32 / 255.0) * 45.0;
+        let j_z = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * 35.0;
 
-        // Bias positions slightly by community cluster
-        let comm_offset = (communities[i] as f32) * 2.4;
-        let scale = radius + (degrees[i] as f32).min(20.0) * 5.0;
-        positions.push([
-            x * scale + comm_offset.sin() * 50.0,
-            y * scale,
-            z * scale + comm_offset.cos() * 50.0,
-        ]);
+        positions.push([a[0] + j_r * j_angle.cos(), a[1] + j_r * j_angle.sin(), a[2] + j_z]);
     }
 
-    // 2. Multi-step relaxation loop
+    // 3. Multi-step relaxation loop
     let dt = 0.5f32;
     for _ in 0..config.iterations {
         // Build Barnes-Hut octree
@@ -186,13 +294,22 @@ pub fn compute_force_layout(
             forces[tgt][2] -= fz;
         }
 
-        // C. Center gravity & velocity integration
+        // C. Anchor spring forces pulling back toward cluster anchor
+        let k_anchor = config.anchor_strength;
+        for i in 0..n {
+            let p = positions[i];
+            let a = anchors[i];
+            forces[i][0] += (a[0] - p[0]) * k_anchor * masses[i];
+            forces[i][1] += (a[1] - p[1]) * k_anchor * masses[i];
+            forces[i][2] += (a[2] - p[2]) * k_anchor * masses[i];
+        }
+
+        // D. Center gravity & velocity integration
         for i in 0..n {
             let p = &mut positions[i];
             let v = &mut velocities[i];
             let f = forces[i];
 
-            // Origin gravity
             let gx = -p[0] * config.center_gravity;
             let gy = -p[1] * config.center_gravity;
             let gz = -p[2] * config.center_gravity;

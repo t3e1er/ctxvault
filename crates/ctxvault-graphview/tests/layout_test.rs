@@ -30,22 +30,46 @@ fn test_octree_repulsion_synthetic_cloud() {
 
 #[test]
 fn test_force_layout_simulation() {
-    let paths = vec!["doc1.md".to_string(), "doc2.md".to_string(), "fn_main".to_string()];
+    let paths = vec![
+        "crates/ctxvault-core/src/lib.rs".to_string(),
+        "crates/ctxvault-core/src/engine.rs".to_string(),
+        "docs/concepts/search.md".to_string(),
+    ];
     let titles = vec![None, None, None];
     let degrees = vec![2, 1, 1];
     let communities = vec![0, 0, 1];
     let raw_edges =
         vec![(0, 1, "wikilink".to_string(), 1.0f32), (0, 2, "calls".to_string(), 1.0f32)];
 
-    let config = LayoutConfig { iterations: 15, ..Default::default() };
+    // Test Directory Clustering
+    let dir_config = LayoutConfig {
+        iterations: 15,
+        cluster_mode: ctxvault_graphview::layout::ClusterMode::Directory,
+        ..Default::default()
+    };
+    let (dir_positions, dir_edges) =
+        compute_force_layout(&paths, &titles, &degrees, &communities, &raw_edges, &dir_config);
 
-    let (positions, edges) =
-        compute_force_layout(&paths, &titles, &degrees, &communities, &raw_edges, &config);
+    assert_eq!(dir_positions.len(), 3);
+    assert_eq!(dir_edges.len(), 2);
+    for pos in dir_positions {
+        assert!(!pos[0].is_nan());
+        assert!(!pos[1].is_nan());
+        assert!(!pos[2].is_nan());
+    }
 
-    assert_eq!(positions.len(), 3);
-    assert_eq!(edges.len(), 2);
+    // Test Community Clustering
+    let comm_config = LayoutConfig {
+        iterations: 15,
+        cluster_mode: ctxvault_graphview::layout::ClusterMode::Community,
+        ..Default::default()
+    };
+    let (comm_positions, comm_edges) =
+        compute_force_layout(&paths, &titles, &degrees, &communities, &raw_edges, &comm_config);
 
-    for pos in positions {
+    assert_eq!(comm_positions.len(), 3);
+    assert_eq!(comm_edges.len(), 2);
+    for pos in comm_positions {
         assert!(!pos[0].is_nan());
         assert!(!pos[1].is_nan());
         assert!(!pos[2].is_nan());
