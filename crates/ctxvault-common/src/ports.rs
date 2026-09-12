@@ -229,6 +229,21 @@ pub trait MetadataCatalog {
     /// Retrieve all code symbols defined in a file.
     fn get_code_symbols_for_file(&self, file_path: &str) -> Result<Vec<CodeSymbol>>;
 
+    /// Retrieve all code symbols defined across a batch of files in a single query.
+    fn get_code_symbols_for_files(
+        &self,
+        file_paths: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<CodeSymbol>>> {
+        let mut map = std::collections::HashMap::new();
+        for &path in file_paths {
+            let syms = self.get_code_symbols_for_file(path)?;
+            if !syms.is_empty() {
+                map.insert(path.to_string(), syms);
+            }
+        }
+        Ok(map)
+    }
+
     /// Find code symbols matching a name pattern (fuzzy match).
     fn find_symbols_by_name(&self, name_pattern: &str) -> Result<Vec<CodeSymbol>>;
 
@@ -621,6 +636,11 @@ pub trait GraphStore {
 
     /// Compute direct degree affordances for a node (O(deg) lookup).
     fn compute_affordances(&self, path: &str) -> GraphAffordances;
+
+    /// Return the total in-degree of a node directly without allocating affordance maps.
+    fn in_degree(&self, _path: &str) -> usize {
+        0
+    }
 
     // ------------------------------------------------------------------
     // Structural lineage & taxonomy

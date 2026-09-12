@@ -1533,6 +1533,11 @@ impl Engine {
         self.graph.compute_affordances(path)
     }
 
+    /// Return the total in-degree of a node directly without allocating affordance maps.
+    pub fn in_degree(&self, path: &str) -> usize {
+        self.graph.in_degree(path)
+    }
+
     /// Return all active distinct edge types present in the graph, optionally filtered by EdgeClass.
     pub fn active_edge_types(
         &self,

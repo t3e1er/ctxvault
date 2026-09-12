@@ -769,17 +769,35 @@ pub struct VectorSearchResult {
     pub modality: String,
 }
 
+fn is_zero_f64(v: &f64) -> bool {
+    v.abs() < 1e-9
+}
+
 /// Breakdown of how a search score was computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreBreakdown {
     /// BM25 component (0.0 if not applicable).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub bm25: f64,
     /// Vector cosine similarity component.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub vector: f64,
     /// Graph proximity boost.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub graph_boost: f64,
     /// Number of hops from seed in graph traversal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_hops: Option<usize>,
+}
+
+impl ScoreBreakdown {
+    /// Returns true if all numerical components are zero and graph_hops is None.
+    pub fn is_empty(&self) -> bool {
+        is_zero_f64(&self.bm25)
+            && is_zero_f64(&self.vector)
+            && is_zero_f64(&self.graph_boost)
+            && self.graph_hops.is_none()
+    }
 }
 
 /// Depth level for dual-level retrieval.
@@ -980,10 +998,13 @@ pub struct GraphAffordances {
     /// Dynamic counts for language-specific or extended edge types (e.g. decorates, extends, foreign_key).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub edge_counts: HashMap<String, usize>,
+    /// Count of edges suppressed due to hub degree thresholds, keyed by edge type.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub suppressed_edges: HashMap<String, usize>,
 }
 
 impl GraphAffordances {
-    /// Returns true if all affordance counts are None or zero and edge_counts is empty.
+    /// Returns true if all affordance counts are None or zero, and edge_counts and suppressed_edges are empty.
     pub fn is_empty(&self) -> bool {
         self.calls_in.unwrap_or(0) == 0
             && self.calls_out.unwrap_or(0) == 0
@@ -993,6 +1014,7 @@ impl GraphAffordances {
             && self.wikilinks_out.unwrap_or(0) == 0
             && self.documents_code.unwrap_or(0) == 0
             && self.edge_counts.is_empty()
+            && self.suppressed_edges.is_empty()
     }
 }
 
@@ -1060,8 +1082,10 @@ pub struct GraphMatchResult {
     /// Total matched path instances.
     pub total_matches: usize,
     /// Distinct nodes in the matched subgraph.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<MatchedNode>,
     /// Distinct edges in the matched subgraph.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<MatchedEdge>,
 }
 

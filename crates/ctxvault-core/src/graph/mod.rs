@@ -1119,6 +1119,14 @@ impl KnowledgeGraph {
         affordances
     }
 
+    /// Return the total in-degree of a node directly without allocating affordance maps.
+    pub fn in_degree(&self, path: &str) -> usize {
+        let Some(&idx) = self.node_map.get(path) else {
+            return 0;
+        };
+        self.graph.edges_directed(idx, Direction::Incoming).count()
+    }
+
     // ─── Structural Lineage & Taxonomy ───────────────────────────────────────
 
     /// Deterministically traverse the graph along a specified structural edge type.
@@ -2067,6 +2075,10 @@ impl ctxvault_common::ports::GraphStore for KnowledgeGraph {
 
     fn compute_affordances(&self, path: &str) -> ctxvault_common::types::GraphAffordances {
         KnowledgeGraph::compute_affordances(self, path)
+    }
+
+    fn in_degree(&self, path: &str) -> usize {
+        KnowledgeGraph::in_degree(self, path)
     }
 
     fn traverse_lineage(

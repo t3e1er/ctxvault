@@ -136,6 +136,16 @@ Supports 5 typed edge classes:
 * `crossmodal`: Code-to-docs links (`documents`, `implements_spec`).
 * `hybrid`: Blended multi-layer graph traversals.
 
+### 4. Polyglot Language & Capability Matrix (50+ Formats)
+
+`ctxvault` incorporates Tree-sitter AST parsers and syntax engines across 50+ languages, organized into three capability tiers:
+
+| Tier | Languages | Capabilities & Graph Affordances |
+|---|---|---|
+| **Tier 1: Full Semantic AST & Typed Graph Extraction** | **Rust**, **TypeScript**, **JavaScript**, **Python**, **Go**, **C**, **C++**, **C#**, **Java** | Full function, class, struct, and interface extraction. Resolves call graphs (`calls`), interface implementations (`implements`), type inheritance (`extends`), annotations/decorators (`decorates`), import graphs (`imports`), normalized scope paths, and line-exact signatures. |
+| **Tier 2: Structural Syntax Parsing & Symbol Indexing** | **Kotlin**, **Swift**, **PHP**, **Ruby**, **Scala**, **Zig**, **SQL**, **Dart**, **Elixir**, **Lua**, **Solidity**, **Haskell**, **OCaml**, **Bash/Shell**, **PowerShell** | AST-bounded structural chunking, top-level symbol discovery, docstring extraction, BM25 exact symbol indexing, and dense ONNX vector representations. |
+| **Tier 3: Declarative Schemas, Config & Web Assets** | **Protobuf**, **YAML**, **TOML**, **JSON**, **Dockerfile**, **HTML**, **CSS**, **GraphQL**, **HCL/Terraform**, **CMake**, **Makefile**, **Markdown** | Declarative structure preservation, boundary-aware section chunking, and cross-modal document linking (`documents`, `implements_spec`). |
+
 ---
 
 ## Quickstart & One-Command Setup
@@ -166,14 +176,26 @@ cargo install --locked --path crates/ctxvault-cli
 ```
 ctxvault install -y
 ```
-*Auto-detects: Cursor, Claude Desktop, Claude Code, Antigravity IDE, Gemini CLI, Windsurf, VS Code, and Zed.*
+*Auto-detects: Cursor, Claude Desktop, Claude Code, Antigravity IDE, Gemini CLI, Windsurf, VS Code, Zed, and Kiro CLI.*
 
 ---
 
 ## Drop-in MCP Client Configurations
 
 ### Cursor (`.cursor/mcp.json`)
+```json
+{
+  "mcpServers": {
+    "ctxvault": {
+      "command": "ctxvault",
+      "args": ["--corpus", "${workspaceFolder}", "--sync"]
+    }
+  }
+}
 ```
+
+### Kiro CLI (`.kiro/settings/mcp.json`)
+```json
 {
   "mcpServers": {
     "ctxvault": {
@@ -185,7 +207,7 @@ ctxvault install -y
 ```
 
 ### Claude Desktop (`claude_desktop_config.json`)
-```
+```json
 {
   "mcpServers": {
     "ctxvault": {
@@ -197,7 +219,7 @@ ctxvault install -y
 ```
 
 ### Antigravity IDE / Gemini CLI (`mcp_config.json`)
-```
+```json
 {
   "mcpServers": {
     "ctxvault": {
@@ -210,7 +232,7 @@ ctxvault install -y
 
 ### Multi-Corpus / Shared HTTP Daemon
 Serve multiple repositories to team swarms over HTTP SSE:
-```
+```bash
 ctxvault --mode server --bind 0.0.0.0:9090 \
   --corpus docs=/path/to/docs --corpus repo=/path/to/code \
   --default-corpus repo --profile all --sync

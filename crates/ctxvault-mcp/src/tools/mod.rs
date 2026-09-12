@@ -336,6 +336,11 @@ impl ToolRegistry {
                     "max_depth": {
                         "type": "number",
                         "description": "Hard cap on recursive traversal depth (default 3, max 5)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["compact", "full"],
+                        "description": "Output format: 'compact' (default, lean linear path strings) or 'full' (complete node and edge objects)"
                     }
                 },
                 "required": ["pattern"]
@@ -345,13 +350,15 @@ impl ToolRegistry {
 
         self.register_read(
             "graph_communities",
-            "Detect communities in the knowledge graph. Defaults to Leiden partition. Pass view='architecture' for a high-level subsystem component overview with top key nodes, or view='raw' for raw community assignments.",
+            "Detect communities in the knowledge graph. Defaults to Leiden partition. Pass view='architecture' for a high-level subsystem component overview with top key nodes (summarized, no raw member dump), or pass community_id to inspect members of a specific community.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "algorithm": { "type": "string", "enum": ["leiden", "louvain"], "description": "Community detection algorithm (default: leiden)" },
                     "view": { "type": "string", "enum": ["architecture", "raw"], "description": "View mode: 'architecture' for high-level components with top key nodes, 'raw' for raw community clusters (default: 'raw')" },
-                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" }
+                    "include_density": { "type": "boolean", "description": "Include per-community density statistics (default false)" },
+                    "community_id": { "type": "integer", "description": "Optional community ID to inspect member nodes for that specific community" },
+                    "limit": { "type": "integer", "description": "Maximum number of communities to return in overview (default 10) or member nodes when community_id is specified (default 50)" }
                 },
                 "required": []
             }),
@@ -368,8 +375,8 @@ impl ToolRegistry {
                     "path": { "type": "string", "description": "Relative path for the note (e.g. 'projects/my-note.md')" },
                     "content": { "type": "string", "description": "Body content of the note (markdown)" },
                     "mode": { "type": "string", "enum": ["create", "overwrite", "append", "prepend"], "description": "Write mode: 'create' (default, fails if file exists), 'overwrite', 'append', or 'prepend'" },
-                    "frontmatter": { "type": "object", "description": "YAML frontmatter fields as key-value pairs" },
-                    "template": { "type": "string", "description": "Template schema to associate in frontmatter" }
+                    "frontmatter": { "type": "object", "description": "Optional YAML frontmatter fields as a JSON object (title, tags, etc.)" },
+                    "template": { "type": "string", "description": "Optional template name to validate against before writing" }
                 },
                 "required": ["path", "content"]
             }),
@@ -378,11 +385,11 @@ impl ToolRegistry {
 
         self.register_write(
             "delete_note",
-            "Delete a note from disk and remove it from all indices.",
+            "Delete a note from the corpus and purge it from all indices (Tantivy, vector store, graph, metadata).",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path to the note to delete" }
+                    "path": { "type": "string", "description": "Relative path of the note to delete" }
                 },
                 "required": ["path"]
             }),
@@ -391,37 +398,22 @@ impl ToolRegistry {
 
         self.register_write(
             "move_note",
-            "Move/rename a note, updating wikilinks in other notes that reference it.",
+            "Move or rename a note, automatically updating inbound wikilinks across the corpus and all indices.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "from": { "type": "string", "description": "Current relative path of the note" },
-                    "to": { "type": "string", "description": "New relative path for the note" }
+                    "to": { "type": "string", "description": "New relative path of the note" }
                 },
                 "required": ["from", "to"]
             }),
             handle_move_note,
         );
 
-        // Validation tools
-        self.register_read(
-            "validate",
-            "Validate a single note schema (if 'path' provided) or the entire corpus against declared templates and structural graph integrity (broken wikilinks, DAG cycles, orphan ADRs).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Optional relative path to validate a single note. If omitted, validates the entire corpus." },
-                    "check_taxonomy": { "type": "boolean", "description": "When validating corpus, also check structural graph taxonomy: broken links, cycles, orphan ADRs (default true)" },
-                    "limit": { "type": "number", "description": "Maximum issues to return when validating corpus" }
-                },
-                "required": []
-            }),
-            handle_validate,
-        );
-
+        // Validation / Template tools
         self.register_read(
             "list_templates",
-            "List all available templates with their field schemas and content rules.",
+            "List registered note templates with their required and optional frontmatter fields, valid types, and regex rules.",
             serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -430,14 +422,28 @@ impl ToolRegistry {
             handle_list_templates,
         );
 
-        // System tools
         self.register_read(
-            "status",
-            "Corpus, indexing, graph topology, and coverage status in one tool via `scope`: corpus = per-corpus statistics and configuration; indexing = progress/throughput; graph = topology stats, density, and orphans; coverage = path-level index and parse status (requires 'paths'); all (default) = combined. When no specific corpus is targeted the multi-corpus overview is returned.",
+            "validate",
+            "Run schema validation. Pass 'path' to validate a single note against its template; omit 'path' to scan the entire corpus. Pass check_taxonomy=true to enforce the corpus-defined tag/category taxonomy.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "coverage", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats & density; coverage = path-level index & parse status; all (default) = combined." },
+                    "path": { "type": "string", "description": "Optional relative path of a note to validate. If omitted, validates the entire corpus." },
+                    "check_taxonomy": { "type": "boolean", "description": "Enforce the corpus-defined tag and category taxonomy (default false)" }
+                },
+                "required": []
+            }),
+            handle_validate,
+        );
+
+        // System / Corpus tools
+        self.register_read(
+            "status",
+            "Report corpus health, indexing progress, graph topology, coverage status, or high-level architecture census.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": { "type": "string", "enum": ["corpus", "indexing", "graph", "coverage", "census", "architecture", "all"], "description": "corpus = per-corpus stats/config; indexing = indexing progress; graph = topology stats & density; coverage = path-level index & parse status; census/architecture = instant structural census (symbols, edges, languages, routes); all (default) = combined." },
                     "corpus": { "type": "string", "description": "Target a single corpus by name for per-corpus stats/indexing. Omit for the multi-corpus overview across all configured corpora." },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Scope 'coverage' only: paths or path prefixes to check for index coverage and parse status." }
                 },
@@ -1366,6 +1372,7 @@ pub(crate) struct GraphMatchParams {
     pub where_clause: Option<String>,
     pub limit: Option<usize>,
     pub max_depth: Option<usize>,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1373,6 +1380,8 @@ pub(crate) struct GraphCommunitiesParams {
     pub algorithm: Option<String>,
     pub view: Option<String>,
     pub include_density: Option<bool>,
+    pub community_id: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2075,25 +2084,38 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             }
         }
 
-        let k =
-            if params.detail.as_deref() == Some("ids") { 0 } else { params.snippets.unwrap_or(3) };
+        let is_lean = params.detail.as_deref() == Some("ids");
+        let k = if is_lean { 0 } else { params.snippets.unwrap_or(3) };
 
-        populate_top_snippets(engine, &mut docs_items, k, 40);
-        populate_top_snippets(engine, &mut code_items, k, 40);
+        populate_top_snippets(engine, &mut docs_items, k, 20);
+        populate_top_snippets(engine, &mut code_items, k, 20);
 
-        for item in &mut docs_items {
-            if item.entity_kind.is_none() {
-                item.entity_kind = Some(ctxvault_common::types::EntityKind::Documentation);
+        if is_lean {
+            for item in &mut docs_items {
+                item.graph_affordances = None;
+                item.score_components = None;
             }
-            if item.graph_affordances.is_none() {
-                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+        } else {
+            for item in &mut docs_items {
+                if item.entity_kind.is_none() {
+                    item.entity_kind = Some(ctxvault_common::types::EntityKind::Documentation);
+                }
+                if item.graph_affordances.is_none() {
+                    item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+                }
             }
         }
 
+        let code_paths: Vec<&str> = code_items.iter().map(|item| item.path.as_str()).collect();
+        let symbols_by_file =
+            engine.store().get_code_symbols_for_files(&code_paths).unwrap_or_default();
+
         for item in &mut code_items {
-            if item.graph_affordances.is_none() {
-                item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
+            if is_lean {
+                item.graph_affordances = None;
+                item.score_components = None;
             }
+
             if item.entity_kind.is_none()
                 || matches!(
                     item.entity_kind,
@@ -2104,7 +2126,7 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
                     })
                 )
             {
-                if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
+                if let Some(file_symbols) = symbols_by_file.get(&item.path) {
                     if let Some(chunk_index) = item.chunk_index {
                         if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
                             if let Some(chunk) =
@@ -2150,67 +2172,77 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
                     }
                 }
             }
-        }
 
-        for item in &mut code_items {
-            if let Some(ctxvault_common::types::EntityKind::CodeSymbol { ref scope_path, .. }) =
-                item.entity_kind
-            {
-                item.graph_affordances = Some(engine.compute_affordances(scope_path));
-            } else if let Ok(file_symbols) = engine.store().get_code_symbols_for_file(&item.path) {
-                let mut combined_aff = item.graph_affordances.clone().unwrap_or_default();
-                for sym in file_symbols {
-                    let sym_aff = engine.compute_affordances(&sym.scope_path);
-                    for (k, v) in sym_aff.edge_counts {
-                        *combined_aff.edge_counts.entry(k).or_insert(0) += v;
+            if !is_lean {
+                if let Some(ctxvault_common::types::EntityKind::CodeSymbol {
+                    ref scope_path, ..
+                }) = item.entity_kind
+                {
+                    item.graph_affordances = Some(engine.compute_affordances(scope_path));
+                } else if let Some(file_symbols) = symbols_by_file.get(&item.path) {
+                    let mut combined_aff = item.graph_affordances.clone().unwrap_or_default();
+                    for sym in file_symbols {
+                        let sym_aff = engine.compute_affordances(&sym.scope_path);
+                        for (k, v) in sym_aff.edge_counts {
+                            *combined_aff.edge_counts.entry(k).or_insert(0) += v;
+                        }
+                        if let Some(c) = sym_aff.calls_out {
+                            combined_aff.calls_out = Some(combined_aff.calls_out.unwrap_or(0) + c);
+                        }
+                        if let Some(c) = sym_aff.calls_in {
+                            combined_aff.calls_in = Some(combined_aff.calls_in.unwrap_or(0) + c);
+                        }
+                        if let Some(c) = sym_aff.implements {
+                            combined_aff.implements =
+                                Some(combined_aff.implements.unwrap_or(0) + c);
+                        }
+                        if let Some(c) = sym_aff.imports {
+                            combined_aff.imports = Some(combined_aff.imports.unwrap_or(0) + c);
+                        }
                     }
-                    if let Some(c) = sym_aff.calls_out {
-                        combined_aff.calls_out = Some(combined_aff.calls_out.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.calls_in {
-                        combined_aff.calls_in = Some(combined_aff.calls_in.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.implements {
-                        combined_aff.implements = Some(combined_aff.implements.unwrap_or(0) + c);
-                    }
-                    if let Some(c) = sym_aff.imports {
-                        combined_aff.imports = Some(combined_aff.imports.unwrap_or(0) + c);
-                    }
+                    item.graph_affordances = Some(combined_aff);
+                } else if item.graph_affordances.is_none() {
+                    item.graph_affordances = Some(engine.compute_affordances(&item.path));
                 }
-                item.graph_affordances = Some(combined_aff);
             }
         }
 
-        let active_doc_edges =
-            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Structural));
+        let active_doc_edges = if is_lean {
+            Vec::new()
+        } else {
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Structural))
+        };
         let docs_partition =
             if !docs_items.is_empty() || modality != ctxvault_common::types::Modality::Code {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: docs_items.len(),
                     top_k_returned: docs_items.len(),
-                    schema_envelope: build_dynamic_schema_envelope(
-                        &docs_items,
-                        false,
-                        &active_doc_edges,
-                    ),
+                    schema_envelope: if is_lean {
+                        ctxvault_common::types::SchemaEnvelope::default()
+                    } else {
+                        build_dynamic_schema_envelope(&docs_items, false, &active_doc_edges)
+                    },
                     results: docs_items,
                 })
             } else {
                 None
             };
 
-        let active_code_edges =
-            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Code));
+        let active_code_edges = if is_lean {
+            Vec::new()
+        } else {
+            engine.active_edge_types(Some(ctxvault_common::config::EdgeClass::Code))
+        };
         let code_partition =
             if !code_items.is_empty() || modality != ctxvault_common::types::Modality::Docs {
                 Some(ctxvault_common::types::SearchPartition {
                     total_matches: code_items.len(),
                     top_k_returned: code_items.len(),
-                    schema_envelope: build_dynamic_schema_envelope(
-                        &code_items,
-                        true,
-                        &active_code_edges,
-                    ),
+                    schema_envelope: if is_lean {
+                        ctxvault_common::types::SchemaEnvelope::default()
+                    } else {
+                        build_dynamic_schema_envelope(&code_items, true, &active_code_edges)
+                    },
                     results: code_items,
                 })
             } else {
@@ -2256,13 +2288,18 @@ fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
     let limit = params.limit.unwrap_or(20);
     let max_depth = params.max_depth.unwrap_or(3);
 
-    let match_result = engine.graph_match(
+    let mut match_result = engine.graph_match(
         &params.pattern,
         params.edge_class.as_deref(),
         params.where_clause.as_deref(),
         limit,
         max_depth,
     )?;
+
+    if params.format.as_deref().unwrap_or("compact") == "compact" {
+        match_result.nodes.clear();
+        match_result.edges.clear();
+    }
 
     serde_json::to_value(match_result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -2279,26 +2316,39 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
         let density_map: HashMap<usize, f64> =
             densities.into_iter().map(|d| (d.community_id, d.density)).collect();
 
-        let mut clusters = Vec::new();
-        let edges = engine.graph().get_all_edges();
+        // If a specific community is requested, return that community with its members
+        if let Some(target_id) = params.community_id {
+            if let Some(comm) = result.communities.iter().find(|c| c.id == target_id) {
+                let mut nodes = comm.members.clone();
+                nodes.sort();
+                let density = density_map.get(&target_id).copied().unwrap_or(0.0);
+                let mem_limit = params.limit.unwrap_or(50).min(nodes.len());
+                return Ok(serde_json::json!({
+                    "component_id": target_id,
+                    "node_count": nodes.len(),
+                    "internal_density": density,
+                    "members": &nodes[..mem_limit],
+                    "total_members": nodes.len(),
+                }));
+            } else {
+                return Err(Error::NotFound(format!("community_id {target_id} not found")));
+            }
+        }
 
-        for comm in &result.communities {
+        let mut clusters = Vec::new();
+        let limit = params.limit.unwrap_or(10);
+
+        let mut sorted_comms = result.communities.clone();
+        sorted_comms.sort_by(|a, b| b.members.len().cmp(&a.members.len()));
+
+        for comm in sorted_comms.into_iter().take(limit) {
             let comm_id = comm.id;
-            let mut nodes = comm.members.clone();
+            let mut nodes = comm.members;
             nodes.sort();
             let density = density_map.get(&comm_id).copied().unwrap_or(0.0);
 
-            let mut node_degree: HashMap<String, usize> = HashMap::new();
-            for edge in &edges {
-                if nodes.contains(&edge.source) || nodes.contains(&edge.target) {
-                    *node_degree.entry(edge.source.clone()).or_insert(0) += 1;
-                    *node_degree.entry(edge.target.clone()).or_insert(0) += 1;
-                }
-            }
-            let mut key_nodes: Vec<_> = nodes
-                .iter()
-                .filter_map(|n| node_degree.get(n).map(|deg| (n.clone(), *deg)))
-                .collect();
+            let mut key_nodes: Vec<_> =
+                nodes.iter().map(|n| (n.clone(), engine.graph().in_degree(n))).collect();
             key_nodes.sort_by(|a, b| b.1.cmp(&a.1));
             let top_key_nodes: Vec<String> =
                 key_nodes.into_iter().take(5).map(|(n, _)| n).collect();
@@ -2308,13 +2358,14 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
                 "node_count": nodes.len(),
                 "internal_density": density,
                 "top_nodes": top_key_nodes,
-                "members": nodes,
             }));
         }
 
         return Ok(serde_json::json!({
             "algorithm": "leiden",
             "component_count": clusters.len(),
+            "total_communities": result.communities.len(),
+            "top_components_returned": clusters.len(),
             "modularity": result.modularity,
             "components": clusters,
         }));
@@ -2477,6 +2528,29 @@ fn handle_status(engine: &Engine, args: Value) -> Result<Value> {
         "coverage" => {
             let paths = params.paths.unwrap_or_default();
             check_index_coverage_inner(engine, &paths)
+        }
+        "census" | "architecture" => {
+            let stats = engine.graph().stats();
+            let symbols = engine.store().get_all_code_symbols().unwrap_or_default();
+            let mut symbol_types: HashMap<String, usize> = HashMap::new();
+            let mut languages: HashMap<String, usize> = HashMap::new();
+            for s in &symbols {
+                *symbol_types.entry(format!("{:?}", s.symbol_type)).or_insert(0) += 1;
+                *languages.entry(s.language.clone()).or_insert(0) += 1;
+            }
+            let active_edges = engine.active_edge_types(None);
+            let files = engine.store().list_files().unwrap_or_default();
+            Ok(serde_json::json!({
+                "corpus_name": engine.config().name,
+                "corpus_path": engine.config().path,
+                "total_files": files.len(),
+                "total_symbols": symbols.len(),
+                "total_graph_nodes": stats.node_count,
+                "total_graph_edges": stats.edge_count,
+                "symbol_types": symbol_types,
+                "languages": languages,
+                "active_edge_types": active_edges,
+            }))
         }
         _ => {
             let corpus = corpus_stats(engine)?;
