@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use rusqlite::params;
 
-use ctxvault_common::types::{GraphMatchResult, MatchedEdge, MatchedNode, PathMatch};
+use ctxvault_common::types::{GraphImpactSummary, GraphMatchResult, GraphTreeNode};
 use ctxvault_common::{Error, Result};
 
 use crate::persistence::Store;
@@ -365,6 +365,9 @@ pub fn parse_path_pattern(input: &str) -> Result<PathPattern> {
 // Query Compilation & Execution (Parameterized Recursive CTE)
 // ---------------------------------------------------------------------------
 
+/// Threshold beyond which a node's fan-out is capped and flagged as a hub.
+const HUB_FANOUT_THRESHOLD: usize = 10;
+
 /// Execution engine that compiles a `PathPattern` into SQLite queries.
 pub struct QueryEngine<'a> {
     store: &'a Store,
@@ -394,148 +397,70 @@ impl<'a> QueryEngine<'a> {
             return Ok(GraphMatchResult::default());
         }
 
-        let mut all_matches = Vec::new();
-        let mut matched_nodes_map: HashMap<String, MatchedNode> = HashMap::new();
-        let mut matched_edges_set: std::collections::HashSet<(String, String, String, String)> =
-            std::collections::HashSet::new();
+        let mut matching_anchors: Vec<(String, Vec<GraphTreeNode>, usize)> = Vec::new();
+        let mut total_nodes_added = 0;
 
-        // 2. Perform path expansion from each candidate anchor
         for anchor in &anchor_candidates {
-            let mut current_paths: Vec<(String, usize, String)> =
-                vec![(anchor.clone(), 0, anchor.clone())];
-
-            for (edge_pat, next_node) in &pattern.steps {
-                let mut next_paths = Vec::new();
-                let step_max_depth = edge_pat.max_hops.min(max_depth_cap);
-                let step_min_depth = edge_pat.min_hops.max(1);
-
-                for (curr_node, curr_depth, curr_path_str) in current_paths {
-                    let step_results = self.traverse_step(
-                        &curr_node,
-                        edge_pat.direction,
-                        &edge_pat.edge_types,
-                        edge_class_filter,
-                        step_min_depth,
-                        step_max_depth,
-                        limit,
-                    )?;
-
-                    for (target_node, depth_delta, _path_segment, edges_used) in step_results {
-                        // Filter by next node constraints if any
-                        if !self.matches_node_constraints(&target_node, next_node)? {
-                            continue;
-                        }
-
-                        let dir_symbol = match edge_pat.direction {
-                            QueryDirection::Outgoing => "->",
-                            QueryDirection::Incoming => "<-",
-                            QueryDirection::Undirected => "--",
-                        };
-                        let new_path_str =
-                            format!("{} {} {}", curr_path_str, dir_symbol, target_node);
-                        let total_depth = curr_depth + depth_delta;
-
-                        for (s, t, et, dir) in edges_used {
-                            matched_edges_set.insert((s, t, et, dir));
-                        }
-
-                        next_paths.push((target_node, total_depth, new_path_str));
-                    }
-                }
-
-                current_paths = next_paths;
-                if current_paths.is_empty() {
-                    break;
-                }
-            }
-
-            for (terminal_node, depth, path_str) in current_paths {
-                // Apply where clause filter
-                if let Some(wf) = where_filter {
-                    if !self.eval_where_filter(&terminal_node, wf) {
-                        continue;
-                    }
-                }
-
-                let (file_path, symbol_type, line) = self.lookup_node_metadata(&terminal_node);
-
-                all_matches.push(PathMatch {
-                    node: terminal_node.clone(),
-                    depth,
-                    path: path_str,
-                    symbol_type: symbol_type.clone(),
-                    file_path: file_path.clone(),
-                    line,
-                });
-
-                // Add to nodes map
-                if !matched_nodes_map.contains_key(&terminal_node) {
-                    let mut props = HashMap::new();
-                    if let Some(fp) = &file_path {
-                        props.insert("file_path".to_string(), fp.clone());
-                    }
-                    if let Some(st) = &symbol_type {
-                        props.insert("symbol_type".to_string(), st.clone());
-                    }
-                    if let Some(l) = line {
-                        props.insert("line".to_string(), l.to_string());
-                    }
-                    props.insert("name".to_string(), terminal_node.clone());
-
-                    matched_nodes_map.insert(
-                        terminal_node.clone(),
-                        MatchedNode {
-                            id: terminal_node.clone(),
-                            label: symbol_type.unwrap_or_else(|| "Node".to_string()),
-                            properties: props,
-                        },
-                    );
-                }
-
-                // Add anchor to nodes map
-                if !matched_nodes_map.contains_key(anchor) {
-                    let (a_file, a_type, a_line) = self.lookup_node_metadata(anchor);
-                    let mut a_props = HashMap::new();
-                    if let Some(fp) = &a_file {
-                        a_props.insert("file_path".to_string(), fp.clone());
-                    }
-                    if let Some(l) = a_line {
-                        a_props.insert("line".to_string(), l.to_string());
-                    }
-                    a_props.insert("name".to_string(), anchor.clone());
-                    matched_nodes_map.insert(
-                        anchor.clone(),
-                        MatchedNode {
-                            id: anchor.clone(),
-                            label: a_type.unwrap_or_else(|| "Node".to_string()),
-                            properties: a_props,
-                        },
-                    );
-                }
-
-                if all_matches.len() >= limit {
-                    break;
-                }
-            }
-
-            if all_matches.len() >= limit {
+            if total_nodes_added >= limit {
                 break;
+            }
+
+            let mut ancestors = std::collections::HashSet::new();
+            ancestors.insert(anchor.clone());
+
+            let (sub_tree, direct_count) = self.expand_node(
+                anchor,
+                0,
+                0,
+                0,
+                pattern,
+                edge_class_filter,
+                where_filter,
+                max_depth_cap,
+                &mut ancestors,
+                &mut total_nodes_added,
+                limit,
+            )?;
+
+            if !sub_tree.is_empty() {
+                matching_anchors.push((anchor.clone(), sub_tree, direct_count));
             }
         }
 
-        let total_matches = all_matches.len();
-        let nodes = matched_nodes_map.into_values().collect();
-        let edges = matched_edges_set
-            .into_iter()
-            .map(|(source, target, edge_type, direction)| MatchedEdge {
-                source,
-                target,
-                edge_type,
-                direction,
-            })
-            .collect();
+        if matching_anchors.is_empty() {
+            return Ok(GraphMatchResult::default());
+        }
 
-        Ok(GraphMatchResult { matches: all_matches, total_matches, nodes, edges })
+        if matching_anchors.len() == 1 {
+            let (anchor, tree, direct_count) = matching_anchors.into_iter().next().unwrap();
+            let root = Some(anchor.clone());
+            let file = self.format_node_file_line(&anchor);
+            let mut summary = self.compute_summary(&tree, Some(&anchor));
+            summary.direct = direct_count;
+            let total_matches = self.count_total_nodes(&tree);
+            Ok(GraphMatchResult { root, file, summary, tree, total_matches })
+        } else {
+            let mut tree = Vec::new();
+            let mut total_direct = 0;
+            for (anchor, sub_tree, direct_count) in matching_anchors {
+                total_direct += direct_count;
+                let (file, _, line) = self.lookup_node_metadata(&anchor);
+                tree.push(GraphTreeNode {
+                    node: anchor,
+                    rel: None,
+                    file,
+                    line,
+                    hop: 0,
+                    branches: sub_tree,
+                    suppressed: None,
+                    hub: None,
+                });
+            }
+            let mut summary = self.compute_summary(&tree, None);
+            summary.direct = total_direct;
+            let total_matches = self.count_total_nodes(&tree);
+            Ok(GraphMatchResult { root: None, file: None, summary, tree, total_matches })
+        }
     }
 
     /// Resolve candidate node identifiers from node pattern properties.
@@ -598,162 +523,282 @@ impl<'a> QueryEngine<'a> {
         Ok(Vec::new())
     }
 
-    /// Execute a single traversal step using SQLite.
-    fn traverse_step(
+    /// Recursively expand nodes along pattern steps, capping at HUB_FANOUT_THRESHOLD.
+    #[allow(clippy::too_many_arguments)]
+    fn expand_node(
         &self,
-        anchor: &str,
+        current_node: &str,
+        step_idx: usize,
+        hop_in_step: usize,
+        cumulative_hop: usize,
+        pattern: &PathPattern,
+        edge_class_filter: Option<&str>,
+        where_filter: Option<&str>,
+        max_depth_cap: usize,
+        ancestors: &mut std::collections::HashSet<String>,
+        total_nodes_added: &mut usize,
+        limit: usize,
+    ) -> Result<(Vec<GraphTreeNode>, usize)> {
+        if step_idx >= pattern.steps.len() {
+            return Ok((Vec::new(), 0));
+        }
+        if cumulative_hop >= max_depth_cap || *total_nodes_added >= limit {
+            return Ok((Vec::new(), 0));
+        }
+
+        let (edge_pat, next_node_pat) = &pattern.steps[step_idx];
+        let step_max_depth = edge_pat.max_hops.min(max_depth_cap.saturating_sub(cumulative_hop));
+        let step_min_depth = edge_pat.min_hops.max(1);
+
+        if step_max_depth == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let raw_neighbors = self.get_immediate_neighbors(
+            current_node,
+            edge_pat.direction,
+            &edge_pat.edge_types,
+            edge_class_filter,
+        )?;
+
+        let mut filtered: Vec<(String, String)> = Vec::new();
+        for (target_node, rel) in raw_neighbors {
+            if ancestors.contains(&target_node) {
+                continue;
+            }
+            if let Some(wf) = where_filter {
+                if !self.eval_where_filter(&target_node, wf) {
+                    continue;
+                }
+            }
+            filtered.push((target_node, rel));
+        }
+
+        let total_direct_neighbors = filtered.len();
+        let is_hub = total_direct_neighbors > HUB_FANOUT_THRESHOLD;
+        let take_count = if is_hub { HUB_FANOUT_THRESHOLD } else { total_direct_neighbors };
+
+        let mut tree_nodes = Vec::new();
+
+        for (target_node, rel) in filtered.into_iter().take(take_count) {
+            if *total_nodes_added >= limit {
+                break;
+            }
+
+            let next_hop = cumulative_hop + 1;
+            let (file, _, line) = self.lookup_node_metadata(&target_node);
+            let matches_constraint = self.matches_node_constraints(&target_node, next_node_pat)?;
+
+            let mut branches = Vec::new();
+            let mut child_suppressed = None;
+            let mut child_hub = None;
+
+            if next_hop < max_depth_cap && !is_hub {
+                ancestors.insert(target_node.clone());
+
+                if hop_in_step + 1 < step_max_depth {
+                    let (sub, sub_direct) = self.expand_node(
+                        &target_node,
+                        step_idx,
+                        hop_in_step + 1,
+                        next_hop,
+                        pattern,
+                        edge_class_filter,
+                        where_filter,
+                        max_depth_cap,
+                        ancestors,
+                        total_nodes_added,
+                        limit,
+                    )?;
+                    if sub_direct > HUB_FANOUT_THRESHOLD {
+                        child_suppressed = Some(sub_direct - HUB_FANOUT_THRESHOLD);
+                        child_hub = Some(true);
+                    }
+                    branches.extend(sub);
+                }
+
+                if hop_in_step + 1 >= step_min_depth
+                    && step_idx + 1 < pattern.steps.len()
+                    && matches_constraint
+                {
+                    let (sub, sub_direct) = self.expand_node(
+                        &target_node,
+                        step_idx + 1,
+                        0,
+                        next_hop,
+                        pattern,
+                        edge_class_filter,
+                        where_filter,
+                        max_depth_cap,
+                        ancestors,
+                        total_nodes_added,
+                        limit,
+                    )?;
+                    if sub_direct > HUB_FANOUT_THRESHOLD {
+                        child_suppressed = Some(sub_direct - HUB_FANOUT_THRESHOLD);
+                        child_hub = Some(true);
+                    }
+                    branches.extend(sub);
+                }
+
+                ancestors.remove(&target_node);
+            }
+
+            if !matches_constraint && branches.is_empty() {
+                continue;
+            }
+
+            *total_nodes_added += 1;
+
+            tree_nodes.push(GraphTreeNode {
+                node: target_node,
+                rel: Some(rel),
+                file,
+                line,
+                hop: next_hop,
+                branches,
+                suppressed: child_suppressed,
+                hub: child_hub,
+            });
+        }
+
+        Ok((tree_nodes, total_direct_neighbors))
+    }
+
+    /// Query immediate 1-hop neighbors according to direction and edge types.
+    fn get_immediate_neighbors(
+        &self,
+        node: &str,
         direction: QueryDirection,
         edge_types: &[String],
         edge_class_filter: Option<&str>,
-        min_hops: usize,
-        max_hops: usize,
-        limit: usize,
-    ) -> Result<Vec<(String, usize, String, Vec<(String, String, String, String)>)>> {
-        let type_filter = edge_types.join(",");
+    ) -> Result<Vec<(String, String)>> {
+        let type_filter = if edge_types.is_empty() {
+            String::new()
+        } else {
+            format!(",{},", edge_types.join(","))
+        };
         let class_filter = edge_class_filter.unwrap_or("").to_string();
-
+        let conn = self.store.conn();
         let mut results = Vec::new();
 
         match direction {
             QueryDirection::Outgoing => {
-                let sql =
-                    "WITH RECURSIVE traversal(current_node, depth, path, original_anchor) AS (
-                    SELECT e.target, 1, ?1 || '->' || e.target, ?1
-                    FROM edges e
-                    WHERE e.source = ?1
-                      AND (?2 = '' OR instr(?2, e.edge_type) > 0)
-                      AND (?3 = '' OR e.edge_class = ?3)
-
-                    UNION ALL
-
-                    SELECT e.target, t.depth + 1, t.path || '->' || e.target, t.original_anchor
-                    FROM edges e
-                    JOIN traversal t ON e.source = t.current_node
-                    WHERE t.depth < ?4
-                      AND (?2 = '' OR instr(?2, e.edge_type) > 0)
-                      AND (?3 = '' OR e.edge_class = ?3)
-                      AND instr(t.path, e.target) = 0
-                )
-                SELECT DISTINCT current_node, depth, path
-                FROM traversal
-                WHERE depth >= ?5
-                LIMIT ?6;";
-
-                let conn = self.store.conn();
+                let sql = "SELECT DISTINCT target, edge_type
+                    FROM edges
+                    WHERE source = ?1
+                      AND (?2 = '' OR instr(?2, ',' || edge_type || ',') > 0)
+                      AND (?3 = '' OR edge_class = ?3)
+                    ORDER BY weight DESC, id ASC";
                 let mut stmt = conn.prepare(sql).map_err(|e| Error::Database(e.to_string()))?;
                 let rows = stmt
-                    .query_map(
-                        params![
-                            anchor,
-                            type_filter,
-                            class_filter,
-                            max_hops as i64,
-                            min_hops as i64,
-                            limit as i64
-                        ],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, i64>(1)? as usize,
-                                row.get::<_, String>(2)?,
-                            ))
-                        },
-                    )
+                    .query_map(params![node, type_filter, class_filter], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
                     .map_err(|e| Error::Database(e.to_string()))?;
-
                 for r in rows {
-                    let (node, depth, path_str) = r.map_err(|e| Error::Database(e.to_string()))?;
-                    let edges_used = vec![(
-                        anchor.to_string(),
-                        node.clone(),
-                        type_filter.clone(),
-                        "outgoing".to_string(),
-                    )];
-                    results.push((node, depth, path_str, edges_used));
+                    results.push(r.map_err(|e| Error::Database(e.to_string()))?);
                 }
             }
             QueryDirection::Incoming => {
-                let sql =
-                    "WITH RECURSIVE traversal(current_node, depth, path, original_anchor) AS (
-                    SELECT e.source, 1, ?1 || '<-' || e.source, ?1
-                    FROM edges e
-                    WHERE e.target = ?1
-                      AND (?2 = '' OR instr(?2, e.edge_type) > 0)
-                      AND (?3 = '' OR e.edge_class = ?3)
-
-                    UNION ALL
-
-                    SELECT e.source, t.depth + 1, t.path || '<-' || e.source, t.original_anchor
-                    FROM edges e
-                    JOIN traversal t ON e.target = t.current_node
-                    WHERE t.depth < ?4
-                      AND (?2 = '' OR instr(?2, e.edge_type) > 0)
-                      AND (?3 = '' OR e.edge_class = ?3)
-                      AND instr(t.path, e.source) = 0
-                )
-                SELECT DISTINCT current_node, depth, path
-                FROM traversal
-                WHERE depth >= ?5
-                LIMIT ?6;";
-
-                let conn = self.store.conn();
+                let sql = "SELECT DISTINCT source, edge_type
+                    FROM edges
+                    WHERE target = ?1
+                      AND (?2 = '' OR instr(?2, ',' || edge_type || ',') > 0)
+                      AND (?3 = '' OR edge_class = ?3)
+                    ORDER BY weight DESC, id ASC";
                 let mut stmt = conn.prepare(sql).map_err(|e| Error::Database(e.to_string()))?;
                 let rows = stmt
-                    .query_map(
-                        params![
-                            anchor,
-                            type_filter,
-                            class_filter,
-                            max_hops as i64,
-                            min_hops as i64,
-                            limit as i64
-                        ],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, i64>(1)? as usize,
-                                row.get::<_, String>(2)?,
-                            ))
-                        },
-                    )
+                    .query_map(params![node, type_filter, class_filter], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
                     .map_err(|e| Error::Database(e.to_string()))?;
-
                 for r in rows {
-                    let (node, depth, path_str) = r.map_err(|e| Error::Database(e.to_string()))?;
-                    let edges_used = vec![(
-                        node.clone(),
-                        anchor.to_string(),
-                        type_filter.clone(),
-                        "incoming".to_string(),
-                    )];
-                    results.push((node, depth, path_str, edges_used));
+                    results.push(r.map_err(|e| Error::Database(e.to_string()))?);
                 }
             }
             QueryDirection::Undirected => {
-                let out = self.traverse_step(
-                    anchor,
-                    QueryDirection::Outgoing,
-                    edge_types,
-                    edge_class_filter,
-                    min_hops,
-                    max_hops,
-                    limit,
-                )?;
-                let inc = self.traverse_step(
-                    anchor,
-                    QueryDirection::Incoming,
-                    edge_types,
-                    edge_class_filter,
-                    min_hops,
-                    max_hops,
-                    limit,
-                )?;
-                results.extend(out);
-                results.extend(inc);
+                let sql = "SELECT DISTINCT target AS neighbor, edge_type
+                    FROM edges
+                    WHERE source = ?1
+                      AND (?2 = '' OR instr(?2, ',' || edge_type || ',') > 0)
+                      AND (?3 = '' OR edge_class = ?3)
+                    UNION
+                    SELECT DISTINCT source AS neighbor, edge_type
+                    FROM edges
+                    WHERE target = ?1
+                      AND (?2 = '' OR instr(?2, ',' || edge_type || ',') > 0)
+                      AND (?3 = '' OR edge_class = ?3)
+                    ORDER BY edge_type ASC";
+                let mut stmt = conn.prepare(sql).map_err(|e| Error::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![node, type_filter, class_filter], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| Error::Database(e.to_string()))?;
+                for r in rows {
+                    results.push(r.map_err(|e| Error::Database(e.to_string()))?);
+                }
             }
         }
 
         Ok(results)
+    }
+
+    /// Compute high-signal cardinality summary (direct, transitive, unique files, max depth).
+    fn compute_summary(&self, tree: &[GraphTreeNode], root: Option<&str>) -> GraphImpactSummary {
+        let direct = tree.len();
+        let mut transitive_nodes = std::collections::HashSet::new();
+        let mut all_files = std::collections::HashSet::new();
+        let mut max_depth = 0;
+
+        if let Some(r) = root {
+            if let (Some(f), _, _) = self.lookup_node_metadata(r) {
+                all_files.insert(f);
+            }
+        }
+
+        fn collect_stats(
+            nodes: &[GraphTreeNode],
+            transitive_nodes: &mut std::collections::HashSet<String>,
+            all_files: &mut std::collections::HashSet<String>,
+            max_depth: &mut usize,
+        ) {
+            for n in nodes {
+                if n.hop > *max_depth {
+                    *max_depth = n.hop;
+                }
+                if n.hop >= 2 {
+                    transitive_nodes.insert(n.node.clone());
+                }
+                if let Some(f) = &n.file {
+                    all_files.insert(f.clone());
+                }
+                collect_stats(&n.branches, transitive_nodes, all_files, max_depth);
+            }
+        }
+
+        collect_stats(tree, &mut transitive_nodes, &mut all_files, &mut max_depth);
+
+        GraphImpactSummary {
+            direct,
+            transitive: transitive_nodes.len(),
+            files: all_files.len(),
+            max_depth,
+        }
+    }
+
+    /// Count all nodes across the entire hierarchical tree.
+    fn count_total_nodes(&self, tree: &[GraphTreeNode]) -> usize {
+        let mut count = 0;
+        fn count_rec(nodes: &[GraphTreeNode], count: &mut usize) {
+            for n in nodes {
+                *count += 1;
+                count_rec(&n.branches, count);
+            }
+        }
+        count_rec(tree, &mut count);
+        count
     }
 
     /// Check if target node conforms to subsequent pattern constraints.
@@ -834,6 +879,16 @@ impl<'a> QueryEngine<'a> {
             return (Some(file.path), Some("DocNode".to_string()), Some(1));
         }
         (None, None, None)
+    }
+
+    /// Format node file and line (e.g. "path/to/file.rs:42").
+    fn format_node_file_line(&self, node_id: &str) -> Option<String> {
+        let (file, _, line) = self.lookup_node_metadata(node_id);
+        match (file, line) {
+            (Some(f), Some(l)) => Some(format!("{}:{}", f, l)),
+            (Some(f), None) => Some(f),
+            _ => None,
+        }
     }
 }
 

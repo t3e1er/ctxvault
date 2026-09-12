@@ -312,7 +312,7 @@ impl ToolRegistry {
         // Graph tools
         self.register_read(
             "graph_match",
-            "Linear Cypher-Lite graph path query compiled to recursive SQLite CTEs. Traverses heterogeneous relations across code symbols and documentation notes. Cycle-safe with depth bounding.",
+            "Hierarchical Cypher-Lite graph traversal query compiled to SQLite recursive CTEs. Returns a branching tree representation with blast radius impact summary and hub suppression. Cycle-safe with depth bounding.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -336,11 +336,6 @@ impl ToolRegistry {
                     "max_depth": {
                         "type": "number",
                         "description": "Hard cap on recursive traversal depth (default 3, max 5)"
-                    },
-                    "format": {
-                        "type": "string",
-                        "enum": ["compact", "full"],
-                        "description": "Output format: 'compact' (default, lean linear path strings) or 'full' (complete node and edge objects)"
                     }
                 },
                 "required": ["pattern"]
@@ -1392,7 +1387,6 @@ pub(crate) struct GraphMatchParams {
     pub where_clause: Option<String>,
     pub limit: Option<usize>,
     pub max_depth: Option<usize>,
-    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2295,18 +2289,13 @@ fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
     let limit = params.limit.unwrap_or(20);
     let max_depth = params.max_depth.unwrap_or(3);
 
-    let mut match_result = engine.graph_match(
+    let match_result = engine.graph_match(
         &params.pattern,
         params.edge_class.as_deref(),
         params.where_clause.as_deref(),
         limit,
         max_depth,
     )?;
-
-    if params.format.as_deref().unwrap_or("compact") == "compact" {
-        match_result.nodes.clear();
-        match_result.edges.clear();
-    }
 
     serde_json::to_value(match_result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
 }
@@ -4241,7 +4230,7 @@ mod tests {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(result).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert_eq!(match_res.matches[0].node, "docs/adrs/001.md");
+        assert_eq!(match_res.tree[0].node, "docs/adrs/001.md");
     }
 
     #[test]
@@ -4440,7 +4429,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(callers_res).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert_eq!(match_res.matches[0].node, "tokenize");
+        assert_eq!(match_res.tree[0].node, "tokenize");
 
         // 3. Test graph_communities view='architecture' (absorbed get_architecture)
         let arch_res = registry
@@ -5265,6 +5254,6 @@ export class UserService extends BaseService implements IUserService {
         let match_res: ctxvault_common::types::GraphMatchResult =
             serde_json::from_value(match_val).unwrap();
         assert_eq!(match_res.total_matches, 1);
-        assert!(!match_res.matches.is_empty(), "Expected graph_match path for -[:extends]->");
+        assert!(!match_res.tree.is_empty(), "Expected graph_match path for -[:extends]->");
     }
 }

@@ -1094,61 +1094,59 @@ pub struct EdgeRecord {
     pub metadata: Option<String>,
 }
 
-/// Result of a `graph_match` path query.
+/// Result of a `graph_match` traversal query formatted as a hierarchical branching tree.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraphMatchResult {
-    /// Matched paths from anchor to terminal node.
-    pub matches: Vec<PathMatch>,
-    /// Total matched path instances.
+    /// Root node from which the pattern query expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// Source file and line of the root entity if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// High-signal cardinality summary (direct & transitive impact, files affected, max depth).
+    pub summary: GraphImpactSummary,
+    /// Hierarchical branching tree of traversed paths.
+    pub tree: Vec<GraphTreeNode>,
+    /// Total matches / paths reached.
     pub total_matches: usize,
-    /// Distinct nodes in the matched subgraph.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub nodes: Vec<MatchedNode>,
-    /// Distinct edges in the matched subgraph.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub edges: Vec<MatchedEdge>,
 }
 
-/// A single matched path traversal.
+/// Summary metrics of graph impact / blast radius.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PathMatch {
-    /// Identifier or scope path of the terminal node.
+pub struct GraphImpactSummary {
+    /// Number of immediate 1-hop connections.
+    pub direct: usize,
+    /// Total number of unique transitive nodes reached.
+    pub transitive: usize,
+    /// Number of unique files affected across the traversed subgraph.
+    pub files: usize,
+    /// Maximum hop depth reached.
+    pub max_depth: usize,
+}
+
+/// A node in the hierarchical graph traversal tree.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphTreeNode {
+    /// Node identifier or scope path.
     pub node: String,
-    /// Traversal depth (hops) from the anchor.
-    pub depth: usize,
-    /// Linear path representation (e.g. "A -> B <- C").
-    pub path: String,
-    /// Symbol type or node label if known.
+    /// Relationship type leading to this node (e.g. "calls", "implements", "extends").
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub symbol_type: Option<String>,
-    /// File path where the terminal entity lives.
+    pub rel: Option<String>,
+    /// File path where this entity is defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
-    /// Line number where the terminal entity starts.
+    pub file: Option<String>,
+    /// Starting line number in the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
-}
-
-/// A node in the matched subgraph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedNode {
-    /// Node identifier (path or scope path).
-    pub id: String,
-    /// Node label (e.g. "CodeSymbol", "DocNode", "Interface").
-    pub label: String,
-    /// Node properties.
-    pub properties: std::collections::HashMap<String, String>,
-}
-
-/// An edge in the matched subgraph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedEdge {
-    /// Source node ID.
-    pub source: String,
-    /// Target node ID.
-    pub target: String,
-    /// Edge type (e.g. "calls", "implements").
-    pub edge_type: String,
-    /// Direction relative to traversal ("outgoing", "incoming").
-    pub direction: String,
+    /// Hop distance from the root.
+    pub hop: usize,
+    /// Child branches expanding from this node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<GraphTreeNode>,
+    /// Number of suppressed branches if this node is a high-degree hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppressed: Option<usize>,
+    /// Whether this node was identified and capped as a high-degree hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<bool>,
 }

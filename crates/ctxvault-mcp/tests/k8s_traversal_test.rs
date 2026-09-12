@@ -69,15 +69,23 @@ fn test_kubernetes_traversal_with_code_edge_class() {
         callees_time
     );
     println!(
-        "  Matches: {}, Nodes: {}, Edges: {}",
+        "  Matches: {}, Direct: {}, Transitive: {}, Files: {}, MaxDepth: {}",
         callees_result.total_matches,
-        callees_result.nodes.len(),
-        callees_result.edges.len()
+        callees_result.summary.direct,
+        callees_result.summary.transitive,
+        callees_result.summary.files,
+        callees_result.summary.max_depth,
     );
-    for (i, p) in callees_result.matches.iter().take(10).enumerate() {
-        println!("    [{}] path: '{}', target node: '{}'", i + 1, p.path, p.node);
+    for (i, node) in callees_result.tree.iter().take(10).enumerate() {
+        println!(
+            "    [{}] target node: '{}', rel: '{:?}', hop: {}",
+            i + 1,
+            node.node,
+            node.rel,
+            node.hop
+        );
     }
-    assert!(!callees_result.matches.is_empty(), "callees must not be empty");
+    assert!(!callees_result.tree.is_empty(), "callees must not be empty");
 
     // 4. Test graph_match inbound (callers) with edge_class="code"
     let start_callers = std::time::Instant::now();
@@ -93,15 +101,23 @@ fn test_kubernetes_traversal_with_code_edge_class() {
     let callers_time = start_callers.elapsed();
     println!("\nInbound callers graph_match (edge_class=\"code\") completed in {:?}", callers_time);
     println!(
-        "  Matches: {}, Nodes: {}, Edges: {}",
+        "  Matches: {}, Direct: {}, Transitive: {}, Files: {}, MaxDepth: {}",
         callers_result.total_matches,
-        callers_result.nodes.len(),
-        callers_result.edges.len()
+        callers_result.summary.direct,
+        callers_result.summary.transitive,
+        callers_result.summary.files,
+        callers_result.summary.max_depth,
     );
-    for (i, p) in callers_result.matches.iter().enumerate() {
-        println!("    [{}] path: '{}', caller node: '{}'", i + 1, p.path, p.node);
+    for (i, node) in callers_result.tree.iter().enumerate() {
+        println!(
+            "    [{}] caller node: '{}', rel: '{:?}', hop: {}",
+            i + 1,
+            node.node,
+            node.rel,
+            node.hop
+        );
     }
-    assert!(!callers_result.matches.is_empty(), "callers must not be empty");
+    assert!(!callers_result.tree.is_empty(), "callers must not be empty");
 
     // 5. Test bi-modal search for NewMainKubelet
     println!("\nExecuting search_hybrid with modality=\"code\":");
