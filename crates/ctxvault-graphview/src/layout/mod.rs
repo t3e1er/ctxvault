@@ -184,14 +184,25 @@ pub fn compute_cluster_anchors(
                 node_keys.push(idx);
             }
 
+            let num_clusters = keys.len().max(1);
+            let mut cluster_centers: Vec<[f32; 3]> = Vec::with_capacity(num_clusters);
+            for k in 0..num_clusters {
+                let k_f = k as f32;
+                let n_f = num_clusters as f32;
+                // Fibonacci 3D sphere distribution
+                let y = 1.0 - (k_f / (n_f - 1.0).max(1.0)) * 2.0;
+                let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
+                let theta = 2.399_963_2 * k_f; // Golden ratio spiral
+                let x = theta.cos() * radius_at_y;
+                let z = theta.sin() * radius_at_y;
+                let h = fnv1a_hash(&keys[k]);
+                let r = base_radius * (0.80 + (((h >> 16) & 0xFF) as f32 / 255.0) * 0.45);
+                cluster_centers.push([x * r, y * r, z * r]);
+            }
+
             let mut anchors = Vec::with_capacity(n);
             for &k_idx in &node_keys {
-                let h = fnv1a_hash(&keys[k_idx]);
-                let angle = ((h & 0xFFFF) as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
-                let r = base_radius + (((h >> 16) & 0xFF) as f32 / 255.0) * (base_radius * 0.4);
-                let z_layer = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * (base_radius * 0.6);
-
-                anchors.push([r * angle.cos(), r * angle.sin(), z_layer]);
+                anchors.push(cluster_centers[k_idx]);
             }
             anchors
         }
@@ -207,16 +218,24 @@ pub fn compute_cluster_anchors(
             }
 
             let num_comms = distinct_comms.len().max(1);
-            let mut anchors = Vec::with_capacity(n);
+            let mut comm_centers: Vec<[f32; 3]> = Vec::with_capacity(num_comms);
+            for c in 0..num_comms {
+                let c_f = c as f32;
+                let n_f = num_comms as f32;
+                // Fibonacci 3D sphere distribution
+                let y = 1.0 - (c_f / (n_f - 1.0).max(1.0)) * 2.0;
+                let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
+                let theta = 2.399_963_2 * c_f;
+                let x = theta.cos() * radius_at_y;
+                let z = theta.sin() * radius_at_y;
+                let r = base_radius * 0.90;
+                comm_centers.push([x * r, y * r, z * r]);
+            }
 
+            let mut anchors = Vec::with_capacity(n);
             for &c in communities {
                 let c_order = *comm_to_idx.get(&c).unwrap_or(&0);
-                let angle = (c_order as f32 / num_comms as f32) * 2.0 * std::f32::consts::PI;
-                let h = fnv1a_hash(&format!("community_{}", c));
-                let r = base_radius + (((h >> 16) & 0xFF) as f32 / 255.0) * (base_radius * 0.4);
-                let z_layer = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * (base_radius * 0.6);
-
-                anchors.push([r * angle.cos(), r * angle.sin(), z_layer]);
+                anchors.push(comm_centers[c_order]);
             }
             anchors
         }
@@ -241,7 +260,7 @@ pub fn compute_force_layout(
     let base_radius = (n as f32).cbrt() * 45.0 + 350.0;
     let anchors = compute_cluster_anchors(paths, communities, config.cluster_mode, base_radius);
 
-    // 2. Initial placement: anchor center + small deterministic jitter
+    // 2. Initial placement: 3D anchor center + 3D spherical volumetric jitter
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n);
     let mut velocities: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0]; n];
     let masses: Vec<f32> = degrees.iter().map(|&d| 1.0 + (d as f32).sqrt()).collect();
@@ -249,11 +268,15 @@ pub fn compute_force_layout(
     for i in 0..n {
         let a = anchors[i];
         let h = fnv1a_hash(&paths[i]);
-        let j_angle = ((h & 0xFFFF) as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
-        let j_r = 10.0 + (((h >> 16) & 0xFF) as f32 / 255.0) * 45.0;
-        let j_z = (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * 35.0;
+        let theta = ((h & 0xFFFF) as f32 / 65535.0) * 2.0 * std::f32::consts::PI;
+        let phi = ((((h >> 16) & 0xFFFF) as f32 / 65535.0) - 0.5) * std::f32::consts::PI;
+        let r_jitter = 15.0 + (((h >> 8) & 0xFF) as f32 / 255.0) * 90.0;
 
-        positions.push([a[0] + j_r * j_angle.cos(), a[1] + j_r * j_angle.sin(), a[2] + j_z]);
+        let jx = r_jitter * phi.cos() * theta.cos();
+        let jy = r_jitter * phi.sin();
+        let jz = r_jitter * phi.cos() * theta.sin();
+
+        positions.push([a[0] + jx, a[1] + jy, a[2] + jz]);
     }
 
     // 3. Multi-step relaxation loop

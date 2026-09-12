@@ -600,6 +600,8 @@
 
       edgeLines = new THREE.LineSegments(lineGeo, lineMat);
       scene.add(edgeLines);
+
+      applyDisplayFilters();
     }
 
     async function refreshGraph() {
@@ -661,13 +663,112 @@
       particleSystem.geometry.attributes.color.needsUpdate = true;
     }
 
+    // Filter State
+    let currentSearchMatches = null;
+
+    function applyDisplayFilters() {
+      if (!particleSystem || !graphData || !graphData.nodes) return;
+      const colors = particleSystem.geometry.attributes.color.array;
+      const sizes = particleSystem.geometry.attributes.size.array;
+      const baseScale = parseFloat(document.getElementById('size-slider').value);
+
+      const hasSearch = (currentSearchMatches !== null);
+
+      for (let i = 0; i < graphData.nodes.length; i++) {
+        const n = graphData.nodes[i];
+
+        // 1. Mode check (Hybrid vs Docs vs Code)
+        let modeMatch = true;
+        if (currentMode === 'docs') {
+          modeMatch = (n.entity_type === 'DocNode');
+        } else if (currentMode === 'code') {
+          modeMatch = (n.entity_type !== 'DocNode');
+        }
+
+        // 2. Type Chip check (DocNode, Function, Struct, Module)
+        let typeMatch = (selectedType === 'all' || n.entity_type === selectedType);
+
+        // 3. Search Query match check
+        let isSearchMatch = hasSearch && currentSearchMatches.has(i);
+
+        const isVisible = modeMatch && typeMatch;
+
+        if (isSearchMatch) {
+          // Amber highlight for search matches (bright and enlarged)
+          colors[i * 3] = 0.98;
+          colors[i * 3 + 1] = 0.65;
+          colors[i * 3 + 2] = 0.05;
+          sizes[i] = n.size * baseScale * 2.5;
+        } else {
+          // Unpack base color
+          const r = ((n.color_rgb >> 16) & 0xff) / 255;
+          const g = ((n.color_rgb >> 8) & 0xff) / 255;
+          const b = (n.color_rgb & 0xff) / 255;
+
+          const factor = (isVisible && !hasSearch) ? 1.0 : 0.06;
+          colors[i * 3] = r * factor;
+          colors[i * 3 + 1] = g * factor;
+          colors[i * 3 + 2] = b * factor;
+          sizes[i] = n.size * baseScale * (isVisible ? 1.0 : 0.4);
+        }
+      }
+
+      particleSystem.geometry.attributes.color.needsUpdate = true;
+      particleSystem.geometry.attributes.size.needsUpdate = true;
+    }
+
+    function performQuery(rawQuery) {
+      const query = (rawQuery || '').trim().toLowerCase();
+      const inputEl = document.getElementById('query-input');
+
+      if (!query) {
+        currentSearchMatches = null;
+        inputEl.style.borderColor = 'var(--panel-border)';
+        inputEl.style.boxShadow = 'none';
+        document.getElementById('inspect-title').textContent = 'Hover or click a node';
+        document.getElementById('inspect-path').textContent = 'Select an entity to inspect graph topology and Turn 1 context';
+        applyDisplayFilters();
+        return;
+      }
+
+      const matches = new Set();
+      let firstMatch = null;
+
+      graphData.nodes.forEach((n, i) => {
+        const matchPath = n.path && n.path.toLowerCase().includes(query);
+        const matchTitle = n.title && n.title.toLowerCase().includes(query);
+        const matchType = n.entity_type && n.entity_type.toLowerCase().includes(query);
+        if (matchPath || matchTitle || matchType) {
+          matches.add(i);
+          if (!firstMatch) firstMatch = n;
+        }
+      });
+
+      currentSearchMatches = matches;
+      applyDisplayFilters();
+
+      if (matches.size > 0) {
+        inputEl.style.borderColor = 'var(--neon-amber)';
+        inputEl.style.boxShadow = '0 0 14px rgba(245, 158, 11, 0.45)';
+        document.getElementById('inspect-title').textContent = `Matched ${matches.size} nodes for "${rawQuery.trim()}"`;
+        document.getElementById('inspect-path').textContent = firstMatch ? firstMatch.path : '';
+        document.getElementById('inspect-degree').textContent = matches.size;
+        document.getElementById('inspect-type').textContent = 'Matched';
+      } else {
+        inputEl.style.borderColor = 'var(--neon-pink)';
+        inputEl.style.boxShadow = '0 0 14px rgba(236, 72, 153, 0.45)';
+        document.getElementById('inspect-title').textContent = `No nodes matched "${rawQuery.trim()}"`;
+        document.getElementById('inspect-path').textContent = 'Try another symbol, directory path, or type name';
+      }
+    }
+
     // UI Listeners
     document.querySelectorAll('#mode-group .pill-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         document.querySelectorAll('#mode-group .pill-btn').forEach(b => b.classList.remove('active'));
         e.target.classList.add('active');
         currentMode = e.target.dataset.mode;
-        refreshGraph();
+        applyDisplayFilters();
       });
     });
 
@@ -682,39 +783,26 @@
 
     document.getElementById('corpus-select').addEventListener('change', (e) => {
       currentCorpus = e.target.value;
+      currentSearchMatches = null;
+      document.getElementById('query-input').value = '';
       refreshGraph();
     });
 
-    document.getElementById('query-input').addEventListener('keydown', async (e) => {
+    const queryInput = document.getElementById('query-input');
+    queryInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const query = e.target.value.trim();
-        if (!query) return;
-        const res = await fetch('/api/graph/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, corpus: currentCorpus === 'all' ? null : currentCorpus })
-        });
-        const matchData = await res.json();
-        if (matchData.matched_paths && matchData.matched_paths.length > 0) {
-          highlightMatchedNodes(matchData.matched_paths);
-        }
+        performQuery(queryInput.value);
+      } else if (e.key === 'Escape') {
+        queryInput.value = '';
+        performQuery('');
       }
     });
 
-    function highlightMatchedNodes(paths) {
-      if (!particleSystem) return;
-      const colors = particleSystem.geometry.attributes.color.array;
-      const pathSet = new Set(paths);
-
-      graphData.nodes.forEach((n, i) => {
-        if (pathSet.has(n.path)) {
-          colors[i * 3] = 0.96;     // Amber R
-          colors[i * 3 + 1] = 0.62; // Amber G
-          colors[i * 3 + 2] = 0.04; // Amber B
-        }
-      });
-      particleSystem.geometry.attributes.color.needsUpdate = true;
-    }
+    queryInput.addEventListener('input', (e) => {
+      if (e.target.value === '') {
+        performQuery('');
+      }
+    });
 
     document.querySelectorAll('#type-chips .type-chip').forEach(chip => {
       chip.addEventListener('click', (e) => {
@@ -722,26 +810,9 @@
         document.querySelectorAll('#type-chips .type-chip').forEach(c => c.classList.remove('active'));
         target.classList.add('active');
         selectedType = target.dataset.type;
-        filterByType(selectedType);
+        applyDisplayFilters();
       });
     });
-
-    function filterByType(type) {
-      if (!particleSystem) return;
-      const colors = particleSystem.geometry.attributes.color.array;
-      graphData.nodes.forEach((n, i) => {
-        const matches = (type === 'all' || n.entity_type === type);
-        const r = ((n.color_rgb >> 16) & 0xff) / 255;
-        const g = ((n.color_rgb >> 8) & 0xff) / 255;
-        const b = (n.color_rgb & 0xff) / 255;
-        const factor = matches ? 1.0 : 0.12;
-
-        colors[i * 3] = r * factor;
-        colors[i * 3 + 1] = g * factor;
-        colors[i * 3 + 2] = b * factor;
-      });
-      particleSystem.geometry.attributes.color.needsUpdate = true;
-    }
 
     // Sliders
     document.getElementById('size-slider').addEventListener('input', (e) => {
