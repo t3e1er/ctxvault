@@ -1533,6 +1533,11 @@ impl Engine {
         self.graph.compute_affordances(path)
     }
 
+    /// Format immediate 1-hop graph neighborhood as a compact Cypher-Lite ASCII expression.
+    pub fn format_cypher_affordances(&self, path: &str, max_neighbors: usize) -> Option<String> {
+        self.graph.format_cypher_affordances(path, max_neighbors)
+    }
+
     /// Return the total in-degree of a node directly without allocating affordance maps.
     pub fn in_degree(&self, path: &str) -> usize {
         self.graph.in_degree(path)

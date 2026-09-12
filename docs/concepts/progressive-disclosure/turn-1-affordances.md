@@ -1,4 +1,4 @@
-﻿---
+---
 title: "Turn 1 Affordances & Schema Envelopes"
 description: "How Turn 1 search responses ground agents with graph degree counts, node labels, and inline answers."
 category: "progressive-disclosure"
@@ -18,33 +18,24 @@ In single-turn search, standard vector databases return only chunk text and simi
 
 ---
 
-## 1. Graph Affordance Counters
+## 1. Cypher-Lite Graph Affordances
 
-Every search hit includes deterministic graph degree counts computed from the AST knowledge graph:
+Every search hit includes deterministic graph relationships and degree previews formatted in compact Cypher-Lite ASCII notation directly from the AST knowledge graph:
 
 ```json
 {
-  "path": "crates/ctxvault-core/src/engine.rs",
-  "symbol": "Engine::search",
-  "kind": "function",
-  "score": 0.88,
-  "snippet": "pub fn search(&self, req: &SearchRequest) -> Result<SearchResponse> { ... }",
-  "graph_affordances": {
-    "calls_in": 7,
-    "calls_out": 14,
-    "implements": 1,
-    "imports": 3,
-    "wikilinks_in": 4
-  }
+  "path": "crates/ctxvault-core/src/bundle.rs",
+  "score": 0.0161,
+  "score_components": { "bm25": 13.05 },
+  "snippet": "pub fn detect_bundle(corpus_root: &Path) -> Option<PathBuf> { ... }",
+  "graph": "<-[:calls*3]-(add_corpus_with_index_dir, ensure_corpus_with_name, prompt_bundle_extraction), <-[:defines]-(bundle.rs)"
 }
 ```
 
-### Why Affordances Matter
-* **`calls_in: 7`**: Tells the agent that 7 other functions depend on this symbol. Refactoring requires caution.
-* **`calls_out: 14`**: Signals that this function orchestrates multiple sub-components.
-* **`wikilinks_in: 4`**: Proves that this concept is documented across 4 ADRs or knowledge notes.
-
-The agent gains architectural situational awareness **without making extra tool calls**.
+### Why Cypher-Lite Affordances Matter
+* **Directional Relationship Topology**: `<-[:calls*3]-(...)` immediately shows callers without having to guess or make exploratory queries.
+* **Neighborhood Density & Suppression**: High-degree hubs display preview neighbors plus explicit suppression notices (e.g. `<-[:defines*20 (suppressed 17)]-(...)`), preventing token blowouts while signaling structural centrality.
+* **Zero Redundant Tokens**: Language is derived from file extension, entity kind is implicit from snippet and symbol definitions, and trailing hits (where `snippet: null`) provide `symbol` handles for Turn 2 progressive disclosure (`get_snippet(name="...")` or `graph_match(...)`).
 
 ---
 

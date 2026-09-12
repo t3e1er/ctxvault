@@ -666,6 +666,16 @@ fn build_dynamic_schema_envelope(
                     }
                 }
             }
+            if let Some(ref g) = item.graph {
+                for part in g.split("[:") {
+                    if let Some(end) = part.find(['*', ']', ' ', '-']) {
+                        let rel = &part[..end];
+                        if !rel.is_empty() {
+                            edges.insert(rel.to_string());
+                        }
+                    }
+                }
+            }
         }
     } else {
         labels.insert("DocNode".to_string());
@@ -699,6 +709,16 @@ fn build_dynamic_schema_envelope(
                     if *count > 0 {
                         let clean = edge_name.strip_suffix("_in").unwrap_or(edge_name);
                         edges.insert(clean.to_string());
+                    }
+                }
+            }
+            if let Some(ref g) = item.graph {
+                for part in g.split("[:") {
+                    if let Some(end) = part.find(['*', ']', ' ', '-']) {
+                        let rel = &part[..end];
+                        if !rel.is_empty() {
+                            edges.insert(rel.to_string());
+                        }
                     }
                 }
             }
@@ -2093,16 +2113,21 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
         if is_lean {
             for item in &mut docs_items {
                 item.graph_affordances = None;
+                item.graph = None;
                 item.score_components = None;
+                item.language = None;
+                item.entity_kind = None;
+                item.chunk_index = None;
+                item.symbol = None;
             }
         } else {
             for item in &mut docs_items {
-                if item.entity_kind.is_none() {
-                    item.entity_kind = Some(ctxvault_common::types::EntityKind::Documentation);
-                }
-                if item.graph_affordances.is_none() {
-                    item.graph_affordances = Some(engine.graph().compute_affordances(&item.path));
-                }
+                item.language = None;
+                item.entity_kind = None;
+                item.chunk_index = None;
+                item.symbol = None;
+                item.graph_affordances = None;
+                item.graph = engine.format_cypher_affordances(&item.path, 3);
             }
         }
 
@@ -2111,99 +2136,74 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             engine.store().get_code_symbols_for_files(&code_paths).unwrap_or_default();
 
         for item in &mut code_items {
-            if is_lean {
-                item.graph_affordances = None;
-                item.score_components = None;
-            }
+            let mut matched_symbol: Option<String> = None;
+            let mut target_scope_path: Option<String> = None;
 
-            if item.entity_kind.is_none()
-                || matches!(
-                    item.entity_kind,
-                    Some(ctxvault_common::types::EntityKind::CodeChunk {
-                        start_line: 0,
-                        end_line: 0,
-                        ..
-                    })
-                )
-            {
-                if let Some(file_symbols) = symbols_by_file.get(&item.path) {
-                    if let Some(chunk_index) = item.chunk_index {
-                        if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
-                            if let Some(chunk) =
-                                chunks.iter().find(|c| c.chunk_index == chunk_index)
-                            {
-                                if let Some(sym) = file_symbols.iter().find(|s| {
-                                    s.start_line <= chunk.end_line && s.end_line >= chunk.start_line
-                                }) {
-                                    item.entity_kind =
-                                        Some(ctxvault_common::types::EntityKind::CodeSymbol {
-                                            language: sym.language.clone(),
-                                            symbol_type: sym.symbol_type,
-                                            scope_path: sym.scope_path.clone(),
-                                            signature: sym.signature.clone(),
-                                        });
-                                    item.language = Some(sym.language.clone());
-                                } else {
-                                    item.entity_kind =
-                                        Some(ctxvault_common::types::EntityKind::CodeChunk {
-                                            language: item.language.clone().unwrap_or_default(),
-                                            scope_path: item.path.clone(),
-                                            start_line: chunk.start_line,
-                                            end_line: chunk.end_line,
-                                        });
-                                }
+            if let Some(file_symbols) = symbols_by_file.get(&item.path) {
+                if let Some(chunk_index) = item.chunk_index {
+                    if let Ok(chunks) = engine.store().get_chunks_for_file(&item.path) {
+                        if let Some(chunk) = chunks.iter().find(|c| c.chunk_index == chunk_index) {
+                            if let Some(sym) = file_symbols.iter().find(|s| {
+                                s.start_line <= chunk.end_line && s.end_line >= chunk.start_line
+                            }) {
+                                matched_symbol = Some(sym.name.clone());
+                                target_scope_path = Some(sym.scope_path.clone());
                             }
                         }
                     }
-                    if item.language.is_none() {
-                        if let Some(first_sym) = file_symbols.first() {
-                            item.language = Some(first_sym.language.clone());
-                        }
+                }
+                if matched_symbol.is_none() {
+                    if let Some(first_sym) = file_symbols.first() {
+                        matched_symbol = Some(first_sym.name.clone());
+                        target_scope_path = Some(first_sym.scope_path.clone());
                     }
-                } else if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
-                    if let Some(sym) = symbols.first() {
-                        item.entity_kind = Some(ctxvault_common::types::EntityKind::CodeSymbol {
-                            language: sym.language.clone(),
-                            symbol_type: sym.symbol_type,
-                            scope_path: sym.scope_path.clone(),
-                            signature: sym.signature.clone(),
-                        });
-                        item.language = Some(sym.language.clone());
-                    }
+                }
+            } else if let Ok(symbols) = engine.store().find_symbols_by_name(&item.path) {
+                if let Some(sym) = symbols.first() {
+                    matched_symbol = Some(sym.name.clone());
+                    target_scope_path = Some(sym.scope_path.clone());
                 }
             }
 
-            if !is_lean {
-                if let Some(ctxvault_common::types::EntityKind::CodeSymbol {
-                    ref scope_path, ..
-                }) = item.entity_kind
-                {
-                    item.graph_affordances = Some(engine.compute_affordances(scope_path));
-                } else if let Some(file_symbols) = symbols_by_file.get(&item.path) {
-                    let mut combined_aff = item.graph_affordances.clone().unwrap_or_default();
-                    for sym in file_symbols {
-                        let sym_aff = engine.compute_affordances(&sym.scope_path);
-                        for (k, v) in sym_aff.edge_counts {
-                            *combined_aff.edge_counts.entry(k).or_insert(0) += v;
-                        }
-                        if let Some(c) = sym_aff.calls_out {
-                            combined_aff.calls_out = Some(combined_aff.calls_out.unwrap_or(0) + c);
-                        }
-                        if let Some(c) = sym_aff.calls_in {
-                            combined_aff.calls_in = Some(combined_aff.calls_in.unwrap_or(0) + c);
-                        }
-                        if let Some(c) = sym_aff.implements {
-                            combined_aff.implements =
-                                Some(combined_aff.implements.unwrap_or(0) + c);
-                        }
-                        if let Some(c) = sym_aff.imports {
-                            combined_aff.imports = Some(combined_aff.imports.unwrap_or(0) + c);
+            if is_lean {
+                item.graph_affordances = None;
+                item.graph = None;
+                item.score_components = None;
+            } else {
+                let cypher = if let Some(ref scope) = target_scope_path {
+                    engine.format_cypher_affordances(scope, 3)
+                } else {
+                    None
+                };
+
+                let cypher = cypher.or_else(|| {
+                    if let Some(file_symbols) = symbols_by_file.get(&item.path) {
+                        for sym in file_symbols {
+                            if let Some(c) = engine.format_cypher_affordances(&sym.scope_path, 3) {
+                                return Some(c);
+                            }
                         }
                     }
-                    item.graph_affordances = Some(combined_aff);
-                } else if item.graph_affordances.is_none() {
-                    item.graph_affordances = Some(engine.compute_affordances(&item.path));
-                }
+                    engine.format_cypher_affordances(&item.path, 3)
+                });
+
+                item.graph = cypher;
+                item.graph_affordances = None;
+            }
+
+            // Zero semantic duplication:
+            // 1. Language is omitted (file extension in `path` conveys it).
+            item.language = None;
+            // 2. Entity kind is omitted (implied by snippet/symbol).
+            item.entity_kind = None;
+            // 3. Chunk index is omitted.
+            item.chunk_index = None;
+            // 4. Bare symbol identifier is surfaced only when snippet is omitted (trailing hits or snippets: 0)
+            //    for Tier 2 progressive disclosure (get_snippet(symbol=...) or graph_match).
+            if item.snippet.is_none() {
+                item.symbol = matched_symbol;
+            } else {
+                item.symbol = None;
             }
         }
 
@@ -3376,7 +3376,7 @@ mod tests {
         let docs = resp.docs.unwrap();
         assert!(!docs.results.is_empty(), "Should find indexed file via search");
         assert_eq!(docs.results[0].path, "rust.md");
-        assert!(docs.results[0].graph_affordances.is_some());
+        assert!(docs.results[0].snippet.is_some());
     }
 
     #[test]
@@ -5238,14 +5238,13 @@ export class UserService extends BaseService implements IUserService {
             code.schema_envelope.active_edges
         );
 
-        // Verify graph_affordances on the UserService hit
+        // Verify Cypher-Lite graph representation on the UserService hit
         let hit = &code.results[0];
-        let affordances = hit.graph_affordances.as_ref().expect("graph affordances");
+        let graph = hit.graph.as_ref().expect("expected graph affordances");
         assert!(
-            affordances.edge_counts.contains_key("extends")
-                || affordances.edge_counts.contains_key("decorates"),
-            "Expected extends or decorates in edge_counts: {:?}",
-            affordances.edge_counts
+            graph.contains("extends") || graph.contains("decorates"),
+            "Expected extends or decorates in graph: {}",
+            graph
         );
 
         // 2. Cypher-Lite graph_match traversal across new edge types

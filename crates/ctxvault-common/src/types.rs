@@ -673,6 +673,12 @@ pub struct SearchResult {
     /// Graph degree affordances for Turn 2 expansion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_affordances: Option<GraphAffordances>,
+    /// Immediate 1-hop neighborhood in Cypher-Lite ASCII notation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+    /// Code symbol identifier (provided when snippet is omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
 }
 
 impl SearchResult {
@@ -689,7 +695,21 @@ impl SearchResult {
             language: None,
             corpus: None,
             graph_affordances: None,
+            graph: None,
+            symbol: None,
         }
+    }
+
+    /// Set Cypher-Lite graph representation.
+    pub fn with_graph(mut self, graph: Option<String>) -> Self {
+        self.graph = graph;
+        self
+    }
+
+    /// Set symbol identifier.
+    pub fn with_symbol(mut self, symbol: Option<String>) -> Self {
+        self.symbol = symbol;
+        self
     }
 
     /// Set snippet text.
