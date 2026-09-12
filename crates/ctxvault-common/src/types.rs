@@ -1124,6 +1124,9 @@ pub struct PathMatch {
     /// File path where the terminal entity lives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
+    /// Line number where the terminal entity starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 /// A node in the matched subgraph.

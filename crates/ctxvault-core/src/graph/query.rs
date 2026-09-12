@@ -457,7 +457,7 @@ impl<'a> QueryEngine<'a> {
                     }
                 }
 
-                let (file_path, symbol_type) = self.lookup_node_metadata(&terminal_node);
+                let (file_path, symbol_type, line) = self.lookup_node_metadata(&terminal_node);
 
                 all_matches.push(PathMatch {
                     node: terminal_node.clone(),
@@ -465,6 +465,7 @@ impl<'a> QueryEngine<'a> {
                     path: path_str,
                     symbol_type: symbol_type.clone(),
                     file_path: file_path.clone(),
+                    line,
                 });
 
                 // Add to nodes map
@@ -475,6 +476,9 @@ impl<'a> QueryEngine<'a> {
                     }
                     if let Some(st) = &symbol_type {
                         props.insert("symbol_type".to_string(), st.clone());
+                    }
+                    if let Some(l) = line {
+                        props.insert("line".to_string(), l.to_string());
                     }
                     props.insert("name".to_string(), terminal_node.clone());
 
@@ -490,10 +494,13 @@ impl<'a> QueryEngine<'a> {
 
                 // Add anchor to nodes map
                 if !matched_nodes_map.contains_key(anchor) {
-                    let (a_file, a_type) = self.lookup_node_metadata(anchor);
+                    let (a_file, a_type, a_line) = self.lookup_node_metadata(anchor);
                     let mut a_props = HashMap::new();
                     if let Some(fp) = &a_file {
                         a_props.insert("file_path".to_string(), fp.clone());
+                    }
+                    if let Some(l) = a_line {
+                        a_props.insert("line".to_string(), l.to_string());
                     }
                     a_props.insert("name".to_string(), anchor.clone());
                     matched_nodes_map.insert(
@@ -800,22 +807,33 @@ impl<'a> QueryEngine<'a> {
         true
     }
 
-    /// Look up metadata (file path, symbol type) for a node.
-    fn lookup_node_metadata(&self, node_id: &str) -> (Option<String>, Option<String>) {
+    /// Look up metadata (file path, symbol type, start line) for a node.
+    fn lookup_node_metadata(
+        &self,
+        node_id: &str,
+    ) -> (Option<String>, Option<String>, Option<usize>) {
         if let Ok(syms) = self.store.find_symbols_by_qualified_name(node_id) {
             if let Some(s) = syms.first() {
-                return (Some(s.file_path.clone()), Some(format!("{:?}", s.symbol_type)));
+                return (
+                    Some(s.file_path.clone()),
+                    Some(format!("{:?}", s.symbol_type)),
+                    Some(s.start_line),
+                );
             }
         }
         if let Ok(syms) = self.store.find_symbols_by_name(node_id) {
             if let Some(s) = syms.first() {
-                return (Some(s.file_path.clone()), Some(format!("{:?}", s.symbol_type)));
+                return (
+                    Some(s.file_path.clone()),
+                    Some(format!("{:?}", s.symbol_type)),
+                    Some(s.start_line),
+                );
             }
         }
         if let Ok(Some(file)) = self.store.get_file(node_id) {
-            return (Some(file.path), Some("DocNode".to_string()));
+            return (Some(file.path), Some("DocNode".to_string()), Some(1));
         }
-        (None, None)
+        (None, None, None)
     }
 }
 

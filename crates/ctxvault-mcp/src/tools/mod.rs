@@ -1688,20 +1688,22 @@ fn fetch_code_symbol(
                 (String::new(), false)
             };
 
+            let total_lines = file_lines.len();
             let mut out = serde_json::json!({
-                "kind": "code_symbol",
                 "path": sym.file_path,
-                "scope_path": sym.scope_path,
-                "name": sym.name,
-                "language": sym.language,
-                "symbol_type": sym.symbol_type,
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
-                "signature": sym.signature,
-                "docstring": sym.docstring,
+                "total_lines": total_lines,
                 "source": source,
-                "truncated": truncated,
             });
+            if let Some(ref doc) = sym.docstring {
+                if !doc.trim().is_empty() {
+                    out["docstring"] = serde_json::Value::String(doc.clone());
+                }
+            }
+            if truncated {
+                out["truncated"] = serde_json::Value::Bool(true);
+            }
 
             if include_neighbors {
                 let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
@@ -1808,15 +1810,19 @@ fn fetch_doc_chunk(
     let text_lines: Vec<&str> = chunk_text.lines().collect();
     let (text, truncated) = cap_lines(&text_lines, max_lines);
 
+    let full_doc_path = Path::new(&engine.config().path).join(path);
+    let total_lines =
+        read_file_lossy(&full_doc_path).map(|c| c.lines().count()).unwrap_or(text_lines.len());
+
     let mut out = serde_json::json!({
-        "kind": "doc_chunk",
         "path": path,
         "chunk_index": chunk.chunk_index,
-        "start_byte": chunk.start_byte,
-        "end_byte": chunk.end_byte,
+        "total_lines": total_lines,
         "text": text,
-        "truncated": truncated,
     });
+    if truncated {
+        out["truncated"] = serde_json::Value::Bool(true);
+    }
 
     if include_neighbors {
         let neighbor_cap = (max_lines / 2).max(1);
@@ -2105,7 +2111,8 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
         }
 
         let is_lean = params.detail.as_deref() == Some("ids");
-        let k = if is_lean { 0 } else { params.snippets.unwrap_or(3) };
+        let k =
+            if is_lean { 0 } else { params.snippets.unwrap_or_else(|| params.limit.unwrap_or(10)) };
 
         populate_top_snippets(engine, &mut docs_items, k, 20);
         populate_top_snippets(engine, &mut code_items, k, 20);
@@ -4418,9 +4425,8 @@ pub fn tokenize(input: &str) -> Vec<String> {
             .execute_read("get_snippet", &engine, serde_json::json!({ "name": "parse_query" }))
             .unwrap();
 
-        assert_eq!(def_res["kind"], "code_symbol");
-        assert_eq!(def_res["name"], "parse_query");
         assert_eq!(def_res["path"], "parser.rs");
+        assert!(def_res["total_lines"].as_u64().unwrap() >= 1);
         assert!(def_res["source"].as_str().unwrap().contains("tokenize(raw)"));
 
         // 2. Test callers via graph_match
@@ -4751,7 +4757,8 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "path": "notes.md", "chunk_index": 0, "max_lines": 100 }),
             )
             .unwrap();
-        assert_eq!(chunk_res["kind"], "doc_chunk");
+        assert_eq!(chunk_res["path"], "notes.md");
+        assert!(chunk_res["total_lines"].as_u64().unwrap() >= 1);
         assert_eq!(chunk_res["chunk_index"], 0);
         assert!(chunk_res["text"].as_str().unwrap().contains("Alpha"));
 
@@ -4779,8 +4786,8 @@ pub fn normalize(input: &str) -> Vec<String> {
                 serde_json::json!({ "qualified_name": "Router > dispatch" }),
             )
             .unwrap();
-        assert_eq!(sym_res["kind"], "code_symbol");
         assert_eq!(sym_res["path"], "router.rs");
+        assert!(sym_res["total_lines"].as_u64().unwrap() >= 1);
         assert!(sym_res["source"].as_str().unwrap().contains("normalize(q)"));
         assert!(sym_res["start_line"].as_u64().unwrap() >= 1);
         assert!(
@@ -5037,9 +5044,8 @@ impl<'a, A> OtherBinder<'a, A> {
                 serde_json::json!({ "qualified_name": "EarlyBinder > instantiate" }),
             )
             .unwrap();
-        assert_eq!(res["kind"], "code_symbol");
-        assert_eq!(res["name"], "instantiate");
-        assert!(res["scope_path"].as_str().unwrap().contains("EarlyBinder"));
+        assert_eq!(res["path"], "binder.rs");
+        assert!(res["total_lines"].as_u64().unwrap() >= 1);
         assert!(res["source"].as_str().unwrap().contains("&self.value"));
 
         // 2. Nonexistent symbol returns clean 404 Not Found error
@@ -5111,11 +5117,11 @@ pub fn compute_hash(data: &[u8]) -> u64 {
                 serde_json::json!({ "qualified_name": "compute_hash", "include_neighbors": true }),
             )
             .unwrap();
-        assert_eq!(res["kind"], "code_symbol");
         assert_eq!(res["path"], "hash.rs");
-        assert_eq!(res["scope_path"], "compute_hash");
-        assert_eq!(res["language"], "rust");
-        assert!(res["signature"].as_str().unwrap().contains("pub fn compute_hash"));
+        assert_eq!(res["start_line"], 3);
+        assert_eq!(res["end_line"], 5);
+        assert_eq!(res["total_lines"], 5);
+        assert!(res["source"].as_str().unwrap().contains("pub fn compute_hash"));
         assert!(res["docstring"].as_str().unwrap().contains("Compute hash of input data."));
         // Grammar-driven relationships: incoming defines from hash.rs, 0 callers, 0 outgoing.
         let incoming = res["relationships"]["incoming"].as_object().unwrap();
