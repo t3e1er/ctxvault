@@ -5,6 +5,7 @@ members = [
     "crates/ctxvault-mcp",
     "crates/ctxvault-cli",
     "crates/ctxvault-common",
+    "crates/ctxvault-graphview",
 ]
 
 [workspace.package]

@@ -198,6 +198,18 @@ enum Commands {
         #[arg(long, default_value = "50")]
         batch_size: usize,
     },
+    /// Launch the standalone 3D knowledge graph visualizer and agent telemetry dashboard.
+    Graphview {
+        /// Socket address to bind the web dashboard server to.
+        #[arg(long, default_value = "127.0.0.1:9091")]
+        bind: String,
+        /// Path override for corpora storage directory.
+        #[arg(long, value_name = "DIR")]
+        corpora_dir: Option<PathBuf>,
+        /// Upstream ctxvault MCP daemon HTTP URL for live agent telemetry.
+        #[arg(long, default_value = "http://127.0.0.1:9090")]
+        daemon: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -475,6 +487,15 @@ async fn main() -> anyhow::Result<()> {
                         delta.deleted_files.len()
                     );
                 }
+                return Ok(());
+            }
+            Commands::Graphview { bind, corpora_dir, daemon } => {
+                ctxvault_graphview::run_graphview_server(
+                    bind,
+                    corpora_dir.clone(),
+                    Some(daemon.clone()),
+                )
+                .await?;
                 return Ok(());
             }
         }

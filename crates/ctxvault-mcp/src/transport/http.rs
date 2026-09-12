@@ -81,6 +81,25 @@ fn current_timestamp_secs() -> u64 {
 // Server State Structs
 // ---------------------------------------------------------------------------
 
+/// Telemetry event emitted when an agent executes an MCP tool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentActivation {
+    /// Timestamp in UNIX milliseconds.
+    pub timestamp: u64,
+    /// Tool name (e.g. search, get_snippet, graph_match, write_note).
+    pub tool: String,
+    /// Target corpus name, if scoped.
+    pub corpus: Option<String>,
+    /// Search query or Cypher pattern, if applicable.
+    pub query: Option<String>,
+    /// Repository paths of nodes activated or touched.
+    pub paths: Vec<String>,
+    /// Execution duration in milliseconds.
+    pub duration_ms: f64,
+    /// Whether the tool execution succeeded.
+    pub success: bool,
+}
+
 /// Shared state for multi-corpus HTTP server.
 #[derive(Clone)]
 pub struct MultiCorpusServerState {
@@ -92,6 +111,8 @@ pub struct MultiCorpusServerState {
     pub last_activity: Arc<AtomicU64>,
     /// Number of active SSE/client streams.
     pub active_sessions: Arc<AtomicU64>,
+    /// Broadcast channel for agent activity telemetry.
+    pub activations: tokio::sync::broadcast::Sender<AgentActivation>,
 }
 
 impl MultiCorpusServerState {
@@ -101,11 +122,13 @@ impl MultiCorpusServerState {
         registry: Arc<MultiCorpusToolRegistry>,
     ) -> Self {
         let now = current_timestamp_secs();
+        let (activations, _) = tokio::sync::broadcast::channel(1024);
         Self {
             manager,
             registry,
             last_activity: Arc::new(AtomicU64::new(now)),
             active_sessions: Arc::new(AtomicU64::new(0)),
+            activations,
         }
     }
 }
@@ -131,11 +154,13 @@ pub async fn run_http_server_multi_with_options(
     options: ServerOptions,
 ) -> Result<()> {
     let now = current_timestamp_secs();
+    let (activations, _) = tokio::sync::broadcast::channel(1024);
     let state = MultiCorpusServerState {
         manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
         last_activity: Arc::new(AtomicU64::new(now)),
         active_sessions: Arc::new(AtomicU64::new(0)),
+        activations,
     };
 
     let app = Router::new()
@@ -144,6 +169,7 @@ pub async fn run_http_server_multi_with_options(
         .route("/", post(handle_jsonrpc_multi).get(handle_sse))
         .route("/sse", get(handle_sse).post(handle_jsonrpc_multi))
         .route("/health", get(handle_health_multi))
+        .route("/events/activations", get(handle_activations_sse))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
@@ -369,6 +395,10 @@ async fn handle_jsonrpc_multi(
             }
         }
 
+        if let Some(activation) = extract_activation(&req, &res, elapsed_ms) {
+            let _ = state.activations.send(activation);
+        }
+
         if let Some(id) = req.id {
             let rpc_res = format_rpc_response(id, res);
             Json(rpc_res).into_response()
@@ -376,6 +406,74 @@ async fn handle_jsonrpc_multi(
             StatusCode::NO_CONTENT.into_response()
         }
     }
+}
+
+/// Server-Sent Events stream for agent telemetry activations.
+pub async fn handle_activations_sse(
+    State(state): State<MultiCorpusServerState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let rx = state.activations.subscribe();
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(act) => {
+                    if let Ok(data) = serde_json::to_string(&act) {
+                        let ev = Event::default().event("activation").data(data);
+                        return Some((Ok(ev), rx));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+}
+
+fn extract_activation(
+    req: &JsonRpcRequest,
+    res: &Result<Value>,
+    duration_ms: f64,
+) -> Option<AgentActivation> {
+    if req.method != "tools/call" {
+        return None;
+    }
+    let params = req.params.as_ref()?;
+    let tool = params.get("name")?.as_str()?.to_string();
+    let args = params.get("arguments");
+
+    let corpus = args.and_then(|a| a.get("corpus").and_then(|c| c.as_str()).map(String::from));
+    let query = args.and_then(|a| a.get("query").and_then(|q| q.as_str()).map(String::from));
+    let mut paths = Vec::new();
+
+    if let Some(a) = args {
+        if let Some(p) = a.get("path").and_then(|p| p.as_str()) {
+            paths.push(p.to_string());
+        }
+    }
+
+    if let Ok(val) = res {
+        if let Some(hits) = val.get("hits").and_then(|h| h.as_array()) {
+            for h in hits.iter().take(5) {
+                if let Some(p) = h.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Some(AgentActivation {
+        timestamp: current_timestamp_secs() * 1000,
+        tool,
+        corpus,
+        query,
+        paths,
+        duration_ms,
+        success: res.is_ok(),
+    })
 }
 
 /// Server-Sent Events stream for MCP session handshake.
