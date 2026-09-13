@@ -1042,6 +1042,74 @@
       return ring;
     }
 
+    // Generate Floating billboard icon badge
+    function createBeaconSprite(icon, label, colorHex, clientName) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+
+      // Rounded pill badge with neon border
+      const x = 8, y = 8, w = 240, h = 80, r = 16;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.fill();
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = colorHex;
+      ctx.stroke();
+
+      // Pin pointer triangle at bottom
+      const cx = x + w / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 14, y + h);
+      ctx.lineTo(cx + 14, y + h);
+      ctx.lineTo(cx, y + h + 20);
+      ctx.closePath();
+      ctx.fillStyle = colorHex;
+      ctx.fill();
+
+      // Icon (emoji)
+      ctx.font = '36px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(icon, x + 20, y + h / 2);
+
+      // Label text
+      ctx.font = 'bold 22px "JetBrains Mono", Consolas, -apple-system, sans-serif';
+      ctx.fillStyle = '#f8fafc';
+      let displayLabel = label || 'symbol';
+      if (displayLabel.length > 18) {
+        displayLabel = displayLabel.slice(0, 16) + '…';
+      }
+      ctx.fillText(displayLabel, x + 72, y + h / 2);
+      ctx.restore();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.0,
+        depthTest: false,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(70, 35, 1);
+      return sprite;
+    }
+
     // Generate Volumetric Fog Illumination Aura
     function createVolumetricFogAura(colorHex) {
       const canvas = document.createElement('canvas');

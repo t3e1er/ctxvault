@@ -505,12 +505,67 @@ fn extract_activation(
         if let Some(p) = a.get("path").and_then(|p| p.as_str()) {
             paths.push(p.to_string());
         }
+        if let Some(ps) = a.get("paths").and_then(|ps| ps.as_array()) {
+            for p in ps {
+                if let Some(s) = p.as_str() {
+                    if !paths.contains(&s.to_string()) {
+                        paths.push(s.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(sym) = a.get("symbol").and_then(|s| s.as_str()) {
+            if !paths.contains(&sym.to_string()) {
+                paths.push(sym.to_string());
+            }
+        }
     }
 
     if let Ok(val) = res {
+        // Direct single path
+        if let Some(p) = val.get("path").and_then(|p| p.as_str()) {
+            if !paths.contains(&p.to_string()) {
+                paths.push(p.to_string());
+            }
+        }
+        // Traditional hits array
         if let Some(hits) = val.get("hits").and_then(|h| h.as_array()) {
             for h in hits.iter().take(5) {
                 if let Some(p) = h.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // Search response: code.results
+        if let Some(results) = val.get("code").and_then(|c| c.get("results")).and_then(|r| r.as_array()) {
+            for r in results.iter().take(4) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // Search response: docs.results
+        if let Some(results) = val.get("docs").and_then(|d| d.get("results")).and_then(|r| r.as_array()) {
+            for r in results.iter().take(4) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // General results array
+        if let Some(results) = val.get("results").and_then(|r| r.as_array()) {
+            for r in results.iter().take(5) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                } else if let Some(p) = r.as_str() {
                     if !paths.contains(&p.to_string()) {
                         paths.push(p.to_string());
                     }
