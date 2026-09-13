@@ -880,7 +880,11 @@
       evtSource.addEventListener('activation', (e) => {
         try {
           const act = JSON.parse(e.data);
-          renderActivationCard(act);
+          try {
+            renderActivationCard(act);
+          } catch (cardErr) {
+            console.error('Failed to render activation card', cardErr);
+          }
           triggerGraphActivationPulse(act);
         } catch (err) {
           console.error('Failed to parse SSE activation', err);
@@ -942,12 +946,19 @@
       container.insertBefore(card, container.firstChild);
 
       // Top-K Bounded: Drop-off bottom cards past limit
+      const MAX_HUD_CARDS = 5;
       while (container.children.length > MAX_HUD_CARDS) {
-        const dropCard = container.lastChild;
-        dropCard.classList.add('drop-off');
-        setTimeout(() => {
-          if (dropCard.parentNode) dropCard.remove();
-        }, 260);
+        const dropCard = container.lastElementChild;
+        if (dropCard) {
+          if (dropCard.classList) {
+            dropCard.classList.add('drop-off');
+          }
+          setTimeout(() => {
+            if (dropCard && dropCard.parentNode) {
+              dropCard.remove();
+            }
+          }, 260);
+        }
         break;
       }
     }
