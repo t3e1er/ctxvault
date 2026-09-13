@@ -63,31 +63,51 @@
       z-index: 10;
     }
 
+    :root {
+      --header-bottom: 88px;
+      --sidebar-width: 290px;
+      --hud-width: 330px;
+      --inspector-left: 322px;
+      --inspector-right: 362px;
+    }
+
+    body.sidebar-collapsed {
+      --inspector-left: 16px;
+    }
+
+    body.hud-collapsed {
+      --inspector-right: 16px;
+    }
+
     /* Top Navigation Bar */
     header {
       position: absolute;
       top: 16px;
       left: 16px;
       right: 16px;
-      height: 60px;
+      height: auto;
+      min-height: 56px;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      padding: 0 20px;
+      padding: 8px 18px;
+      gap: 10px;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       font-weight: 700;
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       letter-spacing: 0.5px;
+      flex-shrink: 0;
     }
 
     .brand-glow {
-      width: 14px;
-      height: 14px;
+      width: 13px;
+      height: 13px;
       border-radius: 50%;
       background: var(--neon-blue);
       box-shadow: 0 0 16px var(--neon-blue), 0 0 32px var(--neon-blue);
@@ -108,8 +128,11 @@
 
     .header-controls {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 14px;
+      gap: 10px;
+      flex: 1 1 auto;
+      justify-content: flex-end;
     }
 
     .pill-group {
@@ -118,18 +141,20 @@
       padding: 3px;
       border-radius: 8px;
       border: 1px solid var(--panel-border);
+      flex-shrink: 0;
     }
 
     .pill-btn {
       background: transparent;
       border: none;
       color: var(--text-muted);
-      padding: 6px 14px;
+      padding: 6px 12px;
       border-radius: 6px;
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.2s ease;
+      white-space: nowrap;
     }
 
     .pill-btn.active {
@@ -145,7 +170,9 @@
       border: 1px solid var(--panel-border);
       border-radius: 8px;
       padding: 6px 12px;
-      width: 320px;
+      width: 240px;
+      max-width: 100%;
+      flex: 1 1 170px;
     }
 
     .search-box input {
@@ -164,15 +191,67 @@
     /* Left Sidebar: Entity & Filter Panel */
     .sidebar {
       position: absolute;
-      top: 90px;
+      top: var(--header-bottom, 88px);
       left: 16px;
       bottom: 24px;
-      width: 290px;
-      padding: 20px;
+      width: var(--sidebar-width, 290px);
+      padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 16px;
       overflow-y: auto;
+      transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    }
+
+    .sidebar.collapsed {
+      transform: translateX(calc(-100% - 30px));
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Floating Tab Triggers for Reopening Collapsed Menus */
+    .menu-trigger-btn {
+      position: absolute;
+      top: var(--header-bottom, 88px);
+      z-index: 15;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      cursor: pointer;
+      color: #f8fafc;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border-radius: 8px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+      transition: all 0.2s ease;
+    }
+
+    .menu-trigger-btn:hover {
+      background: rgba(30, 41, 59, 0.95);
+      transform: scale(1.03);
+    }
+
+    .menu-trigger-btn.left {
+      left: 16px;
+      border-left: 3px solid var(--neon-blue);
+    }
+
+    .menu-trigger-btn.right {
+      right: 16px;
+      border-right: 3px solid var(--neon-pink);
+    }
+
+    body.sidebar-collapsed .menu-trigger-btn.left {
+      display: flex;
+    }
+
+    body.hud-collapsed .menu-trigger-btn.right {
+      display: flex;
     }
 
     .section-title {
@@ -188,13 +267,13 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 12px;
+      padding: 7px 11px;
       background: rgba(30, 41, 59, 0.4);
       border-radius: 8px;
       border: 1px solid transparent;
       cursor: pointer;
-      margin-bottom: 6px;
-      font-size: 0.85rem;
+      margin-bottom: 5px;
+      font-size: 0.83rem;
       transition: all 0.2s ease;
     }
 
@@ -219,14 +298,20 @@
     /* Right HUD: Live Telemetry & Swarm Activations */
     .agent-hud {
       position: absolute;
-      top: 90px;
+      top: var(--header-bottom, 88px);
       right: 16px;
-      width: 330px;
+      width: var(--hud-width, 330px);
       padding: 14px 16px;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    }
+
+    .agent-hud.collapsed {
+      transform: translateX(calc(100% + 30px));
+      opacity: 0;
+      pointer-events: none;
     }
 
     .agent-hud.minimized {
@@ -250,7 +335,7 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 700;
       line-height: 1;
       padding: 0;
@@ -332,44 +417,59 @@
       font-family: monospace;
     }
 
-    /* Bottom Info Card */
+    /* Bottom Info Card: Full width between sidebars & responsive */
     .node-inspector {
       position: absolute;
-      bottom: 24px;
-      left: 322px;
-      right: 362px;
-      height: 85px;
-      padding: 14px 20px;
+      bottom: 20px;
+      left: var(--inspector-left, 322px);
+      right: var(--inspector-right, 362px);
+      height: auto;
+      min-height: 70px;
+      padding: 12px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      transition: left 0.35s cubic-bezier(0.16, 1, 0.3, 1), right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .node-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+      margin-right: 18px;
     }
 
     .node-meta h3 {
-      font-size: 1rem;
+      font-size: 0.95rem;
       color: #fff;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .node-meta p {
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: var(--text-muted);
       font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .node-stats {
       display: flex;
-      gap: 24px;
+      gap: 20px;
+      flex-shrink: 0;
     }
 
     .stat-val {
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       font-weight: 700;
       color: var(--neon-blue);
     }
 
     .stat-lbl {
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       color: var(--text-muted);
       text-transform: uppercase;
     }
@@ -384,8 +484,60 @@
     }
 
     .slider-row input[type="range"] {
-      width: 130px;
+      width: 125px;
       accent-color: var(--neon-blue);
+    }
+
+    /* Media Queries for Multi-Screensize Responsiveness */
+    @media (max-width: 1100px) {
+      :root {
+        --sidebar-width: 260px;
+        --hud-width: 290px;
+        --inspector-left: 292px;
+        --inspector-right: 322px;
+      }
+
+      .pill-btn {
+        padding: 5px 9px;
+        font-size: 0.78rem;
+      }
+
+      .search-box {
+        width: 190px;
+      }
+    }
+
+    @media (max-width: 800px) {
+      :root {
+        --inspector-left: 16px !important;
+        --inspector-right: 16px !important;
+      }
+
+      .sidebar {
+        width: calc(100vw - 32px);
+        max-width: 320px;
+        z-index: 50;
+      }
+
+      .agent-hud {
+        width: calc(100vw - 32px);
+        max-width: 320px;
+        z-index: 50;
+      }
+
+      .node-inspector {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        bottom: 12px;
+        padding: 10px 14px;
+      }
+
+      .node-stats {
+        gap: 14px;
+        width: 100%;
+        justify-content: space-between;
+      }
     }
 
     @keyframes fadeIn {
@@ -422,8 +574,8 @@
 
       <!-- Cluster Anchors Selection (Requirement: 1: Directory, 2: Community) -->
       <div class="pill-group" id="cluster-group" title="Cluster Anchor Strategy">
-        <button class="pill-btn active" data-cluster="directory">Directory</button>
-        <button class="pill-btn" data-cluster="community">Community</button>
+        <button class="pill-btn" data-cluster="directory">Directory</button>
+        <button class="pill-btn active" data-cluster="community">Community</button>
       </div>
 
       <!-- Multi-Corpus Selection (Requirement 6) -->
@@ -439,10 +591,21 @@
     </div>
   </header>
 
+  <!-- Floating Menu Reopen Buttons -->
+  <button id="sidebar-expand-btn" class="menu-trigger-btn left" title="Open Entity Classes & Controls">
+    <span>☰</span><span>Entities & Controls</span>
+  </button>
+  <button id="hud-expand-btn" class="menu-trigger-btn right" title="Open Agent Activations">
+    <span>⚡</span><span>Activations</span>
+  </button>
+
   <!-- Left Entity Filter Panel (Requirement 2) -->
-  <div class="sidebar glass-panel">
+  <div class="sidebar glass-panel" id="sidebar">
     <div>
-      <div class="section-title">Entity Classes</div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div class="section-title" style="margin: 0;">Entity Classes</div>
+        <button id="sidebar-collapse-btn" class="hud-toggle-btn" title="Collapse Left Menu">◀</button>
+      </div>
       <div id="type-chips">
         <div class="type-chip active" data-type="all">
           <span><span class="type-color" style="background: #fff;"></span>All Entities</span>
@@ -505,6 +668,14 @@
           <span>Corpus Cloud Badges</span>
         </label>
       </div>
+      <div class="slider-row" style="padding-left: 6px;">
+        <span style="font-size: 0.75rem; color: #94a3b8;">Badge Size</span>
+        <input type="range" id="badge-size-slider" min="6" max="32" value="16" title="Adjust 3D badge size">
+      </div>
+      <div class="slider-row" style="padding-left: 6px;">
+        <span style="font-size: 0.75rem; color: #94a3b8;">Badge Brightness</span>
+        <input type="range" id="badge-opacity-slider" min="2" max="10" value="9" title="Adjust 3D badge opacity/brightness">
+      </div>
       <div class="slider-row">
         <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
           <input type="checkbox" id="auto-orbit-toggle" checked style="accent-color: var(--neon-blue);">
@@ -522,12 +693,12 @@
         <div class="section-title" id="hud-title" style="margin: 0;">Multi-Agent Activations</div>
         <span id="hud-counter" style="font-size: 0.7rem; color: #94a3b8; display: none;"></span>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 6px;">
         <div style="font-size: 0.7rem; color: var(--neon-emerald); display: flex; align-items: center; gap: 4px;">
           <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neon-emerald);"></span>
           LIVE
         </div>
-        <button id="hud-toggle-btn" class="hud-toggle-btn" title="Toggle HUD visibility">—</button>
+        <button id="hud-collapse-btn" class="hud-toggle-btn" title="Collapse Right Menu">▶</button>
       </div>
     </div>
     <div class="telemetry-stream" id="telemetry-stream">
@@ -563,7 +734,7 @@
     // State
     let currentCorpus = 'all';
     let currentMode = 'hybrid';
-    let currentClusterMode = 'directory';
+    let currentClusterMode = 'community';
     let selectedType = 'all';
     let graphData = { nodes: [], edges: [] };
     let activations = new Map(); // path -> { time, intensity }
@@ -1252,16 +1423,20 @@
 
       const texture = new THREE.CanvasTexture(canvas);
       texture.needsUpdate = true;
+      const baseOpacity = parseFloat(document.getElementById('badge-opacity-slider')?.value || 9) / 10.0;
+      const baseScale = parseFloat(document.getElementById('badge-size-slider')?.value || 16) * 10.0;
+      const aspect = 50.0 / 160.0;
+
       const mat = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
-        opacity: 0.95,
+        opacity: baseOpacity,
         depthTest: false,
         depthWrite: false
       });
       const sprite = new THREE.Sprite(mat);
       sprite.position.set(position[0], position[1] + 60, position[2]);
-      sprite.scale.set(160, 50, 1);
+      sprite.scale.set(baseScale, baseScale * aspect, 1);
       sprite.renderOrder = 1000;
       return sprite;
     }
@@ -1808,6 +1983,72 @@
         corpusBadgeGroup.visible = e.target.checked;
       });
     }
+
+    const badgeSizeSlider = document.getElementById('badge-size-slider');
+    if (badgeSizeSlider) {
+      badgeSizeSlider.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value) * 10.0;
+        const aspect = 50.0 / 160.0;
+        corpusBadgeGroup.children.forEach(b => {
+          b.scale.set(val, val * aspect, 1);
+        });
+      });
+    }
+
+    const badgeOpacitySlider = document.getElementById('badge-opacity-slider');
+    if (badgeOpacitySlider) {
+      badgeOpacitySlider.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value) / 10.0;
+        corpusBadgeGroup.children.forEach(b => {
+          if (b.material) b.material.opacity = val;
+        });
+      });
+    }
+
+    // Sidebar Collapsible Logic
+    const sidebar = document.getElementById('sidebar');
+    const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
+    const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
+
+    if (sidebarCollapseBtn && sidebar && sidebarExpandBtn) {
+      sidebarCollapseBtn.addEventListener('click', () => {
+        sidebar.classList.add('collapsed');
+        document.body.classList.add('sidebar-collapsed');
+      });
+      sidebarExpandBtn.addEventListener('click', () => {
+        sidebar.classList.remove('collapsed');
+        document.body.classList.remove('sidebar-collapsed');
+      });
+    }
+
+    // Right Agent HUD Collapsible Logic
+    const hudCollapseBtn = document.getElementById('hud-collapse-btn');
+    const hudExpandBtn = document.getElementById('hud-expand-btn');
+
+    if (hudCollapseBtn && hudExpandBtn) {
+      hudCollapseBtn.addEventListener('click', () => {
+        const hud = document.getElementById('agent-hud');
+        if (hud) hud.classList.add('collapsed');
+        document.body.classList.add('hud-collapsed');
+      });
+      hudExpandBtn.addEventListener('click', () => {
+        const hud = document.getElementById('agent-hud');
+        if (hud) hud.classList.remove('collapsed');
+        document.body.classList.remove('hud-collapsed');
+      });
+    }
+
+    // Multi-screensize dynamic header spacing
+    function updateHeaderSpacing() {
+      const header = document.querySelector('header');
+      if (header) {
+        const bottom = header.offsetTop + header.offsetHeight + 14;
+        document.documentElement.style.setProperty('--header-bottom', `${bottom}px`);
+      }
+    }
+    window.addEventListener('resize', updateHeaderSpacing);
+    window.addEventListener('load', updateHeaderSpacing);
+    setTimeout(updateHeaderSpacing, 80);
 
     // Mouse Picking
     window.addEventListener('mousemove', (e) => {
