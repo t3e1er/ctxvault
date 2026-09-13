@@ -1,0 +1,37 @@
+{
+  "_comment": "Example ctxvault multi-agent client credentials and theme registry. Copy to clients.json or generate via 'ctxvault client init'.",
+  "require_auth": false,
+  "daemon_key": "daemon_replace_with_secure_token",
+  "clients": [
+    {
+      "id": "antigravity",
+      "name": "Antigravity Agent",
+      "key": "ag_replace_with_secure_token",
+      "color": "#38bdf8"
+    },
+    {
+      "id": "claude",
+      "name": "Claude Desktop",
+      "key": "claude_replace_with_secure_token",
+      "color": "#f97316"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "key": "gemini_replace_with_secure_token",
+      "color": "#ec4899"
+    },
+    {
+      "id": "roo",
+      "name": "Roo Code",
+      "key": "roo_replace_with_secure_token",
+      "color": "#10b981"
+    },
+    {
+      "id": "default",
+      "name": "Anonymous Agent",
+      "key": null,
+      "color": "#a855f7"
+    }
+  ]
+}

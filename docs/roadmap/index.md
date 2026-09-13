@@ -33,3 +33,4 @@ This section tracks the technical roadmap and Request for Comments (RFC) enginee
 | **[[docs/roadmap/RFC-docs-embed-intermediate-indexing-mode]]** | Intermediate Docs-Embed Indexing Mode | Implemented | Fast indexing mode prioritizing markdown doc embeddings over raw code vectors. |
 | **[[docs/roadmap/RFC-markdown-templates-and-frontmatter-edge-schema]]** | Markdown Templates & Frontmatter Edge Schema | Proposed | Native .templates/*.md standard with frontmatter schema, edge synthesis, and scaffolding. |
 | **[[docs/roadmap/RFC-lean-multiline-text-emission]]** | Lean Multiline Text Emission Protocol | Proposed | Eliminating JSON context overhead via indented Cypher ASCII trees and markdown blocks (~69% token savings). |
+| **[[docs/roadmap/RFC-graphview]]** | Standalone 3D GraphView & Multi-Agent Activation Substrate | Implementing | Zero-overhead sidecar 3D visualization, 1M+ node binary protocol, and real-time SSE agent telemetry. |

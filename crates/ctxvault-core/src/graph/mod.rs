@@ -1065,6 +1065,11 @@ impl KnowledgeGraph {
         degrees
     }
 
+    /// Access the underlying Petgraph `DiGraph`.
+    pub fn inner(&self) -> &DiGraph<GraphNode, GraphEdge> {
+        &self.graph
+    }
+
     /// Ensure a node exists (add it if not present). Used for testing.
     pub fn ensure_node(&mut self, path: &str) {
         let _ = self.add_node(path, None);

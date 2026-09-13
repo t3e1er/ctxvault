@@ -1,4 +1,4 @@
-﻿---
+---
 title: "Progressive Disclosure & Agentic Strategy Hub"
 description: "Eliminating context rot and token waste through strict 3-tier retrieval, Turn 1 affordances, and swarm memory."
 category: "progressive-disclosure"
@@ -11,6 +11,7 @@ related:
   - "[[docs/concepts/progressive-disclosure/agentic-memory]]"
   - "[[docs/concepts/progressive-disclosure/swarm-topologies]]"
   - "[[docs/concepts/progressive-disclosure/tool-profiles]]"
+  - "[[docs/concepts/progressive-disclosure/graphview-lod]]"
 ---
 
 # Progressive Disclosure & Agentic Strategy Hub
@@ -28,6 +29,7 @@ In agentic software development, **context window pollution is the leading cause
 * **[[docs/concepts/progressive-disclosure/agentic-memory]]**: Preserving token budgets across long-running tasks, achieving 85–90% token reduction.
 * **[[docs/concepts/progressive-disclosure/swarm-topologies]]**: Orchestrating specialized agent roles (Scouts, Readers, Writers, Crystallizers).
 * **[[docs/concepts/progressive-disclosure/tool-profiles]]**: Gating tool exposure via `--profile scout|analysis|all` (17 authoritative tools).
+* **[[docs/concepts/progressive-disclosure/graphview-lod]]**: Visual progressive disclosure: 4-tier 3D Level-of-Detail (LOD) for 1M+ node knowledge graphs.
 
 ---
 

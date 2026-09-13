@@ -1,4 +1,4 @@
-﻿---
+---
 title: "MCP Transport & Authoritative Tool Registry"
 description: "Stdio framing, Axum HTTP SSE transport, and the authoritative 17-tool handler registration in ctxvault."
 category: "implementation"
@@ -41,3 +41,32 @@ The authoritative registry in `crates/ctxvault-mcp/src/tools/mod.rs` defines the
 ```
 
 Each tool handler performs strict schema validation on incoming JSON-RPC payloads, returning actionable error diagnostics (such as available taxonomy values or valid line slices) if arguments are invalid.
+
+---
+
+## 3. Client Identity, `x-api-key` Authentication & Telemetry Correlation
+
+To track multi-agent swarm activity in real time, `ctxvault-mcp` resolves incoming connections against the client registry ([`ClientsRegistry`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/client.rs)):
+
+### Authentication Model & Zero-Auth Default
+* **Default Zero-Auth**: Out of the box, `require_auth` is disabled (`false`). Local developers can connect without configuring secret keys.
+* **Authentication Header**: Clients supply `x-api-key: <token>` (or `Authorization: Bearer <token>`). In CLI environments, `CTXV_API_KEY` can be used.
+* **Strict Rejection**: When `require_auth: true` is configured in `clients.json` or enabled via `--require-auth` / `CTXV_REQUIRE_AUTH=true`, requests lacking a valid matching key are rejected with `401 Unauthorized` and JSON-RPC error code `-32000`:
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32000,
+      "message": "Unauthorized: missing or invalid x-api-key"
+    }
+  }
+  ```
+
+### Telemetry Correlation
+When a valid API key is resolved, the agent's identity (`client_id`, `client_name`, `client_color`) is attached to telemetry events (`AgentActivation`) streamed via SSE to the 3D GraphView visualizer.
+
+### Client Configuration Management (`ctxvault client`)
+Client profiles and keys can be self-configured via the CLI:
+* `ctxvault client init`: Generates a local `clients.json` template populated with cryptographically random API keys and an internal `daemon_key` for GraphView relay.
+* `ctxvault client list`: Displays active client profiles, theme colors, and authentication status.

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -81,6 +81,34 @@ fn current_timestamp_secs() -> u64 {
 // Server State Structs
 // ---------------------------------------------------------------------------
 
+/// Telemetry event emitted when an agent executes an MCP tool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentActivation {
+    /// Timestamp in UNIX milliseconds.
+    pub timestamp: u64,
+    /// Tool name (e.g. search, get_snippet, graph_match, write_note).
+    pub tool: String,
+    /// Connected AI client ID (e.g. "antigravity", "claude", "gemini").
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Connected AI client display name.
+    #[serde(default)]
+    pub client_name: Option<String>,
+    /// Associated theme color (e.g. "#38bdf8").
+    #[serde(default)]
+    pub client_color: Option<String>,
+    /// Target corpus name, if scoped.
+    pub corpus: Option<String>,
+    /// Search query or Cypher pattern, if applicable.
+    pub query: Option<String>,
+    /// Repository paths of nodes activated or touched.
+    pub paths: Vec<String>,
+    /// Execution duration in milliseconds.
+    pub duration_ms: f64,
+    /// Whether the tool execution succeeded.
+    pub success: bool,
+}
+
 /// Shared state for multi-corpus HTTP server.
 #[derive(Clone)]
 pub struct MultiCorpusServerState {
@@ -92,6 +120,10 @@ pub struct MultiCorpusServerState {
     pub last_activity: Arc<AtomicU64>,
     /// Number of active SSE/client streams.
     pub active_sessions: Arc<AtomicU64>,
+    /// Broadcast channel for agent activity telemetry.
+    pub activations: tokio::sync::broadcast::Sender<AgentActivation>,
+    /// Client authentication and tracking registry.
+    pub clients: Arc<ctxvault_common::ClientsRegistry>,
 }
 
 impl MultiCorpusServerState {
@@ -101,11 +133,15 @@ impl MultiCorpusServerState {
         registry: Arc<MultiCorpusToolRegistry>,
     ) -> Self {
         let now = current_timestamp_secs();
+        let (activations, _) = tokio::sync::broadcast::channel(1024);
+        let clients = Arc::new(ctxvault_common::client::load_clients_config(None));
         Self {
             manager,
             registry,
             last_activity: Arc::new(AtomicU64::new(now)),
             active_sessions: Arc::new(AtomicU64::new(0)),
+            activations,
+            clients,
         }
     }
 }
@@ -131,11 +167,15 @@ pub async fn run_http_server_multi_with_options(
     options: ServerOptions,
 ) -> Result<()> {
     let now = current_timestamp_secs();
+    let (activations, _) = tokio::sync::broadcast::channel(1024);
+    let clients = Arc::new(ctxvault_common::client::load_clients_config(None));
     let state = MultiCorpusServerState {
         manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
         last_activity: Arc::new(AtomicU64::new(now)),
         active_sessions: Arc::new(AtomicU64::new(0)),
+        activations,
+        clients,
     };
 
     let app = Router::new()
@@ -144,6 +184,7 @@ pub async fn run_http_server_multi_with_options(
         .route("/", post(handle_jsonrpc_multi).get(handle_sse))
         .route("/sse", get(handle_sse).post(handle_jsonrpc_multi))
         .route("/health", get(handle_health_multi))
+        .route("/events/activations", get(handle_activations_sse))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
@@ -243,8 +284,44 @@ pub async fn run_http_server_multi_with_options(
 /// Process single or batch JSON-RPC request for multi-corpus server.
 async fn handle_jsonrpc_multi(
     State(state): State<MultiCorpusServerState>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let client_key = headers
+        .get("x-api-key")
+        .or_else(|| headers.get("x-client-key"))
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+        });
+    let client_id = headers
+        .get("x-client-id")
+        .or_else(|| headers.get("x-api-client-id"))
+        .and_then(|v| v.to_str().ok());
+
+    if state.clients.require_auth {
+        match client_key {
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
+            _ => {
+                warn!("Unauthorized MCP JSON-RPC request rejected");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(make_error_response(
+                        Value::Null,
+                        -32000,
+                        "Unauthorized: missing or invalid x-api-key",
+                    )),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let resolved_client = state.clients.resolve(client_key, client_id);
+
     if body.is_array() {
         let requests: Vec<JsonRpcRequest> = match serde_json::from_value(body) {
             Ok(reqs) => reqs,
@@ -287,6 +364,12 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
+                if let Some(activation) =
+                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                {
+                    let _ = state.activations.send(activation);
+                }
+
                 if let Some(id) = req.id {
                     responses.push(format_rpc_response(id, res));
                 }
@@ -315,6 +398,12 @@ async fn handle_jsonrpc_multi(
                     Err(e) => {
                         warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
                     }
+                }
+
+                if let Some(activation) =
+                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                {
+                    let _ = state.activations.send(activation);
                 }
 
                 if let Some(id) = req.id {
@@ -369,6 +458,10 @@ async fn handle_jsonrpc_multi(
             }
         }
 
+        if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+            let _ = state.activations.send(activation);
+        }
+
         if let Some(id) = req.id {
             let rpc_res = format_rpc_response(id, res);
             Json(rpc_res).into_response()
@@ -376,6 +469,161 @@ async fn handle_jsonrpc_multi(
             StatusCode::NO_CONTENT.into_response()
         }
     }
+}
+
+/// Server-Sent Events stream for agent telemetry activations.
+pub async fn handle_activations_sse(
+    State(state): State<MultiCorpusServerState>,
+    headers: HeaderMap,
+) -> Response {
+    if state.clients.require_auth {
+        let client_key = headers
+            .get("x-api-key")
+            .or_else(|| headers.get("x-client-key"))
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer "))
+            });
+
+        match client_key {
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
+            _ => {
+                warn!("Unauthorized MCP SSE activations connection rejected");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
+
+    let rx = state.activations.subscribe();
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(act) => {
+                    if let Ok(data) = serde_json::to_string(&act) {
+                        let ev = Event::default().event("activation").data(data);
+                        return Some((Ok::<Event, Infallible>(ev), rx));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .into_response()
+}
+
+fn extract_activation(
+    req: &JsonRpcRequest,
+    res: &Result<Value>,
+    duration_ms: f64,
+    client: Option<&ctxvault_common::ClientEntry>,
+) -> Option<AgentActivation> {
+    if req.method != "tools/call" {
+        return None;
+    }
+    let params = req.params.as_ref()?;
+    let tool = params.get("name")?.as_str()?.to_string();
+    let args = params.get("arguments");
+
+    let corpus = args.and_then(|a| a.get("corpus").and_then(|c| c.as_str()).map(String::from));
+    let query = args.and_then(|a| a.get("query").and_then(|q| q.as_str()).map(String::from));
+    let mut paths = Vec::new();
+
+    if let Some(a) = args {
+        if let Some(p) = a.get("path").and_then(|p| p.as_str()) {
+            paths.push(p.to_string());
+        }
+        if let Some(ps) = a.get("paths").and_then(|ps| ps.as_array()) {
+            for p in ps {
+                if let Some(s) = p.as_str() {
+                    if !paths.contains(&s.to_string()) {
+                        paths.push(s.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(sym) = a.get("symbol").and_then(|s| s.as_str()) {
+            if !paths.contains(&sym.to_string()) {
+                paths.push(sym.to_string());
+            }
+        }
+    }
+
+    if let Ok(val) = res {
+        // Direct single path
+        if let Some(p) = val.get("path").and_then(|p| p.as_str()) {
+            if !paths.contains(&p.to_string()) {
+                paths.push(p.to_string());
+            }
+        }
+        // Traditional hits array
+        if let Some(hits) = val.get("hits").and_then(|h| h.as_array()) {
+            for h in hits.iter().take(5) {
+                if let Some(p) = h.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // Search response: code.results
+        if let Some(results) =
+            val.get("code").and_then(|c| c.get("results")).and_then(|r| r.as_array())
+        {
+            for r in results.iter().take(4) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // Search response: docs.results
+        if let Some(results) =
+            val.get("docs").and_then(|d| d.get("results")).and_then(|r| r.as_array())
+        {
+            for r in results.iter().take(4) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+        // General results array
+        if let Some(results) = val.get("results").and_then(|r| r.as_array()) {
+            for r in results.iter().take(5) {
+                if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                } else if let Some(p) = r.as_str() {
+                    if !paths.contains(&p.to_string()) {
+                        paths.push(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Some(AgentActivation {
+        timestamp: current_timestamp_secs() * 1000,
+        tool,
+        client_id: client.map(|c| c.id.clone()),
+        client_name: client.map(|c| c.name.clone()),
+        client_color: client.map(|c| c.color.clone()),
+        corpus,
+        query,
+        paths,
+        duration_ms,
+        success: res.is_ok(),
+    })
 }
 
 /// Server-Sent Events stream for MCP session handshake.

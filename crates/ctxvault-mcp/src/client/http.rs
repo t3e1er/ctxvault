@@ -1,4 +1,4 @@
-﻿//! MCP HTTP Transport Client.
+//! MCP HTTP Transport Client.
 //!
 //! Communicates with an MCP server over HTTP JSON-RPC 2.0.
 
@@ -16,6 +16,7 @@ use crate::transport::dispatch::{JsonRpcRequest, JsonRpcResponse};
 pub struct HttpMcpTransport {
     client: reqwest::Client,
     endpoint_url: String,
+    api_key: Option<String>,
     next_id: AtomicI64,
 }
 
@@ -30,7 +31,18 @@ impl HttpMcpTransport {
             format!("{url}/mcp")
         };
 
-        Self { client: reqwest::Client::new(), endpoint_url, next_id: AtomicI64::new(1) }
+        Self {
+            client: reqwest::Client::new(),
+            endpoint_url,
+            api_key: std::env::var("CTXV_API_KEY").ok(),
+            next_id: AtomicI64::new(1),
+        }
+    }
+
+    /// Set an explicit API key for `x-api-key` header authorization.
+    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
+        self.api_key = Some(key.into());
+        self
     }
 
     /// Return the target endpoint URL.
@@ -51,10 +63,12 @@ impl McpTransport for HttpMcpTransport {
             params,
         };
 
-        let response = self
-            .client
-            .post(&self.endpoint_url)
-            .json(&request)
+        let mut req_builder = self.client.post(&self.endpoint_url).json(&request);
+        if let Some(ref k) = self.api_key {
+            req_builder = req_builder.header("x-api-key", k);
+        }
+
+        let response = req_builder
             .send()
             .await
             .map_err(|e| Error::Config(format!("HTTP request error: {e}")))?;
@@ -87,10 +101,12 @@ impl McpTransport for HttpMcpTransport {
             params,
         };
 
-        let _ = self
-            .client
-            .post(&self.endpoint_url)
-            .json(&request)
+        let mut req_builder = self.client.post(&self.endpoint_url).json(&request);
+        if let Some(ref k) = self.api_key {
+            req_builder = req_builder.header("x-api-key", k);
+        }
+
+        let _ = req_builder
             .send()
             .await
             .map_err(|e| Error::Config(format!("HTTP notification error: {e}")))?;

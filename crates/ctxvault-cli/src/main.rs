@@ -121,6 +121,10 @@ struct Cli {
     /// Defaults to json in daemon mode, text otherwise.
     #[arg(long = "log-format", value_enum)]
     log_format: Option<LogFormat>,
+
+    /// Require valid x-api-key authentication for incoming MCP requests.
+    #[arg(long = "require-auth")]
+    require_auth: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -142,6 +146,12 @@ enum Commands {
         /// Optional workspace directory to write local repository rules into (defaults to current directory if --rules is set).
         #[arg(long)]
         rules_dir: Option<PathBuf>,
+        /// Fast installation: skip remote checksum download and skip redundant scans.
+        #[arg(long)]
+        fast: bool,
+        /// Target specific coding agents only (comma-separated, e.g. "antigravity,cursor,claude").
+        #[arg(long)]
+        agents: Option<String>,
     },
     /// View and edit ctxvault configuration.
     Config {
@@ -159,45 +169,81 @@ enum Commands {
     },
     /// Import a compressed team sharing artifact (.ctxvault/vault.tar.zst) into local or central cache.
     ImportArtifact {
-        /// Path to input archive file (default: .ctxvault/vault.tar.zst).
+        /// Source archive file path to import (.ctxvault/vault.tar.zst).
         #[arg(long, short = 'i')]
         input: Option<PathBuf>,
-        /// Target corpus name (optional).
+        /// Target corpus name override (optional, defaults to archive manifest name).
         #[arg(long)]
         corpus: Option<String>,
     },
-    /// Index a repository into central storage without running an interactive server.
+    /// Index a corpus directory into central storage (`~/.cache/ctxvault/indices/<name>/`).
     Index {
-        /// Path to the repository directory to index.
+        /// Path to the corpus directory to index.
+        #[arg(value_name = "PATH")]
         path: PathBuf,
-        /// Optional corpus name override (defaults to directory name).
+        /// Target corpus name (defaults to directory name if omitted).
         #[arg(long)]
         name: Option<String>,
-        /// Force full reindex from scratch.
+        /// Force full reindex instead of delta scan.
         #[arg(long)]
         reindex: bool,
-        /// Fast Mode: skip dense embedding and vector indexing for instant BM25+Graph indexing.
+        /// Skip dense embeddings and vector indexing for instant BM25+Graph indexing.
         #[arg(long)]
         fast: bool,
         /// Docs-only embedding mode: compute vector embeddings for markdown docs anchors only.
         #[arg(long = "docs-embed")]
         docs_embed: bool,
-        /// Skeleton mode: compute embeddings for doc anchors and code symbol skeletons.
+        /// Skeleton mode: compute embeddings for docs anchors and code symbol skeletons.
         #[arg(long)]
         skeleton: bool,
-        /// Batch size for indexing (default 50).
+        /// Batch size for delta scanning (default 50).
         #[arg(long, default_value = "50")]
         batch_size: usize,
     },
-    /// Run incremental delta sync on indexed corpora.
+    /// Synchronize all cached corpora with their source directories.
     Sync {
-        /// Target corpus name (if omitted, syncs all mounted/cached corpora).
+        /// Specific corpus to sync (syncs all if omitted).
         #[arg(long)]
         corpus: Option<String>,
         /// Batch size for delta scanning (default 50).
         #[arg(long, default_value = "50")]
         batch_size: usize,
     },
+    /// Launch the standalone 3D knowledge graph visualizer and agent telemetry dashboard.
+    Graphview {
+        /// Socket address to bind the web dashboard server to.
+        #[arg(long, default_value = "127.0.0.1:9091")]
+        bind: String,
+        /// Path override for corpora storage directory.
+        #[arg(long, value_name = "DIR")]
+        corpora_dir: Option<PathBuf>,
+        /// Upstream ctxvault MCP daemon HTTP URL for live agent telemetry.
+        #[arg(long, default_value = "http://127.0.0.1:9090")]
+        daemon: String,
+        /// Dedicated authentication key for daemon-to-graphview relay.
+        #[arg(long)]
+        daemon_key: Option<String>,
+    },
+    /// Manage AI agent client profiles and authentication keys.
+    Client {
+        #[command(subcommand)]
+        action: ClientAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ClientAction {
+    /// Initialize a fresh clients.json configuration with secure generated API keys.
+    Init {
+        /// Force overwrite if clients.json already exists.
+        #[arg(long)]
+        force: bool,
+        /// Destination file path (defaults to ./clients.json).
+        #[arg(long, short = 'o')]
+        path: Option<PathBuf>,
+    },
+    /// List configured client profiles and authentication status.
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -325,24 +371,35 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.require_auth {
+        std::env::set_var("CTXV_REQUIRE_AUTH", "true");
+    }
+
     // -----------------------------------------------------------------------
     // Subcommand Execution
     // -----------------------------------------------------------------------
     if let Some(cmd) = &cli.command {
         match cmd {
-            Commands::Install { dir, yes, dry_run, rules, rules_dir } => {
+            Commands::Install { dir, yes, dry_run, rules, rules_dir, fast: _, agents } => {
                 let current_dir = std::env::current_dir().ok();
                 let ws_dir = if *rules {
                     rules_dir.as_deref().or(current_dir.as_deref())
                 } else {
                     rules_dir.as_deref()
                 };
+                let agent_filters = agents.as_ref().map(|a| {
+                    a.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                });
                 let summary = installer::run_install(
                     dir.as_deref(),
                     *dry_run,
                     *yes,
                     *rules || rules_dir.is_some(),
                     ws_dir,
+                    agent_filters.as_deref(),
                 )?;
                 if *dry_run {
                     println!("\n=== ctxvault Agent Configuration (DRY RUN) ===");
@@ -477,6 +534,67 @@ async fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            Commands::Graphview { bind, corpora_dir, daemon, daemon_key } => {
+                if let Some(ref k) = daemon_key {
+                    std::env::set_var("CTXV_INTERNAL_API_KEY", k);
+                }
+                ctxvault_graphview::run_graphview_server(
+                    bind,
+                    corpora_dir.clone(),
+                    Some(daemon.clone()),
+                )
+                .await?;
+                return Ok(());
+            }
+            Commands::Client { action } => match action {
+                ClientAction::Init { force, path } => {
+                    let dest = path.clone().unwrap_or_else(|| PathBuf::from("clients.json"));
+                    if dest.exists() && !*force {
+                        eprintln!(
+                            "[-] '{}' already exists. Use --force to overwrite.",
+                            dest.display()
+                        );
+                        return Ok(());
+                    }
+                    let config = ctxvault_common::client::generate_default_config();
+                    let json_str = serde_json::to_string_pretty(&config)?;
+                    std::fs::write(&dest, json_str)?;
+                    println!("[+] Generated fresh client configuration at '{}'", dest.display());
+                    println!("    Auth mode: require_auth = false (default zero-auth)");
+                    println!("    Generated API keys:");
+                    for c in &config.clients {
+                        if let Some(ref k) = c.key {
+                            println!("    * {:<18} (ID: {:<12}) -> x-api-key: {}", c.name, c.id, k);
+                        }
+                    }
+                    if let Some(ref dk) = config.daemon_key {
+                        println!("    * Dedicated Daemon Relay Key           -> x-api-key: {}", dk);
+                    }
+                    return Ok(());
+                }
+                ClientAction::List => {
+                    let config = ctxvault_common::client::load_clients_config(None);
+                    println!("\n=== ctxvault Client Authentication Registry ===");
+                    println!(
+                        "  Authentication Required: {}",
+                        if config.require_auth { "YES (strict)" } else { "NO (default zero-auth)" }
+                    );
+                    if let Some(ref dk) = config.daemon_key {
+                        println!("  Daemon Relay Key:        {}", dk);
+                    } else {
+                        println!("  Daemon Relay Key:        None (open)");
+                    }
+                    println!("\n  Registered Clients ({}):", config.clients.len());
+                    for c in &config.clients {
+                        let key_display = c.key.as_deref().unwrap_or("<none>");
+                        println!(
+                            "  * {:<20} ID: {:<12} Color: {:<8} Key: {}",
+                            c.name, c.id, c.color, key_display
+                        );
+                    }
+                    return Ok(());
+                }
+            },
         }
     }
 

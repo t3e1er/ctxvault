@@ -17,6 +17,7 @@ path = "src/main.rs"
 ctxvault-common = { path = "../ctxvault-common" }
 ctxvault-core = { path = "../ctxvault-core" }
 ctxvault-mcp = { path = "../ctxvault-mcp" }
+ctxvault-graphview = { path = "../ctxvault-graphview" }
 
 # Async
 tokio = { workspace = true }

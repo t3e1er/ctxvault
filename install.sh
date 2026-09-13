@@ -7,6 +7,45 @@ set -e
 REPO="${CTXV_GITHUB_REPO:-${CXTV_GITHUB_REPO:-t3e1er/ctxvault}}"
 INSTALL_DIR="${CTXV_INSTALL_DIR:-${CXTV_INSTALL_DIR:-$HOME/.local/bin}}"
 
+FAST=false
+SKIP_CHECKSUM=false
+TAG=""
+SKIP_MODELS=false
+SKIP_RULES=false
+AGENTS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fast)
+            FAST=true
+            shift
+            ;;
+        --skip-checksum)
+            SKIP_CHECKSUM=true
+            shift
+            ;;
+        --tag)
+            TAG="$2"
+            shift 2
+            ;;
+        --skip-models)
+            SKIP_MODELS=true
+            shift
+            ;;
+        --skip-rules)
+            SKIP_RULES=true
+            shift
+            ;;
+        --agents)
+            AGENTS="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 # 1. Detect architecture & OS
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -38,13 +77,16 @@ case "$OS" in
         ;;
 esac
 
-# 2. Fetch latest release version from GitHub API
-echo "[*] Resolving latest release for $REPO..."
-TAG=$(curl -sSL -H "User-Agent: ctxvault-installer" "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-
+# 2. Fetch release version
 if [ -z "$TAG" ]; then
-    echo "[ERROR] Failed to fetch latest release tag from https://api.github.com/repos/$REPO/releases/latest" >&2
-    exit 1
+    echo "[*] Resolving latest release for $REPO..."
+    TAG=$(curl -sSL -H "User-Agent: ctxvault-installer" "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$TAG" ]; then
+        echo "[ERROR] Failed to fetch latest release tag from https://api.github.com/repos/$REPO/releases/latest" >&2
+        exit 1
+    fi
+else
+    echo "[*] Installing specified release $TAG for $REPO..."
 fi
 
 ARCHIVE_NAME="ctxvault-${TAG}-${TARGET}.tar.gz"
@@ -57,25 +99,29 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$ARCHIVE_NAME"
 
 # Checksum validation (if checksums.txt exists)
-CHECKSUMS_URL="https://github.com/$REPO/releases/download/${TAG}/checksums.txt"
-if curl -fsSL -s -I "$CHECKSUMS_URL" >/dev/null 2>&1; then
-    echo "[*] Verifying SHA-256 checksum..."
-    curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt"
-    EXPECTED_HASH=$(grep "$ARCHIVE_NAME" "$TMP_DIR/checksums.txt" | awk '{print $1}')
-    if [ -n "$EXPECTED_HASH" ]; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            ACTUAL_HASH=$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
-        elif command -v shasum >/dev/null 2>&1; then
-            ACTUAL_HASH=$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
+if [ "$FAST" = false ] && [ "$SKIP_CHECKSUM" = false ]; then
+    CHECKSUMS_URL="https://github.com/$REPO/releases/download/${TAG}/checksums.txt"
+    if curl -fsSL -s -I "$CHECKSUMS_URL" >/dev/null 2>&1; then
+        echo "[*] Verifying SHA-256 checksum..."
+        curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt"
+        EXPECTED_HASH=$(grep "$ARCHIVE_NAME" "$TMP_DIR/checksums.txt" | awk '{print $1}')
+        if [ -n "$EXPECTED_HASH" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL_HASH=$(sha256sum "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
+            elif command -v shasum >/dev/null 2>&1; then
+                ACTUAL_HASH=$(shasum -a 256 "$TMP_DIR/$ARCHIVE_NAME" | awk '{print $1}')
+            fi
+            if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+                echo "[ERROR] Checksum verification failed!" >&2
+                echo "Expected: $EXPECTED_HASH" >&2
+                echo "Actual:   $ACTUAL_HASH" >&2
+                exit 1
+            fi
+            echo "[+] Checksum verified."
         fi
-        if [ -n "$ACTUAL_HASH" ] && [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-            echo "[ERROR] Checksum verification failed!" >&2
-            echo "Expected: $EXPECTED_HASH" >&2
-            echo "Actual:   $ACTUAL_HASH" >&2
-            exit 1
-        fi
-        echo "[+] Checksum verified."
     fi
+else
+    echo "[*] Fast install mode: skipping remote checksum verification."
 fi
 
 echo "[*] Extracting binary..."
@@ -94,21 +140,47 @@ fi
 # Install the bundled embedding model as a sidecar next to the binary so the
 # embedder resolves it at <exe_dir>/models/<model>/ (no separate download).
 if [ -d "$EXTRACTED/models" ]; then
-    echo "[*] Installing bundled embedding model (sidecar)..."
-    rm -rf "$INSTALL_DIR/models"
-    cp -r "$EXTRACTED/models" "$INSTALL_DIR/models"
+    if [ "$SKIP_MODELS" = false ] && ([ "$FAST" = false ] || [ ! -d "$INSTALL_DIR/models" ]); then
+        echo "[*] Installing bundled embedding model (sidecar)..."
+        rm -rf "$INSTALL_DIR/models"
+        cp -r "$EXTRACTED/models" "$INSTALL_DIR/models"
+    else
+        echo "[*] Preserving existing models directory."
+    fi
 fi
 
 # Optional symlink for short shorthand alias `ctxv`
 ln -sf "$INSTALL_DIR/ctxvault" "$INSTALL_DIR/ctxv" 2>/dev/null || true
+
+# GraphView UI wrapper: allow direct invocation via `ctxvault-graphview`
+if [ -f "$EXTRACTED/ctxvault-graphview" ]; then
+    cp "$EXTRACTED/ctxvault-graphview" "$INSTALL_DIR/ctxvault-graphview"
+    chmod +x "$INSTALL_DIR/ctxvault-graphview"
+else
+    cat << 'EOF' > "$INSTALL_DIR/ctxvault-graphview"
+#!/bin/sh
+exec "$(dirname "$0")/ctxvault" graphview "$@"
+EOF
+    chmod +x "$INSTALL_DIR/ctxvault-graphview"
+fi
 
 echo ""
 echo "[+] Successfully installed 'ctxvault' to $INSTALL_DIR/ctxvault"
 echo ""
 
 # Auto-configure installed coding agents
-echo "[*] Auto-configuring coding agents (Cursor, Claude, Antigravity, Kiro CLI, VS Code, Windsurf, Zed)..."
-"$INSTALL_DIR/ctxvault" install -y --dir="$INSTALL_DIR"
+echo "[*] Auto-configuring coding agents..."
+INSTALL_ARGS="install -y --dir=$INSTALL_DIR"
+if [ "$FAST" = true ]; then
+    INSTALL_ARGS="$INSTALL_ARGS --fast"
+fi
+if [ "$SKIP_RULES" = true ]; then
+    INSTALL_ARGS="$INSTALL_ARGS --rules=false"
+fi
+if [ -n "$AGENTS" ]; then
+    INSTALL_ARGS="$INSTALL_ARGS --agents=$AGENTS"
+fi
+"$INSTALL_DIR/ctxvault" $INSTALL_ARGS
 
 # 3. Path hint
 case ":$PATH:" in
