@@ -316,7 +316,7 @@
       <div class="section-title">Visual Controls</div>
       <div class="slider-row">
         <span>Particle Size</span>
-        <input type="range" id="size-slider" min="1" max="15" value="4">
+        <input type="range" id="size-slider" min="1" max="15" value="6">
       </div>
       <div class="slider-row">
         <span>Bloom Strength</span>
@@ -382,7 +382,7 @@
     // Three.js Scene Setup
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x07090e, 0.0006);
+    scene.fog = new THREE.FogExp2(0x07090e, 0.00015);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000);
     camera.position.set(0, 400, 1200);
@@ -634,57 +634,32 @@
         }
       });
 
+      fitCameraToGraph();
       applyDisplayFilters();
-      updatePositionScales();
+    }
+
+    function fitCameraToGraph() {
+      if (!graphData.nodes || graphData.nodes.length === 0 || !basePositions) return;
+      const box = new THREE.Box3();
+      for (let i = 0; i < graphData.nodes.length; i++) {
+        box.expandByPoint(new THREE.Vector3(basePositions[i * 3], basePositions[i * 3 + 1], basePositions[i * 3 + 2]));
+      }
+      const sphere = new THREE.Sphere();
+      box.getBoundingSphere(sphere);
+
+      const radius = Math.max(sphere.radius, 150);
+      const fov = camera.fov * (Math.PI / 180);
+      let distance = Math.abs(radius / Math.sin(fov / 2)) * 1.15;
+      distance = Math.max(distance, 500);
+
+      controls.target.copy(sphere.center);
+      camera.position.set(sphere.center.x, sphere.center.y + distance * 0.25, sphere.center.z + distance * 0.95);
+      camera.lookAt(sphere.center);
+      controls.update();
     }
 
     function updatePositionScales() {
-      if (!particleSystem || !graphData || !graphData.nodes || !basePositions) return;
-      const positions = particleSystem.geometry.attributes.position.array;
-      const clusterDistEl = document.getElementById('cluster-dist-slider');
-      const nodeDispEl = document.getElementById('node-disp-slider');
-      const clusterDistScale = clusterDistEl ? parseFloat(clusterDistEl.value) / 10.0 : 1.0;
-      const nodeDispScale = nodeDispEl ? parseFloat(nodeDispEl.value) / 10.0 : 1.0;
-
-      for (let i = 0; i < graphData.nodes.length; i++) {
-        const n = graphData.nodes[i];
-        const c = commCentroids.get(n.community);
-        const cx = c ? c.cx : 0;
-        const cy = c ? c.cy : 0;
-        const cz = c ? c.cz : 0;
-
-        const bx = basePositions[i * 3];
-        const by = basePositions[i * 3 + 1];
-        const bz = basePositions[i * 3 + 2];
-
-        const dx = bx - cx;
-        const dy = by - cy;
-        const dz = bz - cz;
-
-        positions[i * 3] = cx * clusterDistScale + dx * nodeDispScale;
-        positions[i * 3 + 1] = cy * clusterDistScale + dy * nodeDispScale;
-        positions[i * 3 + 2] = cz * clusterDistScale + dz * nodeDispScale;
-      }
-      particleSystem.geometry.attributes.position.needsUpdate = true;
-
-      if (edgeLines && edgeLines.geometry && edgeLines.geometry.attributes.position) {
-        const edgeDensity = parseInt(document.getElementById('edge-slider').value) / 100.0;
-        const edgeBudget = Math.min(graphData.edges.length, Math.floor(graphData.edges.length * edgeDensity));
-        const linePositions = edgeLines.geometry.attributes.position.array;
-        let lineIdx = 0;
-        for (let i = 0; i < edgeBudget && lineIdx + 5 < linePositions.length; i++) {
-          const e = graphData.edges[i];
-          const s = e.source;
-          const t = e.target;
-          linePositions[lineIdx++] = positions[s * 3];
-          linePositions[lineIdx++] = positions[s * 3 + 1];
-          linePositions[lineIdx++] = positions[s * 3 + 2];
-          linePositions[lineIdx++] = positions[t * 3];
-          linePositions[lineIdx++] = positions[t * 3 + 1];
-          linePositions[lineIdx++] = positions[t * 3 + 2];
-        }
-        edgeLines.geometry.attributes.position.needsUpdate = true;
-      }
+      applyDisplayFilters();
     }
 
     async function refreshGraph() {
@@ -750,12 +725,20 @@
     let currentSearchMatches = null;
 
     function applyDisplayFilters() {
-      if (!particleSystem || !graphData || !graphData.nodes) return;
+      if (!particleSystem || !graphData || !graphData.nodes || !basePositions) return;
+      const positions = particleSystem.geometry.attributes.position.array;
       const colors = particleSystem.geometry.attributes.color.array;
       const sizes = particleSystem.geometry.attributes.size.array;
       const baseScale = parseFloat(document.getElementById('size-slider').value);
 
+      const clusterDistEl = document.getElementById('cluster-dist-slider');
+      const nodeDispEl = document.getElementById('node-disp-slider');
+      const clusterDistScale = clusterDistEl ? parseFloat(clusterDistEl.value) / 10.0 : 1.0;
+      const nodeDispScale = nodeDispEl ? parseFloat(nodeDispEl.value) / 10.0 : 1.0;
+
       const hasSearch = (currentSearchMatches !== null);
+      let visibleCount = 0;
+      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0;
 
       for (let i = 0; i < graphData.nodes.length; i++) {
         const n = graphData.nodes[i];
@@ -774,30 +757,96 @@
         // 3. Search Query match check
         let isSearchMatch = hasSearch && currentSearchMatches.has(i);
 
-        const isVisible = modeMatch && typeMatch;
+        const isVisible = hasSearch ? isSearchMatch : (modeMatch && typeMatch);
 
-        if (isSearchMatch) {
-          // Amber highlight for search matches (bright and enlarged)
-          colors[i * 3] = 0.98;
-          colors[i * 3 + 1] = 0.65;
-          colors[i * 3 + 2] = 0.05;
-          sizes[i] = n.size * baseScale * 2.5;
+        if (isVisible) {
+          visibleCount++;
+          if (n.entity_type === 'DocNode') docCount++;
+          else if (n.entity_type === 'Function') fnCount++;
+          else if (n.entity_type === 'Struct') structCount++;
+          else if (n.entity_type === 'Module') modCount++;
+
+          const c = commCentroids.get(n.community);
+          const cx = c ? c.cx : 0;
+          const cy = c ? c.cy : 0;
+          const cz = c ? c.cz : 0;
+
+          const bx = basePositions[i * 3];
+          const by = basePositions[i * 3 + 1];
+          const bz = basePositions[i * 3 + 2];
+
+          const dx = bx - cx;
+          const dy = by - cy;
+          const dz = bz - cz;
+
+          positions[i * 3] = cx * clusterDistScale + dx * nodeDispScale;
+          positions[i * 3 + 1] = cy * clusterDistScale + dy * nodeDispScale;
+          positions[i * 3 + 2] = cz * clusterDistScale + dz * nodeDispScale;
+
+          if (isSearchMatch) {
+            colors[i * 3] = 0.98;
+            colors[i * 3 + 1] = 0.65;
+            colors[i * 3 + 2] = 0.05;
+            sizes[i] = n.size * baseScale * 2.5;
+          } else {
+            colors[i * 3] = ((n.color_rgb >> 16) & 0xff) / 255;
+            colors[i * 3 + 1] = ((n.color_rgb >> 8) & 0xff) / 255;
+            colors[i * 3 + 2] = (n.color_rgb & 0xff) / 255;
+            sizes[i] = n.size * baseScale;
+          }
         } else {
-          // Unpack base color
-          const r = ((n.color_rgb >> 16) & 0xff) / 255;
-          const g = ((n.color_rgb >> 8) & 0xff) / 255;
-          const b = (n.color_rgb & 0xff) / 255;
-
-          const factor = (isVisible && !hasSearch) ? 1.0 : 0.06;
-          colors[i * 3] = r * factor;
-          colors[i * 3 + 1] = g * factor;
-          colors[i * 3 + 2] = b * factor;
-          sizes[i] = n.size * baseScale * (isVisible ? 1.0 : 0.4);
+          // Off-screen culling: completely remove non-matching nodes
+          positions[i * 3] = 999999.0;
+          positions[i * 3 + 1] = 999999.0;
+          positions[i * 3 + 2] = 999999.0;
+          colors[i * 3] = 0.0;
+          colors[i * 3 + 1] = 0.0;
+          colors[i * 3 + 2] = 0.0;
+          sizes[i] = 0.0;
         }
       }
 
+      particleSystem.geometry.attributes.position.needsUpdate = true;
       particleSystem.geometry.attributes.color.needsUpdate = true;
       particleSystem.geometry.attributes.size.needsUpdate = true;
+
+      // Update counters in HUD
+      document.getElementById('count-all').textContent = visibleCount;
+      document.getElementById('count-docs').textContent = docCount;
+      document.getElementById('count-fn').textContent = fnCount;
+      document.getElementById('count-struct').textContent = structCount;
+      document.getElementById('count-mod').textContent = modCount;
+
+      // Rebuild visible edges (only draw edges between visible nodes)
+      if (edgeLines && edgeLines.geometry) {
+        const edgeDensity = parseInt(document.getElementById('edge-slider').value) / 100.0;
+        const linePositions = [];
+        const lineColors = [];
+
+        for (let i = 0; i < graphData.edges.length; i++) {
+          const e = graphData.edges[i];
+          const s = e.source;
+          const t = e.target;
+          if (s < graphData.nodes.length && t < graphData.nodes.length) {
+            const sVisible = positions[s * 3] < 900000.0;
+            const tVisible = positions[t * 3] < 900000.0;
+            if (sVisible && tVisible && (Math.random() <= edgeDensity)) {
+              linePositions.push(positions[s * 3], positions[s * 3 + 1], positions[s * 3 + 2]);
+              linePositions.push(positions[t * 3], positions[t * 3 + 1], positions[t * 3 + 2]);
+
+              const c1 = ((graphData.nodes[s].color_rgb >> 16) & 0xff) / 255;
+              const c2 = ((graphData.nodes[t].color_rgb >> 16) & 0xff) / 255;
+              lineColors.push(c1 * 0.4, 0.4, 0.7, c2 * 0.4, 0.4, 0.7);
+            }
+          }
+        }
+
+        edgeLines.geometry.dispose();
+        const newGeo = new THREE.BufferGeometry();
+        newGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+        newGeo.setAttribute('color', new THREE.Float32BufferAttribute(lineColors, 3));
+        edgeLines.geometry = newGeo;
+      }
     }
 
     function performQuery(rawQuery) {

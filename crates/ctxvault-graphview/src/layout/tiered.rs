@@ -16,7 +16,7 @@ use crate::layout::{
 use crate::loader::{CorpusCatalog, CorpusSnapshot};
 
 /// Maximum nodes allowed in Tier 0 Galaxy view.
-pub const TIER_0_BUDGET: usize = 1000;
+pub const TIER_0_BUDGET: usize = 5000;
 /// Default node budget for Tier 1 Corpus view.
 pub const TIER_1_DEFAULT_BUDGET: usize = 25000;
 
@@ -34,13 +34,12 @@ pub fn build_tier_0_overview(catalog: &CorpusCatalog, cluster_mode: ClusterMode)
         };
 
         // Budget per corpus in multi-corpus mode
-        let per_corpus_budget = (TIER_0_BUDGET / num_corpora).max(50);
+        let per_corpus_budget = (TIER_0_BUDGET / num_corpora).max(200);
         let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
-        // Position offset for galaxy separation: distribute corpora around a wide circle
+        // Position offset for galaxy separation: distribute corpora around a balanced circle
         let angle = 2.0 * std::f32::consts::PI * (c_idx as f32) / (num_corpora as f32);
-        let galaxy_radius =
-            if num_corpora > 1 { 800.0 + (num_corpora as f32) * 150.0 } else { 0.0 };
+        let galaxy_radius = if num_corpora > 1 { 450.0 + (num_corpora as f32) * 50.0 } else { 0.0 };
         let offset_x = angle.cos() * galaxy_radius;
         let offset_z = angle.sin() * galaxy_radius;
 
