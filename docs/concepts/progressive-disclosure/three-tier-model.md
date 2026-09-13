@@ -8,6 +8,8 @@ related:
   - "[[docs/concepts/progressive-disclosure/index]]"
   - "[[docs/concepts/progressive-disclosure/turn-1-affordances]]"
   - "[[docs/architecture/adr/adr-004-progressive-disclosure-token-contract]]"
+  - "[[docs/architecture/adr/adr-020-lean-multiline-text-emission]]"
+  - "[[docs/roadmap/RFC-lean-multiline-text-emission]]"
 ---
 
 # The 3-Tier Progressive Disclosure Model
@@ -73,5 +75,30 @@ flowchart TD
 
 * **Tool**: `read_file(path="...", start_line=1, end_line=100)`
 * **Code Implementation**: [`crates/ctxvault-mcp/src/tools/mod.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs)
-* **Token Budget**: Bounded strictly by `start_line` and `end_line`.
 * **Rule**: Full file reads without line boundaries are treated as an emergency fallback. Agents are instructed to read targeted slices.
+
+---
+
+## The Lean Multiline Text Emission Protocol (ADR-020)
+
+To maximize prompt reasoning context and eliminate syntactic JSON tax across the 3 tiers, `ctxvault` standardizes on **Lean Multiline Text Emission** (governed by [ADR-020](file:///c:/dev/ctx/ctxvault/docs/architecture/adr/adr-020-lean-multiline-text-emission.md) and [RFC-lean-multiline-text-emission](file:///c:/dev/ctx/ctxvault/docs/roadmap/RFC-lean-multiline-text-emission.md)):
+
+```mermaid
+flowchart LR
+    T1["Turn 1: search<br/>(Markdown List + Scores + Snippets)"] -->|-> [T2a fetch]| T2a["Turn 2a: get_snippet<br/>(L<num>: Bounded Code + Docstring)"]
+    T1 -->|-> [T2b graph]| T2b["Turn 2b: graph_match<br/>(2-Space ASCII Cypher Tree)"]
+    T2a -->|-> [T3 full file]| T3["Turn 3: read_file<br/>(Line-Numbered Markdown Block)"]
+```
+
+### Formatting Contracts by Turn
+
+| Turn | Tool | Output Format | Token Savings | Scents & Navigation Hints |
+|---|---|---|---|---|
+| **Turn 1** | `search` | Markdown list partitioned by `## Code Hits` and `## Doc Hits`. Non-zero score components only (`bm25`, `vec`, `graph`). Top $K$ hits inline syntax-highlighted code. | **50%–60%** vs JSON array | `-> [T2a fetch] get_snippet(name: "...")`<br/>`-> [T2b graph] graph_match("...")` |
+| **Turn 2a** | `get_snippet` | Single symbol header `# Symbol: Name (path:Lstart-Lend)`. Prefixed line numbers (`L<num>: `). Docstrings in blockquotes. Grammar-driven `incoming` & `outgoing` handles. | **40%–50%** vs JSON object | `-> [T2b callers] graph_match("...")`<br/>`-> [T3 full file] read_file("...")` |
+| **Turn 2b** | `graph_match` | Indented ASCII Cypher tree with summary header (`[direct: D, transitive: T, files: F, depth: H]`). Hub suppression (`... (+N more)`). Cycle markers (`[CYCLE: -> target]`). | **65%–70%** vs nested JSON | Direct jump handles `-> [T2a fetch] get_snippet(symbol: "...")` |
+| **Turn 3** | `read_file` | `# File: \`path\` [lines: L<start>-L<end> of <total>, language: <lang>]` followed by line-numbered (`L<num>: `) fenced code blocks for single files or batch arrays. | **15%–25%** (eliminates JSON `\n` and `\"` escaping) | Fully authoritative context for line-exact editing. |
+
+> [!NOTE]
+> MCP clients invoking `ctxvault` automatically receive lean multiline text over stdio transport. Automated test suites or programmatic tools requiring machine-parsed JSON payloads can explicitly pass `"format": "json"`.
+

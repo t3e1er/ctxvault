@@ -1,8 +1,8 @@
 ---
 title: "RFC: Zero-Copy File-Offset Architecture & Binary Vector Indexing"
 category: "code-architecture"
-status: "proposed"
-tags: ["rfc", "proposal", "storage", "vector", "tantivy", "sqlite", "zero-copy", "performance"]
+status: "implemented"
+tags: ["rfc", "storage", "vector", "tantivy", "sqlite", "zero-copy", "performance"]
 related:
   - "[[docs/index]]"
   - "[[docs/roadmap/coderoadmap]]"
@@ -13,7 +13,7 @@ related:
 
 # RFC: Zero-Copy File-Offset Architecture & Binary Vector Indexing
 
-**Status**: Proposed  
+**Status**: Implemented  
 **Scope**: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`  
 **Date**: September 2026  
 **Related Documents**: [[docs/roadmap/coderoadmap]], [[docs/architecture/adr/adr-008-anchor-embedding-paradigm]], [[docs/architecture/implementation/zero-copy-storage]]

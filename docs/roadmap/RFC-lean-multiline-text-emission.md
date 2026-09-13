@@ -2,22 +2,23 @@
 title: "RFC: Lean Multiline Text Emission Protocol & Token-Optimal Agent Responses"
 description: "Eliminating JSON syntax repetition and context tax by standardizing on indented multiline ASCII/Cypher trees and markdown blocks across all MCP tool responses."
 category: "roadmap"
-status: "proposed"
+status: "implemented"
 tags: ["rfc", "tokens", "multiline-text", "graph_match", "compact_out", "progressive-disclosure", "context-window"]
 related:
   - "[[docs/roadmap/coderoadmap]]"
   - "[[docs/concepts/search/graph-traversal]]"
   - "[[docs/concepts/progressive-disclosure/turn-1-affordances]]"
   - "[[docs/concepts/progressive-disclosure/three-tier-model]]"
+  - "[[docs/architecture/adr/adr-020-lean-multiline-text-emission]]"
 ---
 
 # RFC: Lean Multiline Text Emission Protocol & Token-Optimal Agent Responses
 
-**Status**: Proposed  
+**Status**: Implemented  
 **Author**: Architecture Team & Antigravity Pair  
 **Scope**: `ctxvault-mcp`, `ctxvault-core`, `ctxvault-common`  
 **Date**: September 2026  
-**Related Documents**: [coderoadmap.md](file:///c:/dev/ctx/ctxvault/docs/roadmap/coderoadmap.md), [graph-traversal.md](file:///c:/dev/ctx/ctxvault/docs/concepts/search/graph-traversal.md), [three-tier-model.md](file:///c:/dev/ctx/ctxvault/docs/concepts/progressive-disclosure/three-tier-model.md)
+**Related Documents**: [coderoadmap.md](file:///c:/dev/ctx/ctxvault/docs/roadmap/coderoadmap.md), [adr-020-lean-multiline-text-emission.md](file:///c:/dev/ctx/ctxvault/docs/architecture/adr/adr-020-lean-multiline-text-emission.md), [three-tier-model.md](file:///c:/dev/ctx/ctxvault/docs/concepts/progressive-disclosure/three-tier-model.md)
 
 ---
 
@@ -267,8 +268,14 @@ fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
 
 ---
 
-## 7. Decision Summary
+## 7. Decision Summary & Implementation
 
-- **Decision**: Adopt Lean Multiline Text Emission across `graph_match`, `search`, and `get_snippet`.
-- **Target Savings**: **60% to 70% context token reduction** on structural graph and snippet operations.
-- **Timeline**: Scheduled under Section 10.6 of [coderoadmap.md](file:///c:/dev/ctx/ctxvault/docs/roadmap/coderoadmap.md).
+- **Decision**: Adopted Lean Multiline Text Emission across Turns 1, 2a, 2b, and 3:
+  - **Turn 1 (`search`)**: Partitioned Markdown lists with inline code snippets, stripped zero score components, and Turn 2a (`get_snippet`) & Turn 2b (`graph_match`) progressive disclosure handles.
+  - **Turn 2a (`get_snippet`)**: Line-numbered (`L<num>:`) fenced code blocks with docstrings, grammar-driven relationships (`incoming` / `outgoing`), ambiguous/candidate suggestion listings, and outbound navigation scents.
+  - **Turn 2b (`graph_match`)**: 2-space indented Cypher-Lite ASCII hierarchy trees with hub suppression (`... (+N more)`), cycle detection markers, and jump targets.
+  - **Turn 3 (`read_file`)**: Line-numbered markdown blocks for single files or batch arrays with zero JSON string quote/newline escaping overhead.
+  - **Transport Layer**: MCP stdio `dispatch` defaults `format` to `"lean"` and emits `Value::String` directly without JSON wrapping, with `"json"` available as an explicit opt-in.
+- **Observed Savings**: **60% to 70% context token reduction** across multi-turn exploration trajectories with zero JSON syntax noise.
+- **Delivered**: September 2026 under Section 10.6 of [coderoadmap.md](file:///c:/dev/ctx/ctxvault/docs/roadmap/coderoadmap.md) and governed by [ADR-020](file:///c:/dev/ctx/ctxvault/docs/architecture/adr/adr-020-lean-multiline-text-emission.md).
+- **Core Implementation**: [`crates/ctxvault-mcp/src/format/lean.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/format/lean.rs), [`crates/ctxvault-mcp/src/transport/dispatch.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/transport/dispatch.rs), [`crates/ctxvault-mcp/src/tools/mod.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs).

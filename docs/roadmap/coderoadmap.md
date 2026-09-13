@@ -389,8 +389,9 @@ Identified during the 177k-file multi-corpus benchmark (Kubernetes, Rust, TypeSc
 
 ---
 
-### 10.5 Storage Footprint Optimization: Zero-Copy File-Offset Architecture & Binary Vectors (Roadmap)
-*Authoritative RFC*: [[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]]
+### 10.5 Storage Footprint Optimization: Zero-Copy File-Offset Architecture & Binary Vectors (Delivered)
+*Authoritative Implementation Doc*: [[docs/architecture/implementation/zero-copy-storage]]
+*Reference RFC*: [[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]]
 
 Identified during disk footprint profiling on the 14k-file Kubernetes index run (where the `.index/` footprint reached 2.15 GB across SQLite, Tantivy, and JSON vectors):
 
@@ -412,17 +413,20 @@ Identified during disk footprint profiling on the 14k-file Kubernetes index run 
 
 ---
 
-### 10.6 Token-Optimal Agent Responses: Lean Multiline Text Emission (Roadmap)
-*Authoritative RFC*: [[docs/roadmap/RFC-lean-multiline-text-emission]]
+### 10.6 Token-Optimal Agent Responses: Lean Multiline Text Emission (Delivered)
+*Authoritative ADR*: [[docs/architecture/adr/adr-020-lean-multiline-text-emission]]  
+*Authoritative RFC*: [[docs/roadmap/RFC-lean-multiline-text-emission]]  
+*Implementation*: [`crates/ctxvault-mcp/src/format/lean.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/format/lean.rs)
 
 Identified during LLM agent context profiling and benchmark evaluation against `codebase-memory-mcp`'s `compact_out` architecture:
 
 1. **The JSON Context Tax**:
    - *Problem*: In the MCP specification, tool results are delivered as raw text (`content[0].text`). Serializing complex AST structures to JSON forces coding agents to ingest repetitive schema keys (`"node":`, `"rel":`, `"file":`, `"line":`, `"hop":`, `"branches":`), quotes, and closing delimiter cascades (`}]}}`). On deep multi-hop traversals, **50% to 70% of response tokens are purely structural boilerplate**.
-   - *Solution*: Emit indented, human-and-LLM-readable ASCII Cypher trees for `graph_match`, and metadata-headed Markdown code blocks for `search` and `get_snippet`.
+   - *Solution*: Emit indented, human-and-LLM-readable ASCII Cypher trees for `graph_match`, metadata-headed Markdown code blocks for `search` and `get_snippet`, and line-numbered text blocks for `read_file`. Default to lean multiline text across stdio MCP transport with `format="json"` opt-in.
    - *Impact*: Reduces context consumption from **~420 tokens down to ~130 tokens per 14-node tree (~69% reduction)**, slashing attention noise and maximizing available reasoning context.
 
-2. **Unified Progressive Disclosure Text Formats**:
-   - *Tier 1 (`search`)*: Partitioned Markdown sections with hit ranking, scores, affordance counts, and Turn 1 syntax-highlighted snippets.
-   - *Tier 2A (`get_snippet`)*: Bounded source blocks with single-line metadata header (`path:start-end (lines: N)`).
-   - *Tier 2B (`graph_match`)*: 2-space indented Cypher ASCII trees with quantified blast radius summary header (`[direct: D, transitive: T, files: F, depth: H]`) and hub suppression annotations (`[hub: +N more]`).
+2. **Unified Progressive Disclosure Text Formats Across Turns 1, 2a, 2b, and 3**:
+   - *Turn 1 (`search`)*: Partitioned Markdown sections with hit ranking, non-zero score breakdowns, affordance degree counts, inlined Turn 1 source snippets, and next-turn `get_snippet` / `graph_match` scents.
+   - *Turn 2a (`get_snippet`)*: Bounded source blocks with 1-based prefixed line numbers (`L<num>: `), docstrings in markdown blockquotes, grammar-driven incoming/outgoing relationships, and outbound navigation hints (`-> [T2b callers]`, `-> [T3 full file]`).
+   - *Turn 2b (`graph_match`)*: 2-space indented Cypher ASCII trees with quantified blast radius summary header (`[direct: D, transitive: T, files: F, depth: H]`), cycle detection markers, and hub suppression annotations (`... (+N more)`).
+   - *Turn 3 (`read_file`)*: Line-numbered markdown blocks for single files or batch arrays (`paths: [...]`) with zero JSON quote/newline escaping overhead.

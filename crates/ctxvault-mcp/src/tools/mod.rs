@@ -1329,6 +1329,7 @@ pub(crate) struct ReadFileParams {
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub max_lines: Option<usize>,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1347,6 +1348,7 @@ pub(crate) struct GetSnippetParams {
     pub max_lines: Option<usize>,
     #[serde(default)]
     pub include_neighbors: bool,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1363,6 +1365,7 @@ pub(crate) struct SearchParams {
     pub modality: Option<String>,
     pub detail: Option<String>,
     pub snippets: Option<usize>,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1387,6 +1390,7 @@ pub(crate) struct GraphMatchParams {
     pub where_clause: Option<String>,
     pub limit: Option<usize>,
     pub max_depth: Option<usize>,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1571,24 +1575,66 @@ fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
         return Err(Error::Config("read_file requires 'path' or 'paths'".to_string()));
     };
 
+    let is_lean = params.format.as_deref() == Some("lean");
+
     match target_paths {
         PathOrPaths::Single(p) => {
             let max_lines = params.max_lines.unwrap_or(1000).max(1);
-            read_single_file(&corpus_root, &p, params.start_line, params.end_line, max_lines)
+            let val =
+                read_single_file(&corpus_root, &p, params.start_line, params.end_line, max_lines)?;
+            if is_lean {
+                let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let start_line =
+                    val.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let end_line = val.get("end_line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let total_lines =
+                    val.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let language = val.get("language").and_then(|v| v.as_str()).unwrap_or("text");
+                let is_markdown = val.get("kind").and_then(|v| v.as_str()) == Some("markdown_note");
+                let truncated = val.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let lean = crate::format::lean::format_lean_read_file(
+                    &p,
+                    start_line,
+                    end_line,
+                    total_lines,
+                    content,
+                    language,
+                    is_markdown,
+                    truncated,
+                );
+                Ok(Value::String(lean))
+            } else {
+                Ok(val)
+            }
         }
         PathOrPaths::Multiple(paths) => {
             let max_lines = params.max_lines.unwrap_or(500).max(1);
-            let results: Vec<Value> = paths
+            let results: Vec<(String, std::result::Result<Value, String>)> = paths
                 .iter()
-                .map(|p| match read_single_file(&corpus_root, p, None, None, max_lines) {
-                    Ok(val) => val,
-                    Err(e) => serde_json::json!({ "path": p, "error": e.to_string() }),
+                .map(|p| {
+                    let res = read_single_file(&corpus_root, p, None, None, max_lines)
+                        .map_err(|e| e.to_string());
+                    (p.clone(), res)
                 })
                 .collect();
-            Ok(serde_json::json!({
-                "count": results.len(),
-                "results": results,
-            }))
+
+            if is_lean {
+                let lean = crate::format::lean::format_lean_read_multiple(&results);
+                Ok(Value::String(lean))
+            } else {
+                let json_results: Vec<Value> = results
+                    .into_iter()
+                    .map(|(p, res)| match res {
+                        Ok(val) => val,
+                        Err(e) => serde_json::json!({ "path": p, "error": e }),
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "count": json_results.len(),
+                    "results": json_results,
+                }))
+            }
         }
     }
 }
@@ -1601,6 +1647,7 @@ fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
 
     let max_lines = params.max_lines.unwrap_or(500).max(1);
     let corpus_root = Path::new(&engine.config().path);
+    let is_lean = params.format.as_deref() == Some("lean");
 
     let target_name = params.qualified_name.or(params.name);
     if let Some(ref qualified_name) = target_name {
@@ -1610,12 +1657,20 @@ fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
             qualified_name,
             max_lines,
             params.include_neighbors,
+            is_lean,
         );
     }
 
     if let Some(path) = params.path.as_deref() {
         if let Some(chunk_index) = params.chunk_index {
-            return fetch_doc_chunk(engine, path, chunk_index, max_lines, params.include_neighbors);
+            return fetch_doc_chunk(
+                engine,
+                path,
+                chunk_index,
+                max_lines,
+                params.include_neighbors,
+                is_lean,
+            );
         }
         return Err(Error::Config(format!(
             "get_snippet needs a chunk_index for a doc fetch on '{path}'. \
@@ -1637,6 +1692,7 @@ fn fetch_code_symbol(
     qualified_name: &str,
     max_lines: usize,
     include_neighbors: bool,
+    is_lean: bool,
 ) -> Result<Value> {
     let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
     if matches.is_empty() {
@@ -1655,6 +1711,25 @@ fn fetch_code_symbol(
 
             if !leaf_matches.is_empty() {
                 let candidates: Vec<Value> = leaf_matches.iter().map(code_symbol_handle).collect();
+                if is_lean {
+                    let mut s = format!(
+                        "# Candidate Suggestions for '{qualified_name}'\n\nNo code symbol matches '{qualified_name}', but found {} candidate(s) with leaf name '{leaf}'. Disambiguate with an exact scope_path:\n\n",
+                        candidates.len()
+                    );
+                    for (i, c) in candidates.iter().enumerate() {
+                        let num = i + 1;
+                        let name = c["name"].as_str().unwrap_or("");
+                        let scope = c["scope_path"].as_str().unwrap_or("");
+                        let file = c["file_path"].as_str().unwrap_or("");
+                        let start = c["start_line"].as_u64().unwrap_or(0);
+                        let end = c["end_line"].as_u64().unwrap_or(0);
+                        s.push_str(&format!(
+                            "{num}. {name} (`{file}`:L{start}-L{end}) [scope: `{scope}`]\n"
+                        ));
+                        s.push_str(&format!("   -> get_snippet(name: \"{scope}\")\n"));
+                    }
+                    return Ok(Value::String(s));
+                }
                 Ok(serde_json::json!({
                     "kind": "candidate_suggestions",
                     "note": format!(
@@ -1699,6 +1774,9 @@ fn fetch_code_symbol(
                 out["truncated"] = serde_json::Value::Bool(true);
             }
 
+            let mut incoming: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+            let mut outgoing: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+
             if include_neighbors {
                 let all_symbols = engine.store().get_all_code_symbols().unwrap_or_default();
                 let mut sym_map: HashMap<String, &ctxvault_common::types::CodeSymbol> =
@@ -1715,8 +1793,6 @@ fn fetch_code_symbol(
                 // Grammar-driven graph relationships grouped by edge_type:
                 // incoming (edges where target is this symbol)
                 // outgoing (edges where source is this symbol)
-                let mut incoming: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-                let mut outgoing: BTreeMap<String, Vec<Value>> = BTreeMap::new();
                 let mut seen_incoming = HashSet::new();
                 let mut seen_outgoing = HashSet::new();
 
@@ -1766,10 +1842,46 @@ fn fetch_code_symbol(
                 });
             }
 
-            Ok(out)
+            if is_lean {
+                let lean = crate::format::lean::format_lean_code_symbol(
+                    &sym.name,
+                    &sym.scope_path,
+                    &sym.file_path,
+                    sym.start_line,
+                    sym.end_line,
+                    total_lines,
+                    sym.docstring.as_deref(),
+                    &source,
+                    truncated,
+                    &incoming,
+                    &outgoing,
+                );
+                Ok(Value::String(lean))
+            } else {
+                Ok(out)
+            }
         }
         _ => {
             let candidates: Vec<Value> = matches.iter().map(code_symbol_handle).collect();
+            if is_lean {
+                let mut s = format!(
+                    "# Ambiguous Symbol: '{qualified_name}' ({} matches)\n\nDisambiguate with an exact scope_path:\n\n",
+                    candidates.len()
+                );
+                for (i, c) in candidates.iter().enumerate() {
+                    let num = i + 1;
+                    let name = c["name"].as_str().unwrap_or("");
+                    let scope = c["scope_path"].as_str().unwrap_or("");
+                    let file = c["file_path"].as_str().unwrap_or("");
+                    let start = c["start_line"].as_u64().unwrap_or(0);
+                    let end = c["end_line"].as_u64().unwrap_or(0);
+                    s.push_str(&format!(
+                        "{num}. {name} (`{file}`:L{start}-L{end}) [scope: `{scope}`]\n"
+                    ));
+                    s.push_str(&format!("   -> get_snippet(name: \"{scope}\")\n"));
+                }
+                return Ok(Value::String(s));
+            }
             Ok(serde_json::json!({
                 "kind": "ambiguous",
                 "note": format!(
@@ -1789,6 +1901,7 @@ fn fetch_doc_chunk(
     chunk_index: usize,
     max_lines: usize,
     include_neighbors: bool,
+    is_lean: bool,
 ) -> Result<Value> {
     let chunks = engine.store().get_chunks_for_file(path)?;
     if chunks.is_empty() {
@@ -1839,7 +1952,24 @@ fn fetch_doc_chunk(
         out["next"] = neighbor(chunk_index + 1).unwrap_or(Value::Null);
     }
 
-    Ok(out)
+    if is_lean {
+        let incoming = BTreeMap::new();
+        let outgoing = BTreeMap::new();
+        let lean = crate::format::lean::format_lean_doc_chunk(
+            path,
+            chunk.chunk_index,
+            chunk.start_line,
+            chunk.end_line,
+            total_lines,
+            &text,
+            truncated,
+            &incoming,
+            &outgoing,
+        );
+        Ok(Value::String(lean))
+    } else {
+        Ok(out)
+    }
 }
 
 /// Report index coverage + parse status for the given paths or path prefixes.
@@ -2034,9 +2164,9 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
     let params: SearchParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
-    let mode = params.mode.as_deref().unwrap_or("hybrid");
-    let is_semantic = mode == "semantic";
-    let is_explain = mode == "explain";
+    let mode_str = params.mode.as_deref().unwrap_or("hybrid").to_string();
+    let is_semantic = mode_str == "semantic";
+    let is_explain = mode_str == "explain";
     let modality = params
         .modality
         .as_deref()
@@ -2200,12 +2330,24 @@ fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             // 3. Chunk index is omitted.
             item.chunk_index = None;
             // 4. Bare symbol identifier is surfaced only when snippet is omitted (trailing hits or snippets: 0)
-            //    for Tier 2 progressive disclosure (get_snippet(symbol=...) or graph_match).
-            if item.snippet.is_none() {
+            //    or when in lean emission mode for Tier 2 progressive disclosure scent.
+            if params.format.as_deref() == Some("lean") || item.snippet.is_none() {
                 item.symbol = matched_symbol;
             } else {
                 item.symbol = None;
             }
+        }
+
+        if params.format.as_deref() == Some("lean") {
+            let lean_text = crate::format::lean::format_lean_search(
+                &query.query,
+                &mode_str,
+                Some(engine.config().name.as_str()),
+                &code_items,
+                &docs_items,
+                is_lean,
+            );
+            return Ok(Value::String(lean_text));
         }
 
         let active_doc_edges = if is_lean {
@@ -2297,7 +2439,12 @@ fn handle_graph_match(engine: &Engine, args: Value) -> Result<Value> {
         max_depth,
     )?;
 
-    serde_json::to_value(match_result).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    if params.format.as_deref() == Some("lean") {
+        Ok(Value::String(crate::format::lean::format_lean_graph_match(&match_result)))
+    } else {
+        serde_json::to_value(match_result)
+            .map_err(|e| Error::Config(format!("serialize error: {}", e)))
+    }
 }
 
 /// Detect communities via Leiden or Louvain, or architectural components overview.
@@ -5255,5 +5402,107 @@ export class UserService extends BaseService implements IUserService {
             serde_json::from_value(match_val).unwrap();
         assert_eq!(match_res.total_matches, 1);
         assert!(!match_res.tree.is_empty(), "Expected graph_match path for -[:extends]->");
+    }
+
+    #[test]
+    fn test_lean_multiline_emissions_turns_1_to_3() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+        let config = test_config(&corpus_dir);
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        let rust_code = r#"
+pub struct PaymentService {
+    api_key: String,
+}
+
+pub fn process_payment(amount: u64) -> bool {
+    amount > 0
+}
+"#;
+        fs::write(corpus_dir.join("payment.rs"), rust_code).unwrap();
+        engine.index_file("payment.rs", rust_code).unwrap();
+        engine.graph_mut().add_edge(
+            "PaymentService",
+            "process_payment",
+            "calls",
+            1.0,
+            ctxvault_common::types::EdgeProvenance::CodeCalls,
+            ctxvault_common::config::EdgeClass::Code,
+        );
+        engine.commit().unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 1. Turn 1: Search with format="lean"
+        let search_val = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "PaymentService", "mode": "bm25", "format": "lean" }),
+            )
+            .unwrap();
+
+        let text = search_val.as_str().expect("expected lean text string");
+        assert!(text.contains("# Search: \"PaymentService\" [mode: bm25, hits:"));
+        assert!(text.contains("PaymentService (`payment.rs`)"));
+        assert!(text.contains("-> [T2a fetch] get_snippet"));
+        assert!(text.contains("-> [T2b graph]"));
+
+        // 2. Turn 2a: get_snippet with format="lean"
+        let snippet_val = registry
+            .execute_read(
+                "get_snippet",
+                &engine,
+                serde_json::json!({ "name": "PaymentService", "format": "lean" }),
+            )
+            .unwrap();
+        let snippet_text = snippet_val.as_str().expect("expected lean text string");
+        assert!(snippet_text.contains("# Symbol: PaymentService (`payment.rs:L2-L4"));
+        assert!(snippet_text.contains("L2: pub struct PaymentService {"));
+        assert!(snippet_text.contains("-> [T2b callers] graph_match"));
+        assert!(snippet_text.contains("-> [T3 full file] read_file"));
+
+        // 3. Turn 2b: graph_match with format="lean"
+        let match_val = registry
+            .execute_read(
+                "graph_match",
+                &engine,
+                serde_json::json!({
+                    "pattern": "(:CodeSymbol {name: \"PaymentService\"})-[:calls]->(target)",
+                    "format": "lean"
+                }),
+            )
+            .unwrap();
+        let match_text = match_val.as_str().expect("expected lean text string");
+        assert!(match_text.contains("root: PaymentService"));
+        assert!(match_text.contains("-> [T2a fetch] get_snippet(symbol: \"PaymentService\")"));
+
+        // 4. Turn 3: read_file with format="lean"
+        let read_val = registry
+            .execute_read(
+                "read_file",
+                &engine,
+                serde_json::json!({ "path": "payment.rs", "format": "lean" }),
+            )
+            .unwrap();
+        let read_text = read_val.as_str().expect("expected lean text string");
+        assert!(read_text.contains("# File: `payment.rs` [lines: L1-L8 of 8, language: rust]"));
+        assert!(read_text.contains("```rust\nL1: \nL2: pub struct PaymentService {"));
+
+        // 5. JSON format override continues to return structured objects
+        let json_val = registry
+            .execute_read(
+                "search",
+                &engine,
+                serde_json::json!({ "query": "PaymentService", "mode": "bm25", "format": "json" }),
+            )
+            .unwrap();
+        let resp: ctxvault_common::types::SearchResponse =
+            serde_json::from_value(json_val).unwrap();
+        assert!(resp.code.unwrap().total_matches > 0);
     }
 }
