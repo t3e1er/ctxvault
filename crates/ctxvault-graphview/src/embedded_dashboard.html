@@ -300,10 +300,12 @@
       position: absolute;
       top: var(--header-bottom, 88px);
       right: 16px;
+      bottom: 24px;
       width: var(--hud-width, 330px);
-      padding: 14px 16px;
+      padding: 16px;
       display: flex;
       flex-direction: column;
+      gap: 14px;
       overflow: hidden;
       transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
     }
@@ -314,29 +316,17 @@
       pointer-events: none;
     }
 
-    .agent-hud.minimized {
-      width: auto;
-      min-width: 250px;
-      padding: 10px 14px;
-    }
-
-    .agent-hud.minimized .telemetry-stream {
-      display: none;
-    }
-
     .hud-toggle-btn {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid rgba(255, 255, 255, 0.15);
       color: #94a3b8;
-      border-radius: 4px;
-      width: 22px;
-      height: 22px;
+      border-radius: 6px;
+      width: 26px;
+      height: 26px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 0.82rem;
-      font-weight: 700;
       line-height: 1;
       padding: 0;
       transition: all 0.15s;
@@ -351,10 +341,11 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      margin-top: 10px;
+      margin-top: 4px;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: hidden;
-      /* Top-K: zero scrollbars */
-      max-height: 380px;
+      position: relative;
     }
 
     @keyframes slideInDown {
@@ -592,11 +583,13 @@
   </header>
 
   <!-- Floating Menu Reopen Buttons -->
-  <button id="sidebar-expand-btn" class="menu-trigger-btn left" title="Open Entity Classes & Controls">
-    <span>☰</span><span>Entities & Controls</span>
+  <button id="sidebar-expand-btn" class="menu-trigger-btn left" title="Toggle Sidebar">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    <span>Entities & Controls</span>
   </button>
-  <button id="hud-expand-btn" class="menu-trigger-btn right" title="Open Agent Activations">
-    <span>⚡</span><span>Activations</span>
+  <button id="hud-expand-btn" class="menu-trigger-btn right" title="Toggle Agent Activations">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    <span>Activations</span>
   </button>
 
   <!-- Left Entity Filter Panel (Requirement 2) -->
@@ -604,7 +597,9 @@
     <div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
         <div class="section-title" style="margin: 0;">Entity Classes</div>
-        <button id="sidebar-collapse-btn" class="hud-toggle-btn" title="Collapse Left Menu">◀</button>
+        <button id="sidebar-collapse-btn" class="hud-toggle-btn" title="Toggle Sidebar">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
       </div>
       <div id="type-chips">
         <div class="type-chip active" data-type="all">
@@ -698,7 +693,9 @@
           <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neon-emerald);"></span>
           LIVE
         </div>
-        <button id="hud-collapse-btn" class="hud-toggle-btn" title="Collapse Right Menu">▶</button>
+        <button id="hud-collapse-btn" class="hud-toggle-btn" title="Toggle Agent Activations">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
       </div>
     </div>
     <div class="telemetry-stream" id="telemetry-stream">
@@ -1131,6 +1128,40 @@
       return { id, name, color };
     }
 
+    // Dynamically prune overflowing activation cards based on available container height
+    function pruneOverflowingCards() {
+      const container = document.getElementById('telemetry-stream');
+      if (!container) return;
+      const availableHeight = container.clientHeight;
+      if (availableHeight <= 0) return;
+
+      const cards = Array.from(container.children).filter(
+        el => el.classList && el.classList.contains('activation-card') && !el.classList.contains('drop-off')
+      );
+
+      let cumulativeHeight = 0;
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        const cardHeight = card.offsetHeight + 8; // card height + gap
+        if (i > 0 && cumulativeHeight + cardHeight > availableHeight) {
+          // Drop all cards from index i onward
+          for (let j = i; j < cards.length; j++) {
+            const dropCard = cards[j];
+            if (!dropCard.classList.contains('drop-off')) {
+              dropCard.classList.add('drop-off');
+              setTimeout(() => {
+                if (dropCard && dropCard.parentNode) {
+                  dropCard.remove();
+                }
+              }, 260);
+            }
+          }
+          break;
+        }
+        cumulativeHeight += cardHeight;
+      }
+    }
+
     function renderActivationCard(act) {
       const container = document.getElementById('telemetry-stream');
       const placeholder = container.querySelector('.awaiting-placeholder');
@@ -1162,22 +1193,8 @@
       `;
       container.insertBefore(card, container.firstChild);
 
-      // Top-K Bounded: Drop-off bottom cards past limit
-      const MAX_HUD_CARDS = 5;
-      while (container.children.length > MAX_HUD_CARDS) {
-        const dropCard = container.lastElementChild;
-        if (dropCard) {
-          if (dropCard.classList) {
-            dropCard.classList.add('drop-off');
-          }
-          setTimeout(() => {
-            if (dropCard && dropCard.parentNode) {
-              dropCard.remove();
-            }
-          }, 260);
-        }
-        break;
-      }
+      // Reactive height-bounded pruning
+      requestAnimationFrame(pruneOverflowingCards);
     }
 
     // Generate floating billboard badge with tool icon & client color
@@ -2035,6 +2052,7 @@
         const hud = document.getElementById('agent-hud');
         if (hud) hud.classList.remove('collapsed');
         document.body.classList.remove('hud-collapsed');
+        setTimeout(pruneOverflowingCards, 360);
       });
     }
 
@@ -2061,6 +2079,8 @@
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
       composer.setSize(window.innerWidth, window.innerHeight);
+      updateHeaderSpacing();
+      pruneOverflowingCards();
     });
 
     // Main Render Loop
