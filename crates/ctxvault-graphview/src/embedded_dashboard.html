@@ -464,6 +464,10 @@
           <span><span class="type-color" style="background: #06b6d4;"></span>Modules / Namespaces</span>
           <span id="count-mod">0</span>
         </div>
+        <div class="type-chip" data-type="CodeSymbol">
+          <span><span class="type-color" style="background: #f59e0b;"></span>Symbols / References</span>
+          <span id="count-symbols">0</span>
+        </div>
       </div>
     </div>
 
@@ -710,6 +714,25 @@
       return { nodes, edges };
     }
 
+    // Resolve an entity's high-level architectural class
+    function getEntityCategory(type) {
+      if (!type) return 'CodeSymbol';
+      const t = type.toLowerCase();
+      if (t === 'docnode' || t === 'doc' || t === 'document' || t === 'markdown' || t === 'adr') {
+        return 'DocNode';
+      }
+      if (t === 'function' || t === 'method' || t === 'fn' || t === 'macro') {
+        return 'Function';
+      }
+      if (t === 'struct' || t === 'class' || t === 'trait' || t === 'interface' || t === 'enum' || t === 'typealias' || t === 'type_alias' || t === 'type') {
+        return 'Struct';
+      }
+      if (t === 'module' || t === 'file' || t === 'package' || t === 'namespace') {
+        return 'Module';
+      }
+      return 'CodeSymbol';
+    }
+
     // Build Three.js Geometry for Particle Cloud
     function renderScene(data) {
       if (particleSystem) scene.remove(particleSystem);
@@ -746,17 +769,21 @@
       document.getElementById('count-all').textContent = count;
 
       // Filter counts
-      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0;
+      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0, symCount = 0;
       data.nodes.forEach(n => {
-        if (n.entity_type === 'DocNode') docCount++;
-        else if (n.entity_type === 'Function') fnCount++;
-        else if (n.entity_type === 'Struct') structCount++;
-        else if (n.entity_type === 'Module') modCount++;
+        const cat = getEntityCategory(n.entity_type);
+        if (cat === 'DocNode') docCount++;
+        else if (cat === 'Function') fnCount++;
+        else if (cat === 'Struct') structCount++;
+        else if (cat === 'Module') modCount++;
+        else symCount++;
       });
       document.getElementById('count-docs').textContent = docCount;
       document.getElementById('count-fn').textContent = fnCount;
       document.getElementById('count-struct').textContent = structCount;
       document.getElementById('count-mod').textContent = modCount;
+      const countSymEl = document.getElementById('count-symbols');
+      if (countSymEl) countSymEl.textContent = symCount;
 
       const positions = new Float32Array(count * 3);
       const colors = new Float32Array(count * 3);
@@ -1534,21 +1561,22 @@
 
       const hasSearch = (currentSearchMatches !== null);
       let visibleCount = 0;
-      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0;
+      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0, symCount = 0;
 
       for (let i = 0; i < graphData.nodes.length; i++) {
         const n = graphData.nodes[i];
+        const cat = getEntityCategory(n.entity_type);
 
         // 1. Mode check (Hybrid vs Docs vs Code)
         let modeMatch = true;
         if (currentMode === 'docs') {
-          modeMatch = (n.entity_type === 'DocNode');
+          modeMatch = (cat === 'DocNode');
         } else if (currentMode === 'code') {
-          modeMatch = (n.entity_type !== 'DocNode');
+          modeMatch = (cat !== 'DocNode');
         }
 
-        // 2. Type Chip check (DocNode, Function, Struct, Module)
-        let typeMatch = (selectedType === 'all' || n.entity_type === selectedType);
+        // 2. Type Chip check (DocNode, Function, Struct, Module, CodeSymbol)
+        let typeMatch = (selectedType === 'all' || cat === selectedType);
 
         // 3. Search Query match check
         let isSearchMatch = hasSearch && currentSearchMatches.has(i);
@@ -1557,10 +1585,11 @@
 
         if (isVisible) {
           visibleCount++;
-          if (n.entity_type === 'DocNode') docCount++;
-          else if (n.entity_type === 'Function') fnCount++;
-          else if (n.entity_type === 'Struct') structCount++;
-          else if (n.entity_type === 'Module') modCount++;
+          if (cat === 'DocNode') docCount++;
+          else if (cat === 'Function') fnCount++;
+          else if (cat === 'Struct') structCount++;
+          else if (cat === 'Module') modCount++;
+          else symCount++;
 
           const c = commCentroids.get(n.community);
           const cx = c ? c.cx : 0;
@@ -1612,6 +1641,8 @@
       document.getElementById('count-fn').textContent = fnCount;
       document.getElementById('count-struct').textContent = structCount;
       document.getElementById('count-mod').textContent = modCount;
+      const countSymEl = document.getElementById('count-symbols');
+      if (countSymEl) countSymEl.textContent = symCount;
 
       // Rebuild visible edges (only draw edges between visible nodes)
       if (edgeLines && edgeLines.geometry) {

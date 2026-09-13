@@ -155,6 +155,33 @@ pub fn color_for_entity_type(entity_type: &str, community: u32) -> u32 {
     }
 }
 
+/// Normalize raw AST entity type strings into canonical PascalCase labels.
+pub fn normalize_type_label(t: &str) -> String {
+    match t.to_lowercase().as_str() {
+        "function" | "fn" => "Function".to_string(),
+        "method" => "Method".to_string(),
+        "struct" => "Struct".to_string(),
+        "trait" => "Trait".to_string(),
+        "class" => "Class".to_string(),
+        "interface" => "Interface".to_string(),
+        "enum" => "Enum".to_string(),
+        "typealias" | "type_alias" | "type" => "TypeAlias".to_string(),
+        "module" | "namespace" => "Module".to_string(),
+        "file" => "File".to_string(),
+        "package" => "Package".to_string(),
+        "constant" | "const" => "Constant".to_string(),
+        "macro" => "Macro".to_string(),
+        "docnode" | "doc" | "document" | "markdown" | "adr" => "DocNode".to_string(),
+        other => {
+            let mut c = other.chars();
+            match c.next() {
+                None => "CodeSymbol".to_string(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        }
+    }
+}
+
 /// Assign distinct aesthetic neon colors based on AST entity type, path heuristics, and community.
 pub fn assign_color_and_type(
     path: &str,
@@ -165,25 +192,25 @@ pub fn assign_color_and_type(
     if let Some(types) = ast_types {
         if let Some(sym_type) = types.get(path) {
             let color = color_for_entity_type(sym_type, community);
-            return (sym_type.clone(), color);
+            return (normalize_type_label(sym_type), color);
         }
         let clean_path = path.replace('\\', "/");
         if let Some(sub) = clean_path.split('#').nth(1) {
             if let Some(sym_type) = types.get(sub) {
                 let color = color_for_entity_type(sym_type, community);
-                return (sym_type.clone(), color);
+                return (normalize_type_label(sym_type), color);
             }
         }
         if let Some(sub) = clean_path.split("::").last() {
             if let Some(sym_type) = types.get(sub) {
                 let color = color_for_entity_type(sym_type, community);
-                return (sym_type.clone(), color);
+                return (normalize_type_label(sym_type), color);
             }
         }
         let base_name = clean_path.split('/').next_back().unwrap_or(path);
         if let Some(sym_type) = types.get(base_name) {
             let color = color_for_entity_type(sym_type, community);
-            return (sym_type.clone(), color);
+            return (normalize_type_label(sym_type), color);
         }
     }
 
