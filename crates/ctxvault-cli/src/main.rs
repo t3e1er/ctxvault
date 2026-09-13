@@ -487,6 +487,8 @@ async fn main() -> anyhow::Result<()> {
                     active_name,
                     canonical.display()
                 );
+                let start = Instant::now();
+                let initial_vectors = engine.vector_count();
                 let count = if *reindex {
                     engine.full_reindex_paginated(*batch_size, false)?
                 } else {
@@ -500,7 +502,36 @@ async fn main() -> anyhow::Result<()> {
                     delta.new_files.len() + delta.modified_files.len()
                 };
 
+                let elapsed = start.elapsed();
+                let final_vectors = engine.vector_count();
+                let total_inserted = if *reindex {
+                    final_vectors
+                } else {
+                    final_vectors.saturating_sub(initial_vectors)
+                };
+
                 println!("[+] Successfully indexed '{}' ({} files processed)", active_name, count);
+
+                if engine.has_vector_index() && total_inserted > 0 {
+                    let chunks_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                        total_inserted as f64 / elapsed.as_secs_f64()
+                    } else {
+                        0.0
+                    };
+
+                    println!();
+                    println!("  Embedding complete");
+                    println!("  ├─ Chunks embedded : {}", total_inserted);
+                    println!("  ├─ Elapsed         : {:.1}s", elapsed.as_secs_f64());
+                    println!("  ├─ Throughput      : {:.1} chunks/sec", chunks_per_sec);
+                    if chunks_per_sec < 5.0 && total_inserted > 100 {
+                        println!("  └─ Tip: slow throughput detected. Consider --mode docs-embed for faster indexing.");
+                        println!("         (skeleton mode embeds ~1 chunk/file; throughput will improve after reindex)");
+                    } else {
+                        println!("  └─ Hardware       : {}", engine.hardware_acceleration());
+                    }
+                }
+
                 return Ok(());
             }
             Commands::Sync { corpus, batch_size } => {
@@ -522,8 +553,14 @@ async fn main() -> anyhow::Result<()> {
 
                 for target_name in targets {
                     println!("[*] Syncing corpus '{}'...", target_name);
+                    let start = Instant::now();
                     let engine = manager.get_engine_mut(&target_name)?;
+                    let initial_vectors = engine.vector_count();
                     let delta = engine.delta_scan_paginated(*batch_size)?;
+                    let elapsed = start.elapsed();
+                    let final_vectors = engine.vector_count();
+                    let total_inserted = final_vectors.saturating_sub(initial_vectors);
+
                     println!(
                         "[+] '{}': {} new, {} modified, {} deleted",
                         target_name,
@@ -531,6 +568,26 @@ async fn main() -> anyhow::Result<()> {
                         delta.modified_files.len(),
                         delta.deleted_files.len()
                     );
+
+                    if engine.has_vector_index() && total_inserted > 0 {
+                        let chunks_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                            total_inserted as f64 / elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        };
+
+                        println!();
+                        println!("  Embedding complete");
+                        println!("  ├─ Chunks embedded : {}", total_inserted);
+                        println!("  ├─ Elapsed         : {:.1}s", elapsed.as_secs_f64());
+                        println!("  ├─ Throughput      : {:.1} chunks/sec", chunks_per_sec);
+                        if chunks_per_sec < 5.0 && total_inserted > 100 {
+                            println!("  └─ Tip: slow throughput detected. Consider --mode docs-embed for faster indexing.");
+                            println!("         (skeleton mode embeds ~1 chunk/file; throughput will improve after reindex)");
+                        } else {
+                            println!("  └─ Hardware       : {}", engine.hardware_acceleration());
+                        }
+                    }
                 }
                 return Ok(());
             }

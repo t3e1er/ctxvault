@@ -251,33 +251,36 @@ impl Engine {
                 }
 
                 // Build pending chunks for embedding
-                for c in &res.chunks {
-                    let modality = c
-                        .entity_kind
-                        .as_ref()
-                        .map(EntityKind::modality_tag)
-                        .unwrap_or("docs")
-                        .to_string();
-                    let embed_policy = if self.config.index_mode
-                        == ctxvault_common::config::IndexMode::DocsEmbed
-                    {
-                        ChunkEmbedPolicy::GraphOnly
-                    } else {
-                        c.embed_policy
-                    };
-                    let text =
-                        if self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton {
-                            c.skeleton_text.clone().unwrap_or_else(|| c.text.clone())
+                if self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton {
+                    let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
+                        rel_path,
+                        &res.chunks,
+                        self.config.chunking.max_tokens,
+                    );
+                    pending.extend(skeleton_chunks);
+                } else {
+                    for c in &res.chunks {
+                        let modality = c
+                            .entity_kind
+                            .as_ref()
+                            .map(EntityKind::modality_tag)
+                            .unwrap_or("docs")
+                            .to_string();
+                        let embed_policy = if self.config.index_mode
+                            == ctxvault_common::config::IndexMode::DocsEmbed
+                        {
+                            ChunkEmbedPolicy::GraphOnly
                         } else {
-                            c.text.clone()
+                            c.embed_policy
                         };
-                    pending.push(PendingChunk {
-                        doc_path: rel_path.to_string(),
-                        chunk_index: c.chunk_index,
-                        text,
-                        embed_policy,
-                        modality,
-                    });
+                        pending.push(PendingChunk {
+                            doc_path: rel_path.to_string(),
+                            chunk_index: c.chunk_index,
+                            text: c.text.clone(),
+                            embed_policy,
+                            modality,
+                        });
+                    }
                 }
 
                 // 5. Code Graph
@@ -1438,6 +1441,21 @@ impl Engine {
         self.vector_index.as_ref().map(|vi| vi.len()).unwrap_or(0)
     }
 
+    /// Return the active hardware acceleration provider (e.g. "DirectML (GPU)", "CPU").
+    pub fn hardware_acceleration(&self) -> String {
+        if let Some(embedder) = self.embedder.read().unwrap().as_ref() {
+            let name = embedder.governor().provider_name();
+            match name {
+                "DirectML" => "DirectML (GPU)".to_string(),
+                "CoreML" => "CoreML (GPU)".to_string(),
+                "CUDA" => "CUDA (GPU)".to_string(),
+                other => other.to_string(),
+            }
+        } else {
+            "CPU".to_string()
+        }
+    }
+
     /// Get current indexing progress and throughput statistics.
     pub fn get_indexing_status(&self) -> Result<IndexingStatusResponse> {
         let corpus_id = &self.config.name;
@@ -1897,30 +1915,34 @@ fn parse_file_record(
         let mut external_refs = Vec::new();
 
         if let Some(res) = parse_res {
-            for c in &res.chunks {
-                let modality = c
-                    .entity_kind
-                    .as_ref()
-                    .map(EntityKind::modality_tag)
-                    .unwrap_or("docs")
-                    .to_string();
-                let embed_policy = if index_mode == IndexMode::DocsEmbed {
-                    ChunkEmbedPolicy::GraphOnly
-                } else {
-                    c.embed_policy
-                };
-                let text = if index_mode == IndexMode::Skeleton {
-                    c.skeleton_text.clone().unwrap_or_else(|| c.text.clone())
-                } else {
-                    c.text.clone()
-                };
-                pending.push(PendingChunk {
-                    doc_path: rel_path.to_string(),
-                    chunk_index: c.chunk_index,
-                    text,
-                    embed_policy,
-                    modality,
-                });
+            if index_mode == IndexMode::Skeleton {
+                let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
+                    rel_path,
+                    &res.chunks,
+                    chunking_config.max_tokens,
+                );
+                pending.extend(skeleton_chunks);
+            } else {
+                for c in &res.chunks {
+                    let modality = c
+                        .entity_kind
+                        .as_ref()
+                        .map(EntityKind::modality_tag)
+                        .unwrap_or("docs")
+                        .to_string();
+                    let embed_policy = if index_mode == IndexMode::DocsEmbed {
+                        ChunkEmbedPolicy::GraphOnly
+                    } else {
+                        c.embed_policy
+                    };
+                    pending.push(PendingChunk {
+                        doc_path: rel_path.to_string(),
+                        chunk_index: c.chunk_index,
+                        text: c.text.clone(),
+                        embed_policy,
+                        modality,
+                    });
+                }
             }
 
             let symbol_index =

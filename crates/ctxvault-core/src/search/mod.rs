@@ -575,36 +575,44 @@ fn search_hybrid_full_single(
     }
 
     // 3. Build RRF scores from BM25 ranked list.
-    // For code, key is (path, chunk_index); for docs, key is (path, None).
-    let mut rrf_map: HashMap<
-        (String, Option<usize>),
-        (f64, f64, f64, Option<String>, Option<usize>, usize),
-    > = HashMap::new(); // key -> (rrf_total, bm25_score, vector_score, snippet, chunk, min_hops)
+    // Key is (path, None) for all modalities so BM25, vector, and graph fuse at file level.
+    let mut rrf_map: HashMap<(String, Option<usize>), (f64, f64, f64, usize)> = HashMap::new(); // key -> (rrf_total, bm25_score, vector_score, min_hops)
+    let mut best_bm25_chunk: HashMap<String, (Option<usize>, f64, Option<String>)> = HashMap::new();
 
     for (rank, r) in bm25_results.iter().enumerate() {
         let rrf_score = 1.0 / (RRF_K + rank as f64 + 1.0);
-        let key = if modality == Modality::Code {
-            (r.path.clone(), r.chunk_index)
-        } else {
-            (r.path.clone(), None)
-        };
-        let entry =
-            rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, r.snippet.clone(), r.chunk_index, 0));
+        let key = (r.path.clone(), None);
+        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, 0));
         entry.0 += rrf_score;
-        entry.1 = r.score; // raw BM25 score
+        entry.1 = r.score.max(entry.1); // highest raw BM25 score
+
+        best_bm25_chunk
+            .entry(r.path.clone())
+            .and_modify(|e| {
+                if r.score > e.1 {
+                    *e = (r.chunk_index, r.score, r.snippet.clone());
+                }
+            })
+            .or_insert((r.chunk_index, r.score, r.snippet.clone()));
     }
 
     // 4. Add RRF scores from vector ranked list.
+    let mut best_vector_chunk: HashMap<String, (Option<usize>, f64)> = HashMap::new();
     for (rank, vr) in vector_results.iter().enumerate() {
         let rrf_score = 1.0 / (RRF_K + rank as f64 + 1.0);
-        let key = if modality == Modality::Code {
-            (vr.doc_path.clone(), vr.chunk_index)
-        } else {
-            (vr.doc_path.clone(), None)
-        };
-        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, None, vr.chunk_index, 0));
+        let key = (vr.doc_path.clone(), None);
+        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, 0));
         entry.0 += rrf_score;
-        entry.2 = vr.score; // cosine similarity
+        entry.2 = vr.score.max(entry.2); // cosine similarity
+
+        best_vector_chunk
+            .entry(vr.doc_path.clone())
+            .and_modify(|e| {
+                if vr.score > e.1 {
+                    *e = (vr.chunk_index, vr.score);
+                }
+            })
+            .or_insert((vr.chunk_index, vr.score));
     }
 
     // 5. Graph expansion: BFS from all seed paths to add graph boost.
@@ -640,10 +648,10 @@ fn search_hybrid_full_single(
         let is_pure_graph = !rrf_map.contains_key(&key);
         let k_factor = if is_pure_graph { RRF_K * 2.0 } else { RRF_K };
         let rrf_score = 1.0 / (k_factor + rank as f64 + 1.0);
-        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, None, None, 0));
+        let entry = rrf_map.entry(key).or_insert((0.0, 0.0, 0.0, 0));
         entry.0 += rrf_score;
-        if *hops > 0 && (entry.5 == 0 || *hops < entry.5) {
-            entry.5 = *hops;
+        if *hops > 0 && (entry.3 == 0 || *hops < entry.3) {
+            entry.3 = *hops;
         }
         let _ = boost;
     }
@@ -651,33 +659,33 @@ fn search_hybrid_full_single(
     // 7. Build final results.
     let mut results: Vec<SearchResult> = rrf_map
         .into_iter()
-        .map(
-            |(
-                (path, chunk_key),
-                (rrf_total, bm25_score, vector_score, snippet, chunk_index, min_hops),
-            )| {
-                let mut res = SearchResult::new(path, rrf_total)
-                    .with_snippet(snippet)
-                    .with_chunk_index(chunk_index.or(chunk_key))
-                    .with_score_components(ScoreBreakdown {
-                        bm25: bm25_score,
-                        vector: vector_score,
-                        graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
-                        graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
-                    });
-                if modality == Modality::Code {
-                    res.entity_kind = Some(EntityKind::CodeChunk {
-                        language: String::new(),
-                        scope_path: String::new(),
-                        start_line: 0,
-                        end_line: 0,
-                    });
-                } else {
-                    res.entity_kind = Some(EntityKind::Documentation);
-                }
-                res
-            },
-        )
+        .map(|((path, _), (rrf_total, bm25_score, vector_score, min_hops))| {
+            let (best_chunk_index, _, best_snippet) =
+                best_bm25_chunk.get(&path).cloned().unwrap_or_else(|| {
+                    let vec_chunk = best_vector_chunk.get(&path).and_then(|(ci, _)| *ci);
+                    (vec_chunk, 0.0, None)
+                });
+            let mut res = SearchResult::new(path, rrf_total)
+                .with_snippet(best_snippet)
+                .with_chunk_index(best_chunk_index)
+                .with_score_components(ScoreBreakdown {
+                    bm25: bm25_score,
+                    vector: vector_score,
+                    graph_boost: if min_hops > 0 { 1.0 / (min_hops as f64) } else { 0.0 },
+                    graph_hops: if min_hops > 0 { Some(min_hops) } else { None },
+                });
+            if modality == Modality::Code {
+                res.entity_kind = Some(EntityKind::CodeChunk {
+                    language: String::new(),
+                    scope_path: String::new(),
+                    start_line: 0,
+                    end_line: 0,
+                });
+            } else {
+                res.entity_kind = Some(EntityKind::Documentation);
+            }
+            res
+        })
         .collect();
 
     results.sort_by(|a, b| {
@@ -1843,6 +1851,110 @@ mod tests {
         for window in results.windows(2) {
             assert!(window[0].score >= window[1].score);
         }
+    }
+
+    /// Helper to create a code chunk.
+    fn make_code_chunk(doc_path: &str, index: usize, text: &str) -> Chunk {
+        Chunk::new(doc_path, index, text, 0, text.len()).with_code_metadata("rust", "", 1, 10)
+    }
+
+    #[test]
+    fn test_rrf_fusion_merges_bm25_and_vector_for_same_file() {
+        use crate::vector_index::VectorIndex;
+
+        let mut bm25 = BM25Index::open_in_memory().unwrap();
+        let chunk =
+            make_code_chunk("src/auth/service.rs", 5, "pub fn authenticate() -> bool { true }");
+        bm25.add_document("src/auth/service.rs", None, &[], &[chunk]).unwrap();
+        bm25.commit().unwrap();
+
+        let graph = KnowledgeGraph::new();
+
+        let mut vi = VectorIndex::new(384, 100, 200, 16);
+        let make_vec = |seed: usize| -> Vec<f32> {
+            let v: Vec<f32> =
+                (0..384).map(|i| ((seed * 7 + i * 13) % 100) as f32 / 100.0).collect();
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter().map(|x| x / norm).collect()
+        };
+        let q_vec = make_vec(42);
+        // Vector stored with chunk_index = 0 (file skeleton aggregate)
+        vi.add(&q_vec, "src/auth/service.rs", Some(0), false, "code").unwrap();
+
+        let mut code_paths = HashSet::new();
+        code_paths.insert("src/auth/service.rs".to_string());
+
+        let results = search_hybrid_full(
+            &bm25,
+            &vi,
+            &graph,
+            "authenticate",
+            Some(&q_vec),
+            10,
+            2,
+            None,
+            None,
+            Modality::Code,
+            &code_paths,
+        )
+        .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "BM25 and vector results for same file must fuse into one entry"
+        );
+        assert_eq!(results[0].path, "src/auth/service.rs");
+        assert_eq!(
+            results[0].chunk_index,
+            Some(5),
+            "Representative chunk should be the BM25 matched symbol"
+        );
+        let components = results[0].score_components.as_ref().unwrap();
+        assert!(components.bm25 > 0.0, "BM25 score must be non-zero");
+        assert!(components.vector > 0.0, "Vector score must be non-zero");
+    }
+
+    #[test]
+    fn test_rrf_best_bm25_chunk_selected() {
+        use crate::vector_index::VectorIndex;
+
+        let mut bm25 = BM25Index::open_in_memory().unwrap();
+        let chunks = vec![
+            make_code_chunk("src/auth/service.rs", 1, "pub fn login() { auth(); }"),
+            make_code_chunk(
+                "src/auth/service.rs",
+                5,
+                "pub fn authenticate_token_fast() { auth(); auth(); auth(); }",
+            ),
+        ];
+        bm25.add_document("src/auth/service.rs", None, &[], &chunks).unwrap();
+        bm25.commit().unwrap();
+
+        let graph = KnowledgeGraph::new();
+        let vi = VectorIndex::new_default(384);
+
+        let mut code_paths = HashSet::new();
+        code_paths.insert("src/auth/service.rs".to_string());
+
+        let results = search_hybrid_full(
+            &bm25,
+            &vi,
+            &graph,
+            "auth",
+            None,
+            10,
+            2,
+            None,
+            None,
+            Modality::Code,
+            &code_paths,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "src/auth/service.rs");
+        assert_eq!(results[0].chunk_index, Some(5), "Best BM25 scoring chunk must be selected");
     }
 
     #[test]
