@@ -5,6 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ctxvault GraphView</title>
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' width='32' height='32'%3E%3Cdefs%3E%3ClinearGradient id='b' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230b0f19'/%3E%3Cstop offset='1' stop-color='%23030712'/%3E%3C/linearGradient%3E%3Cfilter id='g' x='-20%25' y='-20%25' width='140%25' height='140%25'%3E%3CfeGaussianBlur stdDeviation='1.2' result='r'/%3E%3CfeMerge%3E%3CfeMergeNode in='r'/%3E%3CfeMergeNode in='SourceGraphic'/%3E%3C/feMerge%3E%3C/filter%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23b)' stroke='%231e293b' stroke-width='1'/%3E%3Cline x1='7' y1='16' x2='16' y2='7' stroke='%2338bdf8' stroke-width='1.6' stroke-opacity='0.85'/%3E%3Cline x1='7' y1='16' x2='25' y2='13' stroke='%23a855f7' stroke-width='1.6' stroke-opacity='0.85'/%3E%3Cline x1='16' y1='7' x2='25' y2='13' stroke='%2338bdf8' stroke-width='1.6' stroke-opacity='0.85'/%3E%3Cline x1='7' y1='16' x2='16' y2='25' stroke='%2310b981' stroke-width='1.6' stroke-opacity='0.85'/%3E%3Cline x1='25' y1='13' x2='16' y2='25' stroke='%2310b981' stroke-width='1.6' stroke-opacity='0.85'/%3E%3Ccircle cx='16' cy='7' r='3' fill='%2338bdf8' filter='url(%23g)'/%3E%3Ccircle cx='7' cy='16' r='3' fill='%23a855f7' filter='url(%23g)'/%3E%3Ccircle cx='25' cy='13' r='3' fill='%2338bdf8' filter='url(%23g)'/%3E%3Ccircle cx='16' cy='25' r='3.2' fill='%2310b981' filter='url(%23g)'/%3E%3Ccircle cx='16' cy='15' r='1.8' fill='%23ffffff' filter='url(%23g)'/%3E%3C/svg%3E">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
@@ -198,8 +200,8 @@
       padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      overflow-y: auto;
+      gap: 8px;
+      overflow: hidden;
       transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
     }
 
@@ -293,6 +295,143 @@
       border-radius: 3px;
       margin-right: 10px;
       display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .entity-mode-toggle {
+      display: flex;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: 8px;
+      padding: 2px;
+      margin-bottom: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 2px;
+    }
+
+    .entity-toggle-btn {
+      flex: 1;
+      padding: 5px 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+
+    .entity-toggle-btn.active {
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--neon-blue);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+    }
+
+    #ast-type-chips::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #ast-type-chips::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.3);
+      border-radius: 2px;
+    }
+
+    /* Entity Classes Container & Growing Scroll Area */
+    .entity-classes-container {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .entity-chips-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 3px;
+    }
+
+    .entity-chips-scroll::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .entity-chips-scroll::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.3);
+      border-radius: 2px;
+    }
+
+    /* Collapsible Visual Controls Section Docked to Bottom */
+    .visual-controls-panel {
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 8px;
+      margin-top: auto; /* Docks to the very bottom */
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      max-height: 48%;
+      overflow: hidden;
+      transition: max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .visual-controls-panel.collapsed {
+      max-height: 36px;
+      border-top-color: rgba(255, 255, 255, 0.06);
+    }
+
+    .visual-controls-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+      padding: 5px 8px;
+      margin: -4px -8px 4px -8px;
+      border-radius: 6px;
+      transition: background 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .visual-controls-header:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .visual-controls-header .section-title {
+      margin: 0;
+      color: #cbd5e1;
+    }
+
+    .visual-controls-chevron {
+      transition: transform 0.25s ease;
+      color: var(--text-muted);
+    }
+
+    .visual-controls-panel.collapsed .visual-controls-chevron {
+      transform: rotate(180deg);
+    }
+
+    .visual-controls-body {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow-y: auto;
+      padding-right: 4px;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .visual-controls-body::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .visual-controls-body::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.25);
+      border-radius: 2px;
+    }
+
+    .visual-controls-panel.collapsed .visual-controls-body {
+      display: none;
     }
 
     /* Right HUD: Live Telemetry & Swarm Activations */
@@ -584,99 +723,177 @@
 
   <!-- Floating Menu Reopen Buttons -->
   <button id="sidebar-expand-btn" class="menu-trigger-btn left" title="Toggle Sidebar">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round">
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
     <span>Entities & Controls</span>
   </button>
   <button id="hud-expand-btn" class="menu-trigger-btn right" title="Toggle Agent Activations">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round">
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
     <span>Activations</span>
   </button>
 
   <!-- Left Entity Filter Panel (Requirement 2) -->
   <div class="sidebar glass-panel" id="sidebar">
-    <div>
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+    <div class="entity-classes-container">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-shrink: 0;">
         <div class="section-title" style="margin: 0;">Entity Classes</div>
         <button id="sidebar-collapse-btn" class="hud-toggle-btn" title="Toggle Sidebar">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
         </button>
       </div>
-      <div id="type-chips">
-        <div class="type-chip active" data-type="all">
-          <span><span class="type-color" style="background: #fff;"></span>All Entities</span>
-          <span id="count-all">0</span>
+
+      <div id="corpus-meta-banner"
+        style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; margin-bottom: 8px; background: rgba(0,0,0,0.35); border-radius: 7px; border: 1px solid rgba(56, 189, 248, 0.2); font-size: 0.73rem; flex-shrink: 0;">
+        <div><span style="color: #94a3b8;">Scope: </span><span id="corpus-meta-scope"
+            style="color: #38bdf8; font-weight: 600;">All Corpora</span></div>
+        <div><span id="corpus-meta-counts" style="color: #f1f5f9; font-weight: 600;">0 nodes</span></div>
+      </div>
+
+      <div class="entity-mode-toggle" style="flex-shrink: 0;">
+        <button type="button" id="btn-view-categories" class="entity-toggle-btn active">Categories</button>
+        <button type="button" id="btn-view-ast" class="entity-toggle-btn">AST Node Types</button>
+      </div>
+
+      <div class="entity-chips-scroll" id="entity-chips-scroll">
+        <div id="type-chips">
+          <div class="type-chip active" data-type="all">
+            <span><span class="type-color" style="background: #fff;"></span>All Entities</span>
+            <span id="count-all">0</span>
+          </div>
+          <div class="type-chip" data-type="DocNode">
+            <span><span class="type-color" style="background: #3b82f6;"></span>Doc Notes / ADR</span>
+            <span id="count-docs">0</span>
+          </div>
+          <div class="type-chip" data-type="Function">
+            <span><span class="type-color" style="background: #10b981;"></span>Functions / Methods</span>
+            <span id="count-fn">0</span>
+          </div>
+          <div class="type-chip" data-type="Struct">
+            <span><span class="type-color" style="background: #8b5cf6;"></span>Structs / Classes</span>
+            <span id="count-struct">0</span>
+          </div>
+          <div class="type-chip" data-type="Trait">
+            <span><span class="type-color" style="background: #ec4899;"></span>Traits / Interfaces</span>
+            <span id="count-trait">0</span>
+          </div>
+          <div class="type-chip" data-type="Enum">
+            <span><span class="type-color" style="background: #f59e0b;"></span>Enums / Types</span>
+            <span id="count-enum">0</span>
+          </div>
+          <div class="type-chip" data-type="Module">
+            <span><span class="type-color" style="background: #06b6d4;"></span>Modules / Files</span>
+            <span id="count-mod">0</span>
+          </div>
+          <div class="type-chip" data-type="Macro">
+            <span><span class="type-color" style="background: #14b8a6;"></span>Macros</span>
+            <span id="count-macro">0</span>
+          </div>
+          <div class="type-chip" data-type="CodeSymbol">
+            <span><span class="type-color" style="background: #64748b;"></span>Symbols / References</span>
+            <span id="count-symbols">0</span>
+          </div>
         </div>
-        <div class="type-chip" data-type="DocNode">
-          <span><span class="type-color" style="background: #3b82f6;"></span>Doc Notes / ADR</span>
-          <span id="count-docs">0</span>
-        </div>
-        <div class="type-chip" data-type="Function">
-          <span><span class="type-color" style="background: #10b981;"></span>Functions / AST</span>
-          <span id="count-fn">0</span>
-        </div>
-        <div class="type-chip" data-type="Struct">
-          <span><span class="type-color" style="background: #8b5cf6;"></span>Structs / Traits</span>
-          <span id="count-struct">0</span>
-        </div>
-        <div class="type-chip" data-type="Module">
-          <span><span class="type-color" style="background: #06b6d4;"></span>Modules / Namespaces</span>
-          <span id="count-mod">0</span>
-        </div>
-        <div class="type-chip" data-type="CodeSymbol">
-          <span><span class="type-color" style="background: #f59e0b;"></span>Symbols / References</span>
-          <span id="count-symbols">0</span>
+
+        <div id="ast-type-chips" style="display: none; padding-right: 2px;">
         </div>
       </div>
     </div>
 
-    <div>
-      <div class="section-title">Visual Controls</div>
-      <div class="slider-row">
-        <span>Particle Size</span>
-        <input type="range" id="size-slider" min="1" max="15" value="6">
+    <div class="visual-controls-panel collapsed" id="visual-controls-panel">
+      <div class="visual-controls-header" id="visual-controls-header" title="Toggle Visual Controls">
+        <div class="section-title">Visual Controls</div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 0.68rem; color: #64748b; font-weight: 500;">Physics &amp; Light</span>
+          <svg class="visual-controls-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
       </div>
-      <div class="slider-row">
-        <span>Bloom Strength</span>
-        <input type="range" id="bloom-slider" min="0" max="30" value="18">
-      </div>
-      <div class="slider-row">
-        <span>Cluster Spacing</span>
-        <input type="range" id="cluster-dist-slider" min="1" max="40" value="10"
-          title="Adjust distance between community/directory clusters">
-      </div>
-      <div class="slider-row">
-        <span>Node Spread</span>
-        <input type="range" id="node-disp-slider" min="1" max="30" value="10"
-          title="Adjust local dispersion of nodes within clusters">
-      </div>
-      <div class="slider-row">
-        <span>Edge Density</span>
-        <input type="range" id="edge-slider" min="0" max="100" value="70">
-      </div>
-      <div class="slider-row">
-        <span>Activation Decay</span>
-        <input type="range" id="decay-slider" min="1" max="10" value="3">
-      </div>
-      <div class="slider-row" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-          <input type="checkbox" id="corpus-labels-toggle" checked style="accent-color: var(--neon-blue);">
-          <span>Corpus Cloud Badges</span>
-        </label>
-      </div>
-      <div class="slider-row" style="padding-left: 6px;">
-        <span style="font-size: 0.75rem; color: #94a3b8;">Badge Size</span>
-        <input type="range" id="badge-size-slider" min="6" max="32" value="16" title="Adjust 3D badge size">
-      </div>
-      <div class="slider-row" style="padding-left: 6px;">
-        <span style="font-size: 0.75rem; color: #94a3b8;">Badge Brightness</span>
-        <input type="range" id="badge-opacity-slider" min="2" max="10" value="9" title="Adjust 3D badge opacity/brightness">
-      </div>
-      <div class="slider-row">
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-          <input type="checkbox" id="auto-orbit-toggle" checked style="accent-color: var(--neon-blue);">
-          <span>Auto Orbit</span>
-        </label>
-        <input type="range" id="orbit-speed-slider" min="1" max="30" value="8" title="Adjust camera orbit speed">
+      <div class="visual-controls-body" id="visual-controls-body">
+        <div class="slider-row">
+          <span>Particle Size</span>
+          <input type="range" id="size-slider" min="1" max="15" value="6">
+        </div>
+        <div class="slider-row">
+          <span>Bloom Strength</span>
+          <input type="range" id="bloom-slider" min="0" max="30" value="18">
+        </div>
+        <div class="slider-row">
+          <span>Cluster Spacing</span>
+          <input type="range" id="cluster-dist-slider" min="1" max="40" value="10"
+            title="Adjust distance between community/directory clusters">
+        </div>
+        <div class="slider-row">
+          <span>Node Spread</span>
+          <input type="range" id="node-disp-slider" min="1" max="30" value="10"
+            title="Adjust local dispersion of nodes within clusters">
+        </div>
+        <div class="slider-row">
+          <span>Corpus Anti-Grav</span>
+          <input type="range" id="corpus-dist-slider" min="2" max="30" value="10"
+            title="Adjust repulsion force separating distinct corpora in 3D space">
+        </div>
+        <div class="slider-row">
+          <span>Bridge Attraction</span>
+          <input type="range" id="corpus-attract-slider" min="-30" max="30" value="10"
+            title="Adjust gravitational attraction pulling connected corpora together">
+        </div>
+        <div class="slider-row">
+          <span>Edge Density</span>
+          <input type="range" id="edge-slider" min="0" max="100" value="70">
+        </div>
+        <div class="slider-row">
+          <span>Activation Decay</span>
+          <input type="range" id="decay-slider" min="1" max="10" value="3" title="Adjust temporal decay duration">
+        </div>
+        <div class="slider-row">
+          <span>Activation Speed</span>
+          <input type="range" id="activation-speed-slider" min="3" max="30" value="10"
+            title="Adjust speed of agent activations and meteor traces">
+        </div>
+        <div class="slider-row">
+          <span>Activation Amplitude</span>
+          <input type="range" id="activation-amp-slider" min="5" max="35" value="15"
+            title="Adjust scale, shockwave radius, and light intensity of activations">
+        </div>
+        <div class="slider-row"
+          style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="corpus-labels-toggle" checked style="accent-color: var(--neon-blue);">
+            <span>Corpus Cloud Badges</span>
+          </label>
+        </div>
+        <div class="slider-row" style="padding-left: 6px;">
+          <span style="font-size: 0.75rem; color: #94a3b8;">Badge Size</span>
+          <input type="range" id="badge-size-slider" min="25" max="160" value="80" title="Adjust 3D badge size">
+        </div>
+        <div class="slider-row" style="padding-left: 6px;">
+          <span style="font-size: 0.75rem; color: #94a3b8;">Badge Brightness</span>
+          <input type="range" id="badge-opacity-slider" min="3" max="10" value="10"
+            title="Adjust 3D badge opacity/brightness">
+        </div>
+        <div class="slider-row">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="auto-orbit-toggle" checked style="accent-color: var(--neon-blue);">
+            <span>Auto Orbit</span>
+          </label>
+          <input type="range" id="orbit-speed-slider" min="1" max="30" value="8" title="Adjust camera orbit speed">
+        </div>
       </div>
     </div>
   </div>
@@ -694,7 +911,12 @@
           LIVE
         </div>
         <button id="hud-collapse-btn" class="hud-toggle-btn" title="Toggle Agent Activations">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
         </button>
       </div>
     </div>
@@ -785,17 +1007,38 @@
     raycaster.params.Points.threshold = 12.0;
     let mouse = new THREE.Vector2(-999, -999);
 
-    // Load Corpora List
+    const corporaMetadataMap = new Map();
+    let totalCorporaCatalogNodes = 0;
+    const corpusBaseCentroids = new Map();
+    const crossCorpusLinks = new Map();
+
+    // Load Corpora List & Catalog Metadata
     async function loadCorporaList() {
       try {
-        const res = await fetch('/api/corpora');
-        const data = await res.json();
+        const [corpRes, statusRes] = await Promise.all([
+          fetch('/api/corpora'),
+          fetch('/api/status').catch(() => null)
+        ]);
+        const data = await corpRes.json();
+        if (statusRes && statusRes.ok) {
+          const statusData = await statusRes.json();
+          if (statusData && statusData.corpora) {
+            corporaMetadataMap.clear();
+            let total = 0;
+            statusData.corpora.forEach(c => {
+              corporaMetadataMap.set(c.name, c);
+              total += (c.nodes || 0);
+            });
+            totalCorporaCatalogNodes = total;
+          }
+        }
         const select = document.getElementById('corpus-select');
         select.innerHTML = '<option value="all">Galaxy: All Corpora</option>';
         data.corpora.forEach(name => {
           const opt = document.createElement('option');
           opt.value = name;
-          opt.textContent = name;
+          const meta = corporaMetadataMap.get(name);
+          opt.textContent = meta ? `${name} (${meta.nodes.toLocaleString()} nodes)` : name;
           select.appendChild(opt);
         });
       } catch (err) {
@@ -806,8 +1049,8 @@
     // Binary wire protocol parser (32 bytes per node, 12 bytes per edge)
     async function fetchGraphData(corpus, mode, clusterMode = currentClusterMode) {
       let url = corpus === 'all'
-        ? `/api/graph/overview?format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`
-        : `/api/graph/corpus/${encodeURIComponent(corpus)}?budget=35000&format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`;
+        ? `/api/graph/overview?budget=50000&format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`
+        : `/api/graph/corpus/${encodeURIComponent(corpus)}?budget=50000&format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`;
 
       const res = await fetch(url);
       const buffer = await res.arrayBuffer();
@@ -882,18 +1125,44 @@
       return { nodes, edges };
     }
 
-    // Resolve an entity's high-level architectural class
+    const ENTITY_COLORS = {
+      'DocNode': '#3b82f6',
+      'Function': '#10b981',
+      'Method': '#34d399',
+      'Struct': '#8b5cf6',
+      'Class': '#a855f7',
+      'Trait': '#ec4899',
+      'Interface': '#f472b6',
+      'Enum': '#f59e0b',
+      'TypeAlias': '#eab308',
+      'Module': '#06b6d4',
+      'File': '#38bdf8',
+      'Macro': '#14b8a6',
+      'Constant': '#2dd4bf',
+      'CodeSymbol': '#64748b'
+    };
+
+    // Resolve an entity's high-level architectural category
     function getEntityCategory(type) {
       if (!type) return 'CodeSymbol';
       const t = type.toLowerCase();
       if (t === 'docnode' || t === 'doc' || t === 'document' || t === 'markdown' || t === 'adr') {
         return 'DocNode';
       }
-      if (t === 'function' || t === 'method' || t === 'fn' || t === 'macro') {
+      if (t === 'function' || t === 'method' || t === 'fn') {
         return 'Function';
       }
-      if (t === 'struct' || t === 'class' || t === 'trait' || t === 'interface' || t === 'enum' || t === 'typealias' || t === 'type_alias' || t === 'type') {
+      if (t === 'struct' || t === 'class') {
         return 'Struct';
+      }
+      if (t === 'trait' || t === 'interface') {
+        return 'Trait';
+      }
+      if (t === 'enum' || t === 'typealias' || t === 'type_alias' || t === 'type') {
+        return 'Enum';
+      }
+      if (t === 'macro') {
+        return 'Macro';
       }
       if (t === 'module' || t === 'file' || t === 'package' || t === 'namespace') {
         return 'Module';
@@ -1009,9 +1278,14 @@
           linePositions.push(n1.position[0], n1.position[1], n1.position[2]);
           linePositions.push(n2.position[0], n2.position[1], n2.position[2]);
 
-          const c1 = ((n1.color_rgb >> 16) & 0xff) / 255;
-          const c2 = ((n2.color_rgb >> 16) & 0xff) / 255;
-          lineColors.push(c1 * 0.4, 0.4, 0.7, c2 * 0.4, 0.4, 0.7);
+          const isCross = (e.edge_type === 'cross_corpus');
+          if (isCross) {
+            lineColors.push(0.35, 0.95, 1.0, 0.75, 0.9, 1.0);
+          } else {
+            const c1 = ((n1.color_rgb >> 16) & 0xff) / 255;
+            const c2 = ((n2.color_rgb >> 16) & 0xff) / 255;
+            lineColors.push(c1 * 0.4, 0.4, 0.7, c2 * 0.4, 0.4, 0.7);
+          }
         }
       }
 
@@ -1052,6 +1326,61 @@
         }
       });
 
+      // Compute base centroids per corpus for dynamic 3D anti-gravity separation
+      corpusBaseCentroids.clear();
+      const corpusCounts = new Map();
+      for (let i = 0; i < count; i++) {
+        const n = data.nodes[i];
+        const cId = Math.max(0, Math.floor(n.community / 1000) - 1);
+        const entry = corpusBaseCentroids.get(cId) || { cx: 0, cy: 0, cz: 0 };
+        entry.cx += n.position[0];
+        entry.cy += n.position[1];
+        entry.cz += n.position[2];
+        corpusBaseCentroids.set(cId, entry);
+        corpusCounts.set(cId, (corpusCounts.get(cId) || 0) + 1);
+      }
+      corpusBaseCentroids.forEach((entry, cId) => {
+        const cnt = corpusCounts.get(cId) || 1;
+        entry.cx /= cnt;
+        entry.cy /= cnt;
+        entry.cz /= cnt;
+      });
+
+      // Track inter-corpus connectivity for bridge attraction
+      crossCorpusLinks.clear();
+      if (data.edges) {
+        data.edges.forEach(e => {
+          if (e.edge_type === 'cross_corpus') {
+            const s = data.nodes[e.source];
+            const t = data.nodes[e.target];
+            if (s && t) {
+              const c1 = Math.max(0, Math.floor(s.community / 1000) - 1);
+              const c2 = Math.max(0, Math.floor(t.community / 1000) - 1);
+              if (c1 !== c2) {
+                const key = c1 < c2 ? `${c1}_${c2}` : `${c2}_${c1}`;
+                crossCorpusLinks.set(key, (crossCorpusLinks.get(key) || 0) + 1);
+              }
+            }
+          }
+        });
+      }
+
+      // Update scope banner metadata
+      const scopeLabel = document.getElementById('corpus-meta-scope');
+      const countsLabel = document.getElementById('corpus-meta-counts');
+      if (scopeLabel && countsLabel) {
+        if (currentCorpus === 'all') {
+          scopeLabel.textContent = 'All Corpora';
+          const total = totalCorporaCatalogNodes || data.nodes.length;
+          countsLabel.textContent = `${total.toLocaleString()} total nodes`;
+        } else {
+          scopeLabel.textContent = currentCorpus;
+          const meta = corporaMetadataMap.get(currentCorpus);
+          const total = meta ? meta.nodes : data.nodes.length;
+          countsLabel.textContent = `${total.toLocaleString()} total nodes`;
+        }
+      }
+
       fitCameraToGraph();
       applyDisplayFilters();
       populateCorpusBadges(data);
@@ -1066,13 +1395,17 @@
       const sphere = new THREE.Sphere();
       box.getBoundingSphere(sphere);
 
-      const radius = Math.max(sphere.radius, 150);
+      const radius = Math.max(sphere.radius, 250);
       const fov = camera.fov * (Math.PI / 180);
-      let distance = Math.abs(radius / Math.sin(fov / 2)) * 1.15;
-      distance = Math.max(distance, 500);
+      let distance = Math.abs(radius / Math.sin(fov / 2)) * 1.25;
+      distance = Math.max(distance, 800);
+
+      controls.maxDistance = Math.max(35000, distance * 4.0);
+      camera.far = Math.max(70000, distance * 6.0);
+      camera.updateProjectionMatrix();
 
       controls.target.copy(sphere.center);
-      camera.position.set(sphere.center.x, sphere.center.y + distance * 0.25, sphere.center.z + distance * 0.95);
+      camera.position.set(sphere.center.x, sphere.center.y + distance * 0.32, sphere.center.z + distance * 0.95);
       camera.lookAt(sphere.center);
       controls.update();
     }
@@ -1348,7 +1681,9 @@
         transparent: true,
         opacity: 0.0,
         depthTest: false,
-        depthWrite: false
+        depthWrite: false,
+        fog: false,
+        toneMapped: false
       });
       const sprite = new THREE.Sprite(mat);
       sprite.scale.set(70, 35, 1);
@@ -1387,11 +1722,11 @@
     // Generate Floating 3D Corpus Cloud Badge
     function createCorpusBadge(name, subtitle, position) {
       const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 160;
+      canvas.width = 1024;
+      canvas.height = 320;
       const ctx = canvas.getContext('2d');
 
-      const x = 12, y = 12, w = 488, h = 136, r = 24;
+      const x = 16, y = 16, w = 992, h = 288, r = 30;
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(x + r, y);
@@ -1405,56 +1740,94 @@
       ctx.quadraticCurveTo(x, y, x + r, y);
       ctx.closePath();
 
+      // Radiant High-Contrast Cyber-Cockpit Glass Background
       const grad = ctx.createLinearGradient(x, y, x + w, y + h);
-      grad.addColorStop(0, 'rgba(15, 23, 42, 0.94)');
-      grad.addColorStop(1, 'rgba(30, 41, 59, 0.94)');
+      grad.addColorStop(0, 'rgba(14, 32, 74, 0.96)');
+      grad.addColorStop(0.5, 'rgba(18, 40, 90, 0.96)');
+      grad.addColorStop(1, 'rgba(10, 24, 58, 0.98)');
       ctx.fillStyle = grad;
       ctx.fill();
 
-      ctx.lineWidth = 4;
+      // Outer Glowing Neon Cyan Border
+      ctx.lineWidth = 6;
       ctx.strokeStyle = '#38bdf8';
+      ctx.shadowColor = '#0284c7';
+      ctx.shadowBlur = 36;
       ctx.stroke();
 
-      ctx.beginPath();
-      ctx.moveTo(x + r + 20, y + 2);
-      ctx.lineTo(x + w - r - 20, y + 2);
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      // Inner Sharp White/Cyan Accent Ring
       ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.shadowBlur = 0;
       ctx.stroke();
 
-      ctx.font = '54px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('🪐', x + 24, y + h / 2);
+      // Top cyan neon accent highlight bar
+      ctx.beginPath();
+      ctx.moveTo(x + r + 30, y + 6);
+      ctx.lineTo(x + w - r - 30, y + 6);
+      ctx.strokeStyle = 'rgba(125, 211, 252, 0.98)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
 
-      ctx.font = 'bold 34px "Inter", "JetBrains Mono", Consolas, sans-serif';
-      ctx.fillStyle = '#f8fafc';
+      // Left vertical cyan accent pip with white core
+      ctx.fillStyle = '#38bdf8';
+      ctx.shadowColor = '#38bdf8';
+      ctx.shadowBlur = 16;
+      ctx.fillRect(x + 36, y + 46, 10, h - 92);
+
+      // Top metadata tag: ⚡ CORPUS CLOUD
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
+      ctx.fillRect(x + 64, y + 36, 215, 38);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 64, y + 36, 215, 38);
+
+      ctx.font = '700 22px "Inter", "JetBrains Mono", monospace';
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillText('⚡ CORPUS CLOUD', x + 76, y + 63);
+
+      // Corpus Title - Crisp Ultra-White with contrast drop-shadow
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+      ctx.shadowBlur = 16;
+      ctx.font = 'bold 74px "Inter", "Segoe UI", -apple-system, sans-serif';
+      ctx.fillStyle = '#ffffff';
       let title = name || 'Corpus';
-      if (title.length > 20) title = title.slice(0, 18) + '…';
-      ctx.fillText(title, x + 96, y + 50);
+      if (title.length > 22) title = title.slice(0, 20) + '…';
+      ctx.fillText(title, x + 64, y + 160);
 
-      ctx.font = '500 22px "Inter", -apple-system, sans-serif';
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillText(subtitle, x + 98, y + 96);
+      // Subtitle / Node Counts - Luminous Neon Cyan
+      ctx.font = '700 42px "Inter", -apple-system, sans-serif';
+      ctx.fillStyle = '#7dd3fc';
+      ctx.shadowColor = 'rgba(56, 189, 248, 0.8)';
+      ctx.shadowBlur = 14;
+      ctx.fillText(subtitle, x + 66, y + 236);
       ctx.restore();
 
       const texture = new THREE.CanvasTexture(canvas);
+      texture.generateMipmaps = false;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
       texture.needsUpdate = true;
-      const baseOpacity = parseFloat(document.getElementById('badge-opacity-slider')?.value || 9) / 10.0;
-      const baseScale = parseFloat(document.getElementById('badge-size-slider')?.value || 16) * 10.0;
-      const aspect = 50.0 / 160.0;
+
+      const baseOpacity = parseFloat(document.getElementById('badge-opacity-slider')?.value || 10) / 10.0;
+      const baseScale = parseFloat(document.getElementById('badge-size-slider')?.value || 80) * 14.0;
+      const aspect = 320.0 / 1024.0;
 
       const mat = new THREE.SpriteMaterial({
         map: texture,
         transparent: true,
-        opacity: baseOpacity,
+        opacity: Math.max(0.6, baseOpacity),
         depthTest: false,
-        depthWrite: false
+        depthWrite: false,
+        fog: false,        // CRITICAL: scene.fog will not darken or wash out the badge!
+        toneMapped: false  // CRITICAL: Tone mapper will not mute vibrant neon brightness!
       });
       const sprite = new THREE.Sprite(mat);
-      sprite.position.set(position[0], position[1] + 60, position[2]);
+      sprite.position.set(position[0], position[1] + 320, position[2]);
       sprite.scale.set(baseScale, baseScale * aspect, 1);
-      sprite.renderOrder = 1000;
+      sprite.renderOrder = 9999;
+      sprite.userData = { center: [position[0], position[1], position[2]] };
       return sprite;
     }
 
@@ -1539,6 +1912,9 @@
       sprite.position.set(pos[0], pos[1] + 14, pos[2]);
       scene.add(sprite);
 
+      const speedEl = document.getElementById('activation-speed-slider');
+      const speed = speedEl ? Math.max(0.2, parseFloat(speedEl.value) / 10.0) : 1.0;
+
       activeBeacons.push({
         ring,
         sprite,
@@ -1547,12 +1923,16 @@
         pos,
         color: colorHex,
         startTime: performance.now(),
-        duration: 2600
+        duration: 2600 / speed
       });
     }
 
     // Generate 3D Meteor arc projectile for graph traces & orbital strikes
     function createMeteor(p1, p2, colorHex, endNodeIdx, clientName, duration = 1000, onImpact = null) {
+      const speedEl = document.getElementById('activation-speed-slider');
+      const speed = speedEl ? Math.max(0.2, parseFloat(speedEl.value) / 10.0) : 1.0;
+      const actualDuration = (duration || 1000) / speed;
+
       const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
       const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
       const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
@@ -1612,7 +1992,7 @@
         endPos: p2,
         clientName,
         startTime: performance.now(),
-        duration,
+        duration: actualDuration,
         onImpact
       };
     }
@@ -1748,16 +2128,89 @@
 
       const clusterDistEl = document.getElementById('cluster-dist-slider');
       const nodeDispEl = document.getElementById('node-disp-slider');
+      const antiGravEl = document.getElementById('corpus-dist-slider');
+      const attractEl = document.getElementById('corpus-attract-slider');
+
       const clusterDistScale = clusterDistEl ? parseFloat(clusterDistEl.value) / 10.0 : 1.0;
       const nodeDispScale = nodeDispEl ? parseFloat(nodeDispEl.value) / 10.0 : 1.0;
+      const antiGravScale = antiGravEl ? parseFloat(antiGravEl.value) / 10.0 : 1.0;
+      const attractScale = attractEl ? parseFloat(attractEl.value) / 10.0 : 1.0;
+
+      // Dynamic 3D celestial coordinates per corpus
+      const dynamicCorpusCenters = new Map();
+      const corpusOffsets = new Map();
+
+      corpusBaseCentroids.forEach((base, cId) => {
+        // 1. Anti-Grav expansion from galactic origin
+        dynamicCorpusCenters.set(cId, {
+          cx: base.cx * antiGravScale,
+          cy: base.cy * antiGravScale,
+          cz: base.cz * antiGravScale
+        });
+      });
+
+      // 2. Inter-corpus cojoining attraction along cross-corpus bridges
+      if (attractScale > 0) {
+        corpusBaseCentroids.forEach((_, c1) => {
+          corpusBaseCentroids.forEach((_, c2) => {
+            if (c1 < c2) {
+              const key = `${c1}_${c2}`;
+              const links = crossCorpusLinks.get(key) || 0;
+              if (links > 0) {
+                const p1 = dynamicCorpusCenters.get(c1);
+                const p2 = dynamicCorpusCenters.get(c2);
+                if (p1 && p2) {
+                  const vx = p2.cx - p1.cx;
+                  const vy = p2.cy - p1.cy;
+                  const vz = p2.cz - p1.cz;
+                  const pullFactor = 0.16 * attractScale * Math.min(1.0, links / 8.0);
+                  p1.cx += vx * pullFactor;
+                  p1.cy += vy * pullFactor;
+                  p1.cz += vz * pullFactor;
+                  p2.cx -= vx * pullFactor;
+                  p2.cy -= vy * pullFactor;
+                  p2.cz -= vz * pullFactor;
+                }
+              }
+            }
+          });
+        });
+      }
+
+      corpusBaseCentroids.forEach((base, cId) => {
+        const dyn = dynamicCorpusCenters.get(cId);
+        corpusOffsets.set(cId, {
+          dx: dyn.cx - base.cx,
+          dy: dyn.cy - base.cy,
+          dz: dyn.cz - base.cz
+        });
+      });
+
+      // Update corpus badges to stay anchored above dynamic cloud centroids
+      if (corpusBadgeGroup && corpusBadgeGroup.children) {
+        corpusBadgeGroup.children.forEach((b, idx) => {
+          const dyn = dynamicCorpusCenters.get(idx);
+          if (dyn) {
+            b.position.set(dyn.cx, dyn.cy + 320, dyn.cz);
+          } else if (b.userData && b.userData.center) {
+            b.position.set(
+              b.userData.center[0] * antiGravScale,
+              (b.userData.center[1] * antiGravScale) + 320,
+              b.userData.center[2] * antiGravScale
+            );
+          }
+        });
+      }
 
       const hasSearch = (currentSearchMatches !== null);
       let visibleCount = 0;
-      let docCount = 0, fnCount = 0, structCount = 0, modCount = 0, symCount = 0;
+      let docCount = 0, fnCount = 0, structCount = 0, traitCount = 0, enumCount = 0, modCount = 0, macroCount = 0, symCount = 0;
+      const astTypeCounts = new Map();
 
       for (let i = 0; i < graphData.nodes.length; i++) {
         const n = graphData.nodes[i];
         const cat = getEntityCategory(n.entity_type);
+        const rawType = n.entity_type || 'CodeSymbol';
 
         // 1. Mode check (Hybrid vs Docs vs Code)
         let modeMatch = true;
@@ -1767,8 +2220,8 @@
           modeMatch = (cat !== 'DocNode');
         }
 
-        // 2. Type Chip check (DocNode, Function, Struct, Module, CodeSymbol)
-        let typeMatch = (selectedType === 'all' || cat === selectedType);
+        // 2. Type Chip check (matches category or specific AST entity type)
+        let typeMatch = (selectedType === 'all' || cat === selectedType || rawType === selectedType);
 
         // 3. Search Query match check
         let isSearchMatch = hasSearch && currentSearchMatches.has(i);
@@ -1780,8 +2233,13 @@
           if (cat === 'DocNode') docCount++;
           else if (cat === 'Function') fnCount++;
           else if (cat === 'Struct') structCount++;
+          else if (cat === 'Trait') traitCount++;
+          else if (cat === 'Enum') enumCount++;
           else if (cat === 'Module') modCount++;
+          else if (cat === 'Macro') macroCount++;
           else symCount++;
+
+          astTypeCounts.set(rawType, (astTypeCounts.get(rawType) || 0) + 1);
 
           const c = commCentroids.get(n.community);
           const cx = c ? c.cx : 0;
@@ -1796,9 +2254,12 @@
           const dy = by - cy;
           const dz = bz - cz;
 
-          positions[i * 3] = cx * clusterDistScale + dx * nodeDispScale;
-          positions[i * 3 + 1] = cy * clusterDistScale + dy * nodeDispScale;
-          positions[i * 3 + 2] = cz * clusterDistScale + dz * nodeDispScale;
+          const cId = Math.max(0, Math.floor(n.community / 1000) - 1);
+          const off = corpusOffsets.get(cId) || { dx: 0, dy: 0, dz: 0 };
+
+          positions[i * 3] = cx * clusterDistScale + dx * nodeDispScale + off.dx;
+          positions[i * 3 + 1] = cy * clusterDistScale + dy * nodeDispScale + off.dy;
+          positions[i * 3 + 2] = cz * clusterDistScale + dz * nodeDispScale + off.dz;
 
           if (isSearchMatch) {
             colors[i * 3] = 0.98;
@@ -1828,13 +2289,18 @@
       particleSystem.geometry.attributes.size.needsUpdate = true;
 
       // Update counters in HUD
-      document.getElementById('count-all').textContent = visibleCount;
-      document.getElementById('count-docs').textContent = docCount;
-      document.getElementById('count-fn').textContent = fnCount;
-      document.getElementById('count-struct').textContent = structCount;
-      document.getElementById('count-mod').textContent = modCount;
+      document.getElementById('count-all').textContent = visibleCount.toLocaleString();
+      document.getElementById('count-docs').textContent = docCount.toLocaleString();
+      document.getElementById('count-fn').textContent = fnCount.toLocaleString();
+      document.getElementById('count-struct').textContent = structCount.toLocaleString();
+      if (document.getElementById('count-trait')) document.getElementById('count-trait').textContent = traitCount.toLocaleString();
+      if (document.getElementById('count-enum')) document.getElementById('count-enum').textContent = enumCount.toLocaleString();
+      document.getElementById('count-mod').textContent = modCount.toLocaleString();
+      if (document.getElementById('count-macro')) document.getElementById('count-macro').textContent = macroCount.toLocaleString();
       const countSymEl = document.getElementById('count-symbols');
-      if (countSymEl) countSymEl.textContent = symCount;
+      if (countSymEl) countSymEl.textContent = symCount.toLocaleString();
+
+      updateAstTypeChipsUI(astTypeCounts, visibleCount);
 
       // Rebuild visible edges (only draw edges between visible nodes)
       if (edgeLines && edgeLines.geometry) {
@@ -1849,13 +2315,18 @@
           if (s < graphData.nodes.length && t < graphData.nodes.length) {
             const sVisible = positions[s * 3] < 900000.0;
             const tVisible = positions[t * 3] < 900000.0;
-            if (sVisible && tVisible && (Math.random() <= edgeDensity)) {
+            const isCross = (e.edge_type === 'cross_corpus');
+            if (sVisible && tVisible && (isCross || Math.random() <= edgeDensity)) {
               linePositions.push(positions[s * 3], positions[s * 3 + 1], positions[s * 3 + 2]);
               linePositions.push(positions[t * 3], positions[t * 3 + 1], positions[t * 3 + 2]);
 
-              const c1 = ((graphData.nodes[s].color_rgb >> 16) & 0xff) / 255;
-              const c2 = ((graphData.nodes[t].color_rgb >> 16) & 0xff) / 255;
-              lineColors.push(c1 * 0.4, 0.4, 0.7, c2 * 0.4, 0.4, 0.7);
+              if (isCross) {
+                lineColors.push(0.35, 0.95, 1.0, 0.75, 0.9, 1.0);
+              } else {
+                const c1 = ((graphData.nodes[s].color_rgb >> 16) & 0xff) / 255;
+                const c2 = ((graphData.nodes[t].color_rgb >> 16) & 0xff) / 255;
+                lineColors.push(c1 * 0.4, 0.4, 0.7, c2 * 0.4, 0.4, 0.7);
+              }
             }
           }
         }
@@ -1866,6 +2337,45 @@
         newGeo.setAttribute('color', new THREE.Float32BufferAttribute(lineColors, 3));
         edgeLines.geometry = newGeo;
       }
+    }
+
+    // Dynamically render fine-grained AST node type chips
+    function updateAstTypeChipsUI(astCounts, totalVisible) {
+      const container = document.getElementById('ast-type-chips');
+      if (!container) return;
+
+      const sortedTypes = Array.from(astCounts.entries()).sort((a, b) => b[1] - a[1]);
+
+      let html = `
+        <div class="type-chip ${selectedType === 'all' ? 'active' : ''}" data-type="all">
+          <span><span class="type-color" style="background: #fff;"></span>All AST Types</span>
+          <span>${totalVisible.toLocaleString()}</span>
+        </div>
+      `;
+
+      sortedTypes.forEach(([type, count]) => {
+        const color = ENTITY_COLORS[type] || ENTITY_COLORS[getEntityCategory(type)] || '#f59e0b';
+        const isActive = (selectedType === type);
+        html += `
+          <div class="type-chip ${isActive ? 'active' : ''}" data-type="${type}">
+            <span><span class="type-color" style="background: ${color};"></span>${type}</span>
+            <span>${count.toLocaleString()}</span>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+
+      container.querySelectorAll('.type-chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          const target = e.currentTarget;
+          selectedType = target.dataset.type;
+          document.querySelectorAll('#type-chips .type-chip').forEach(c => c.classList.remove('active'));
+          container.querySelectorAll('.type-chip').forEach(c => c.classList.remove('active'));
+          target.classList.add('active');
+          applyDisplayFilters();
+        });
+      });
     }
 
     function performQuery(rawQuery) {
@@ -1959,11 +2469,34 @@
       chip.addEventListener('click', (e) => {
         const target = e.currentTarget;
         document.querySelectorAll('#type-chips .type-chip').forEach(c => c.classList.remove('active'));
+        const astContainer = document.getElementById('ast-type-chips');
+        if (astContainer) astContainer.querySelectorAll('.type-chip').forEach(c => c.classList.remove('active'));
         target.classList.add('active');
         selectedType = target.dataset.type;
         applyDisplayFilters();
       });
     });
+
+    const btnCategories = document.getElementById('btn-view-categories');
+    const btnAst = document.getElementById('btn-view-ast');
+    const typeChipsEl = document.getElementById('type-chips');
+    const astChipsEl = document.getElementById('ast-type-chips');
+
+    if (btnCategories && btnAst) {
+      btnCategories.addEventListener('click', () => {
+        btnCategories.classList.add('active');
+        btnAst.classList.remove('active');
+        if (typeChipsEl) typeChipsEl.style.display = 'block';
+        if (astChipsEl) astChipsEl.style.display = 'none';
+      });
+
+      btnAst.addEventListener('click', () => {
+        btnAst.classList.add('active');
+        btnCategories.classList.remove('active');
+        if (typeChipsEl) typeChipsEl.style.display = 'none';
+        if (astChipsEl) astChipsEl.style.display = 'block';
+      });
+    }
 
     // Sliders
     document.getElementById('size-slider').addEventListener('input', (e) => {
@@ -1979,6 +2512,8 @@
     });
     document.getElementById('cluster-dist-slider').addEventListener('input', updatePositionScales);
     document.getElementById('node-disp-slider').addEventListener('input', updatePositionScales);
+    document.getElementById('corpus-dist-slider')?.addEventListener('input', updatePositionScales);
+    document.getElementById('corpus-attract-slider')?.addEventListener('input', updatePositionScales);
 
     const orbitToggle = document.getElementById('auto-orbit-toggle');
     if (orbitToggle) {
@@ -2004,8 +2539,8 @@
     const badgeSizeSlider = document.getElementById('badge-size-slider');
     if (badgeSizeSlider) {
       badgeSizeSlider.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value) * 10.0;
-        const aspect = 50.0 / 160.0;
+        const val = parseFloat(e.target.value) * 14.0;
+        const aspect = 320.0 / 1024.0;
         corpusBadgeGroup.children.forEach(b => {
           b.scale.set(val, val * aspect, 1);
         });
@@ -2019,6 +2554,27 @@
         corpusBadgeGroup.children.forEach(b => {
           if (b.material) b.material.opacity = val;
         });
+      });
+    }
+
+    // Visual Controls Accordion Collapse/Expand Logic
+    const visualControlsHeader = document.getElementById('visual-controls-header');
+    const visualControlsPanel = document.getElementById('visual-controls-panel');
+    if (visualControlsHeader && visualControlsPanel) {
+      const stored = localStorage.getItem('ctxvault_visual_controls_collapsed');
+      const isCollapsed = stored === null ? true : stored === 'true';
+      if (isCollapsed) {
+        visualControlsPanel.classList.add('collapsed');
+      } else {
+        visualControlsPanel.classList.remove('collapsed');
+      }
+
+      visualControlsHeader.addEventListener('click', () => {
+        visualControlsPanel.classList.toggle('collapsed');
+        localStorage.setItem(
+          'ctxvault_visual_controls_collapsed',
+          visualControlsPanel.classList.contains('collapsed')
+        );
       });
     }
 
@@ -2092,7 +2648,9 @@
       if (activations.size > 0 && particleSystem) {
         const now = performance.now();
         const colors = particleSystem.geometry.attributes.color.array;
-        const decayDuration = parseFloat(document.getElementById('decay-slider').value) * 1000.0;
+        const speedEl = document.getElementById('activation-speed-slider');
+        const speed = speedEl ? Math.max(0.2, parseFloat(speedEl.value) / 10.0) : 1.0;
+        const decayDuration = (parseFloat(document.getElementById('decay-slider').value) * 1000.0) / speed;
 
         activations.forEach((info, idx) => {
           const elapsed = now - info.time;
@@ -2113,6 +2671,9 @@
       // Active beacon pulses (shockwave rings, volumetric fog auras, pointlights, and floating icon badges)
       if (activeBeacons.length > 0) {
         const now = performance.now();
+        const ampEl = document.getElementById('activation-amp-slider');
+        const amp = ampEl ? Math.max(0.2, parseFloat(ampEl.value) / 10.0) : 1.0;
+
         for (let i = activeBeacons.length - 1; i >= 0; i--) {
           const b = activeBeacons[i];
           const elapsed = now - b.startTime;
@@ -2131,20 +2692,21 @@
             if (b.fogAura.material) b.fogAura.material.dispose();
             activeBeacons.splice(i, 1);
           } else {
-            // 1. Expand shockwave ring (cubic ease-out)
-            const ringScale = 1.0 + Math.pow(progress, 0.6) * 22.0;
+            // 1. Expand shockwave ring (cubic ease-out scaled by amplitude)
+            const ringScale = (1.0 + Math.pow(progress, 0.6) * 22.0) * amp;
             b.ring.scale.set(ringScale, ringScale, ringScale);
             b.ring.material.opacity = Math.max(0, (1.0 - progress) * 1.2);
             b.ring.lookAt(camera.position);
 
             // 2. Volumetric Fog Illumination Aura expansion & soft fade
-            const fogScale = 25.0 + Math.pow(progress, 0.5) * 135.0;
+            const fogScale = (25.0 + Math.pow(progress, 0.5) * 135.0) * amp;
             b.fogAura.scale.set(fogScale, fogScale, 1);
             b.fogAura.material.opacity = Math.max(0, (1.0 - progress) * 0.85);
 
-            // 3. Transient PointLight quadratic decay
+            // 3. Transient PointLight quadratic decay scaled by amplitude
             if (b.light) {
-              b.light.intensity = Math.max(0, Math.pow(1.0 - progress, 2) * 3.5);
+              b.light.intensity = Math.max(0, Math.pow(1.0 - progress, 2) * 3.5 * amp);
+              b.light.distance = 180 * amp;
             }
 
             // 4. Float sprite badge upward and pulse
@@ -2152,7 +2714,8 @@
             b.sprite.position.set(b.pos[0], floatY, b.pos[2]);
 
             const pulse = 1.0 + 0.12 * Math.sin(progress * Math.PI * 4);
-            b.sprite.scale.set(70 * pulse, 35 * pulse, 1);
+            const badgeScale = Math.min(2.5, Math.max(0.5, amp));
+            b.sprite.scale.set(70 * pulse * badgeScale, 35 * pulse * badgeScale, 1);
 
             if (progress > 0.65) {
               b.sprite.material.opacity = Math.max(0, (1.0 - progress) / 0.35);

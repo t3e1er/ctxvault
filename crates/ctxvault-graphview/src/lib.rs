@@ -34,9 +34,10 @@ pub async fn run_graphview_server(
     let daemon = daemon_url.unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
 
     let state = ServerState::new(catalog, daemon.clone());
+    let daemon_key = state.clients.daemon_key.clone();
 
     // Spawn background SSE relay to daemon
-    spawn_telemetry_relay(daemon, state.telemetry.clone());
+    spawn_telemetry_relay(daemon, state.telemetry.clone(), daemon_key);
 
     let app = create_router(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;

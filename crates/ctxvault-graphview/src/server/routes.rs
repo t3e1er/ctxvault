@@ -18,7 +18,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::layout::tiered::{
-    build_tier_0_overview, build_tier_1_corpus, build_tier_2_local, TIER_1_DEFAULT_BUDGET,
+    build_tier_0_overview, build_tier_1_corpus, build_tier_2_local, compute_corpus_centers,
+    TIER_0_BUDGET, TIER_1_DEFAULT_BUDGET,
 };
 use crate::layout::{ClusterMode, GraphLayout};
 use crate::server::state::ServerState;
@@ -32,6 +33,8 @@ pub struct FormatQuery {
     pub format: Option<String>,
     /// Clustering mode: "directory" or "community".
     pub cluster_mode: Option<ClusterMode>,
+    /// Maximum node budget across all corpora.
+    pub budget: Option<usize>,
 }
 
 /// Query parameters for corpus graph retrieval.
@@ -133,19 +136,18 @@ pub async fn handle_corpora(State(state): State<ServerState>) -> Json<Value> {
 pub async fn handle_clouds(State(state): State<ServerState>) -> Json<Value> {
     let catalog = state.catalog.read().await;
     let corpus_names = catalog.corpus_names();
-    let num_corpora = corpus_names.len().max(1);
+    let centers = compute_corpus_centers(&catalog);
     let mut clouds = Vec::new();
 
-    for (c_idx, name) in corpus_names.iter().enumerate() {
-        let Some(snapshot) = catalog.get_corpus(name) else { continue; };
-        let angle = 2.0 * std::f32::consts::PI * (c_idx as f32) / (num_corpora as f32);
-        let galaxy_radius = if num_corpora > 1 { 450.0 + (num_corpora as f32) * 50.0 } else { 0.0 };
-        let offset_x = angle.cos() * galaxy_radius;
-        let offset_z = angle.sin() * galaxy_radius;
+    for name in &corpus_names {
+        let Some(snapshot) = catalog.get_corpus(name) else {
+            continue;
+        };
+        let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
 
         clouds.push(serde_json::json!({
             "name": name,
-            "center": [offset_x, 60.0, offset_z],
+            "center": [center[0], center[1], center[2]],
             "nodes": snapshot.graph.node_count(),
             "edges": snapshot.graph.edge_count(),
         }));
@@ -160,7 +162,8 @@ pub async fn handle_overview(
     Query(q): Query<FormatQuery>,
 ) -> Response {
     let mode = q.cluster_mode.unwrap_or_default();
-    let cache_key = format!("overview:all:{:?}", mode);
+    let budget = q.budget.unwrap_or(TIER_0_BUDGET);
+    let cache_key = format!("overview:all:{budget}:{mode:?}");
     {
         let cache = state.layout_cache.read().await;
         if let Some(cached) = cache.get(&cache_key) {
@@ -169,7 +172,7 @@ pub async fn handle_overview(
     }
 
     let catalog = state.catalog.read().await;
-    let layout = build_tier_0_overview(&catalog, mode);
+    let layout = build_tier_0_overview(&catalog, budget, mode);
     drop(catalog);
 
     {
@@ -322,15 +325,36 @@ pub async fn handle_sse_activations(
 }
 
 /// Return configured client profiles and visual identities.
-pub async fn handle_clients(State(state): State<ServerState>) -> Json<ctxvault_common::ClientsRegistry> {
+pub async fn handle_clients(
+    State(state): State<ServerState>,
+) -> Json<ctxvault_common::ClientsRegistry> {
     Json((*state.clients).clone())
 }
 
 /// Inject synthetic test activation (for testing/demo purposes).
 pub async fn handle_inject_activation(
     State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
     Json(mut activation): Json<AgentActivation>,
 ) -> StatusCode {
+    if state.clients.require_auth {
+        let client_key = headers
+            .get("x-api-key")
+            .or_else(|| headers.get("x-client-key"))
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer "))
+            });
+
+        match client_key {
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
+            _ => return StatusCode::UNAUTHORIZED,
+        }
+    }
+
     if activation.client_color.is_none() {
         if let Some(entry) = state.clients.resolve(None, activation.client_id.as_deref()) {
             if activation.client_id.is_none() {

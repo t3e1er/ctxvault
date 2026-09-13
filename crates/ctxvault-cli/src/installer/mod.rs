@@ -268,6 +268,7 @@ pub fn run_install(
     _auto_confirm: bool,
     install_rules: bool,
     workspace_dir: Option<&Path>,
+    filter_agents: Option<&[String]>,
 ) -> anyhow::Result<InstallSummary> {
     let binary_command = if let Some(dir) = install_dir {
         let exe = if cfg!(windows) { "ctxvault.exe" } else { "ctxvault" };
@@ -283,6 +284,14 @@ pub fn run_install(
             path: ws.join(".kiro").join("settings").join("mcp.json"),
         });
     }
+
+    if let Some(filters) = filter_agents {
+        targets.retain(|t| {
+            let lower = t.name.to_lowercase();
+            filters.iter().any(|f| lower.contains(&f.to_lowercase()))
+        });
+    }
+
     let mut summary = InstallSummary::default();
 
     for target in targets {
@@ -342,7 +351,13 @@ pub fn run_install(
 
     // Auto-populate steering rules if requested
     if install_rules {
-        let rule_targets = detect_rule_targets(workspace_dir);
+        let mut rule_targets = detect_rule_targets(workspace_dir);
+        if let Some(filters) = filter_agents {
+            rule_targets.retain(|rt| {
+                let lower = rt.name.to_lowercase();
+                filters.iter().any(|f| lower.contains(&f.to_lowercase()))
+            });
+        }
         for rt in rule_targets {
             let parent_exists = rt.path.parent().map(|p| p.exists()).unwrap_or(false);
             if !parent_exists && workspace_dir.is_none() {
@@ -463,7 +478,7 @@ mod tests {
         let ws_kiro_settings = ws_kiro.join("settings");
         fs::create_dir_all(&ws_kiro_settings).unwrap();
 
-        let summary = run_install(None, false, true, true, Some(&ws)).unwrap();
+        let summary = run_install(None, false, true, true, Some(&ws), None).unwrap();
 
         // 1. Verify workspace Kiro mcp.json was created/configured
         let mcp_json_path = ws_kiro_settings.join("mcp.json");

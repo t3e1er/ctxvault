@@ -44,9 +44,9 @@ impl CorpusSnapshot {
                 &meta_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             ) {
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT name, scope_path, file_path, symbol_type FROM code_symbols",
-                ) {
+                if let Ok(mut stmt) = conn
+                    .prepare("SELECT name, scope_path, file_path, symbol_type FROM code_symbols")
+                {
                     if let Ok(rows) = stmt.query_map([], |row| {
                         let name: String = row.get(0)?;
                         let scope: String = row.get(1)?;
@@ -56,16 +56,36 @@ impl CorpusSnapshot {
                     }) {
                         for row in rows.flatten() {
                             let (name, scope, file, sym_type) = row;
+                            let norm_file = file.replace('\\', "/");
                             if !name.is_empty() {
                                 ast_types.insert(name.clone(), sym_type.clone());
                             }
                             if !scope.is_empty() {
+                                let full_scope = format!("{}::{}", scope, name);
                                 ast_types.insert(scope.clone(), sym_type.clone());
-                                ast_types.insert(format!("{}:{}", file, scope), sym_type.clone());
-                                ast_types.insert(format!("{}#{}", file, scope), sym_type.clone());
+                                ast_types.insert(full_scope.clone(), sym_type.clone());
+                                ast_types.insert(
+                                    format!("{}#{}", norm_file, full_scope),
+                                    sym_type.clone(),
+                                );
+                                ast_types
+                                    .insert(format!("{}#{}", norm_file, scope), sym_type.clone());
+                                ast_types
+                                    .insert(format!("{}:{}", norm_file, scope), sym_type.clone());
                             }
-                            ast_types.insert(format!("{}:{}", file, name), sym_type.clone());
-                            ast_types.insert(format!("{}#{}", file, name), sym_type.clone());
+                            ast_types.insert(format!("{}#{}", norm_file, name), sym_type.clone());
+                            ast_types.insert(format!("{}:{}", norm_file, name), sym_type.clone());
+                            ast_types.insert(norm_file.clone(), "Module".to_string());
+                        }
+                    }
+                }
+                if let Ok(mut doc_stmt) = conn.prepare("SELECT path FROM documents") {
+                    if let Ok(rows) = doc_stmt.query_map([], |row| row.get::<_, String>(0)) {
+                        for path in rows.flatten() {
+                            let norm = path.replace('\\', "/");
+                            ast_types.insert(norm.clone(), "DocNode".to_string());
+                            let base = norm.split('/').next_back().unwrap_or(&norm);
+                            ast_types.insert(base.to_string(), "DocNode".to_string());
                         }
                     }
                 }

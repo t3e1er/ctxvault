@@ -288,7 +288,8 @@ async fn handle_jsonrpc_multi(
     Json(body): Json<Value>,
 ) -> Response {
     let client_key = headers
-        .get("x-client-key")
+        .get("x-api-key")
+        .or_else(|| headers.get("x-client-key"))
         .and_then(|v| v.to_str().ok())
         .or_else(|| {
             headers
@@ -298,16 +299,21 @@ async fn handle_jsonrpc_multi(
         });
     let client_id = headers
         .get("x-client-id")
+        .or_else(|| headers.get("x-api-client-id"))
         .and_then(|v| v.to_str().ok());
 
     if state.clients.require_auth {
         match client_key {
-            Some(k) if state.clients.find_by_key(k).is_some() => {}
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
             _ => {
                 warn!("Unauthorized MCP JSON-RPC request rejected");
                 return (
                     StatusCode::UNAUTHORIZED,
-                    Json(make_error_response(Value::Null, -32000, "Unauthorized: missing or invalid client key")),
+                    Json(make_error_response(
+                        Value::Null,
+                        -32000,
+                        "Unauthorized: missing or invalid x-api-key",
+                    )),
                 )
                     .into_response();
             }
@@ -358,7 +364,9 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
-                if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+                if let Some(activation) =
+                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                {
                     let _ = state.activations.send(activation);
                 }
 
@@ -392,7 +400,9 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
-                if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+                if let Some(activation) =
+                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                {
                     let _ = state.activations.send(activation);
                 }
 
@@ -464,7 +474,29 @@ async fn handle_jsonrpc_multi(
 /// Server-Sent Events stream for agent telemetry activations.
 pub async fn handle_activations_sse(
     State(state): State<MultiCorpusServerState>,
-) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    headers: HeaderMap,
+) -> Response {
+    if state.clients.require_auth {
+        let client_key = headers
+            .get("x-api-key")
+            .or_else(|| headers.get("x-client-key"))
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer "))
+            });
+
+        match client_key {
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
+            _ => {
+                warn!("Unauthorized MCP SSE activations connection rejected");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
+
     let rx = state.activations.subscribe();
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         loop {
@@ -472,7 +504,7 @@ pub async fn handle_activations_sse(
                 Ok(act) => {
                     if let Ok(data) = serde_json::to_string(&act) {
                         let ev = Event::default().event("activation").data(data);
-                        return Some((Ok(ev), rx));
+                        return Some((Ok::<Event, Infallible>(ev), rx));
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -481,7 +513,9 @@ pub async fn handle_activations_sse(
         }
     });
 
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .into_response()
 }
 
 fn extract_activation(
@@ -539,7 +573,9 @@ fn extract_activation(
             }
         }
         // Search response: code.results
-        if let Some(results) = val.get("code").and_then(|c| c.get("results")).and_then(|r| r.as_array()) {
+        if let Some(results) =
+            val.get("code").and_then(|c| c.get("results")).and_then(|r| r.as_array())
+        {
             for r in results.iter().take(4) {
                 if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
                     if !paths.contains(&p.to_string()) {
@@ -549,7 +585,9 @@ fn extract_activation(
             }
         }
         // Search response: docs.results
-        if let Some(results) = val.get("docs").and_then(|d| d.get("results")).and_then(|r| r.as_array()) {
+        if let Some(results) =
+            val.get("docs").and_then(|d| d.get("results")).and_then(|r| r.as_array())
+        {
             for r in results.iter().take(4) {
                 if let Some(p) = r.get("path").and_then(|p| p.as_str()) {
                     if !paths.contains(&p.to_string()) {

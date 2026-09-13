@@ -86,7 +86,7 @@ impl TelemetryHub {
 }
 
 /// Background task to consume SSE events from core MCP daemon and relay to hub.
-pub fn spawn_telemetry_relay(daemon_url: String, hub: TelemetryHub) {
+pub fn spawn_telemetry_relay(daemon_url: String, hub: TelemetryHub, daemon_key: Option<String>) {
     tokio::spawn(async move {
         let endpoint = format!("{}/events/activations", daemon_url.trim_end_matches('/'));
         info!(daemon = %daemon_url, "Starting SSE telemetry relay background listener");
@@ -96,7 +96,11 @@ pub fn spawn_telemetry_relay(daemon_url: String, hub: TelemetryHub) {
 
         loop {
             debug!(endpoint = %endpoint, "Connecting to daemon SSE stream...");
-            match client.get(&endpoint).send().await {
+            let mut req = client.get(&endpoint);
+            if let Some(ref k) = daemon_key {
+                req = req.header("x-api-key", k);
+            }
+            match req.send().await {
                 Ok(mut response) if response.status().is_success() => {
                     info!("Connected to ctxvault daemon telemetry stream");
                     backoff = Duration::from_millis(500);

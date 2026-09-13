@@ -1,22 +1,34 @@
 # ctxvault Universal Installer for Windows
 # Installs standalone native binary directly into %LOCALAPPDATA%\Programs\ctxvault\bin\ctxvault.exe
 
+param(
+    [switch]$Fast,
+    [switch]$SkipChecksum,
+    [string]$Tag,
+    [switch]$SkipModels,
+    [switch]$SkipRules,
+    [string]$Agents,
+    [string]$Repo = $(if ($env:CTXV_GITHUB_REPO) { $env:CTXV_GITHUB_REPO } elseif ($env:CXTV_GITHUB_REPO) { $env:CXTV_GITHUB_REPO } else { "t3e1er/ctxvault" }),
+    [string]$InstallDir = $(if ($env:CTXV_INSTALL_DIR) { $env:CTXV_INSTALL_DIR } elseif ($env:CXTV_INSTALL_DIR) { $env:CXTV_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\ctxvault\bin" })
+)
+
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:CTXV_GITHUB_REPO) { $env:CTXV_GITHUB_REPO } elseif ($env:CXTV_GITHUB_REPO) { $env:CXTV_GITHUB_REPO } else { "t3e1er/ctxvault" }
-$InstallDir = if ($env:CTXV_INSTALL_DIR) { $env:CTXV_INSTALL_DIR } elseif ($env:CXTV_INSTALL_DIR) { $env:CXTV_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\ctxvault\bin" }
-
-Write-Host "[*] Resolving latest release for $Repo..." -ForegroundColor Cyan
-try {
-    $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "ctxvault-installer" }
-    $Tag = $Release.tag_name
-} catch {
-    Write-Error "Failed to query latest release from GitHub API: $_"
-    exit 1
+if (-not $Tag) {
+    Write-Host "[*] Resolving latest release for $Repo..." -ForegroundColor Cyan
+    try {
+        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "ctxvault-installer" }
+        $Tag = $Release.tag_name
+    } catch {
+        Write-Error "Failed to query latest release from GitHub API: $_"
+        exit 1
+    }
+} else {
+    Write-Host "[*] Installing specified release $Tag for $Repo..." -ForegroundColor Cyan
 }
 
 if (-not $Tag) {
-    Write-Error "Could not parse latest release tag name."
+    Write-Error "Could not parse release tag name."
     exit 1
 }
 
@@ -34,35 +46,39 @@ try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipFile -UseBasicParsing
 
     # SHA-256 Digest Validation
-    $ChecksumUrls = @(
-        "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt",
-        "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
-    )
-    $ChecksumFile = Join-Path $TempDir "checksums.txt"
-    $ChecksumFound = $false
-    foreach ($Url in $ChecksumUrls) {
-        try {
-            Invoke-WebRequest -Uri $Url -OutFile $ChecksumFile -UseBasicParsing -ErrorAction SilentlyContinue
-            if ((Test-Path $ChecksumFile) -and ((Get-Item $ChecksumFile).Length -gt 0)) {
-                $ChecksumFound = $true
-                break
-            }
-        } catch { }
-    }
+    if (-not $Fast -and -not $SkipChecksum) {
+        $ChecksumUrls = @(
+            "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt",
+            "https://github.com/$Repo/releases/download/$Tag/checksums.txt"
+        )
+        $ChecksumFile = Join-Path $TempDir "checksums.txt"
+        $ChecksumFound = $false
+        foreach ($Url in $ChecksumUrls) {
+            try {
+                Invoke-WebRequest -Uri $Url -OutFile $ChecksumFile -UseBasicParsing -ErrorAction SilentlyContinue
+                if ((Test-Path $ChecksumFile) -and ((Get-Item $ChecksumFile).Length -gt 0)) {
+                    $ChecksumFound = $true
+                    break;
+                }
+            } catch { }
+        }
 
-    if ($ChecksumFound) {
-        $ExpectedHash = Get-Content $ChecksumFile | Select-String $ArchiveName | ForEach-Object { ($_ -split '\s+')[0] }
-        if ($ExpectedHash) {
-            Write-Host "[*] Verifying SHA-256 checksum..." -ForegroundColor Cyan
-            $ActualHash = (Get-FileHash -Path $ZipFile -Algorithm SHA256).Hash.ToLower()
-            if ($ActualHash -ne $ExpectedHash.ToLower()) {
-                Write-Error "Checksum verification failed! Expected: $ExpectedHash, Actual: $ActualHash"
-                exit 1
+        if ($ChecksumFound) {
+            $ExpectedHash = Get-Content $ChecksumFile | Select-String $ArchiveName | ForEach-Object { ($_ -split '\s+')[0] }
+            if ($ExpectedHash) {
+                Write-Host "[*] Verifying SHA-256 checksum..." -ForegroundColor Cyan
+                $ActualHash = (Get-FileHash -Path $ZipFile -Algorithm SHA256).Hash.ToLower()
+                if ($ActualHash -ne $ExpectedHash.ToLower()) {
+                    Write-Error "Checksum verification failed! Expected: $ExpectedHash, Actual: $ActualHash"
+                    exit 1
+                }
+                Write-Host "[+] Checksum verified ($ActualHash)." -ForegroundColor Green
             }
-            Write-Host "[+] Checksum verified ($ActualHash)." -ForegroundColor Green
+        } else {
+            Write-Host "[*] Checksum file not available, skipping verification." -ForegroundColor DarkGray
         }
     } else {
-        Write-Host "[*] Checksum file not available, skipping verification." -ForegroundColor DarkGray
+        Write-Host "[*] Fast install mode: skipping remote checksum verification." -ForegroundColor DarkGray
     }
 
     Write-Host "[*] Extracting binary..." -ForegroundColor Cyan
@@ -114,11 +130,15 @@ try {
     # Install the bundled embedding model as a sidecar next to the binary so the
     # embedder resolves it at <exe_dir>\models\<model>\ (no separate download).
     $SourceModels = Join-Path $SourceExe.Directory.FullName "models"
+    $DestModels = Join-Path $InstallDir "models"
     if (Test-Path $SourceModels) {
-        Write-Host "[*] Installing bundled embedding model (sidecar)..." -ForegroundColor Cyan
-        $DestModels = Join-Path $InstallDir "models"
-        if (Test-Path $DestModels) { Remove-Item -Recurse -Force $DestModels }
-        Copy-Item -Recurse -Path $SourceModels -Destination $DestModels -Force
+        if (-not $SkipModels -and (-not $Fast -or -not (Test-Path $DestModels))) {
+            Write-Host "[*] Installing bundled embedding model (sidecar)..." -ForegroundColor Cyan
+            if (Test-Path $DestModels) { Remove-Item -Recurse -Force $DestModels }
+            Copy-Item -Recurse -Path $SourceModels -Destination $DestModels -Force
+        } else {
+            Write-Host "[*] Preserving existing models directory." -ForegroundColor DarkGray
+        }
     }
 
     Write-Host ""
@@ -136,8 +156,12 @@ try {
     }
 
     # Auto-configure installed coding agents
-    Write-Host "[*] Auto-configuring coding agents (Cursor, Claude, Antigravity, Kiro CLI, VS Code, Windsurf, Zed)..." -ForegroundColor Cyan
-    & "$InstallDir\ctxvault.exe" install -y --dir="$InstallDir"
+    Write-Host "[*] Auto-configuring coding agents..." -ForegroundColor Cyan
+    $InstallArgs = @("install", "-y", "--dir=$InstallDir")
+    if ($Fast) { $InstallArgs += "--fast" }
+    if ($SkipRules) { $InstallArgs += "--rules=false" }
+    if ($Agents) { $InstallArgs += "--agents=$Agents" }
+    & "$InstallDir\ctxvault.exe" @InstallArgs
 
     Write-Host "[>] Run 'ctxvault --version' to verify your installation." -ForegroundColor Cyan
 } finally {

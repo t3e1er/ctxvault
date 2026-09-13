@@ -26,6 +26,11 @@ impl McpClient<HttpMcpTransport> {
     pub fn connect_http(url: &str) -> Self {
         Self { transport: HttpMcpTransport::new(url) }
     }
+
+    /// Connect to an MCP server via HTTP with an explicit API key.
+    pub fn connect_http_with_key(url: &str, api_key: impl Into<String>) -> Self {
+        Self { transport: HttpMcpTransport::new(url).with_api_key(api_key) }
+    }
 }
 
 impl McpClient<StdioMcpTransport> {

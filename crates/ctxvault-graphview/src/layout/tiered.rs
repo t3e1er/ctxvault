@@ -11,22 +11,218 @@ use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 
 use crate::layout::{
-    assign_color_and_type, compute_force_layout, ClusterMode, GraphLayout, LayoutConfig, NodeLayout,
+    assign_color_and_type, compute_force_layout, ClusterMode, EdgeLayout, GraphLayout,
+    LayoutConfig, NodeLayout,
 };
 use crate::loader::{CorpusCatalog, CorpusSnapshot};
 
-/// Maximum nodes allowed in Tier 0 Galaxy view.
-pub const TIER_0_BUDGET: usize = 5000;
+/// Maximum default nodes allowed in Tier 0 Galaxy view.
+pub const TIER_0_BUDGET: usize = 50000;
 /// Default node budget for Tier 1 Corpus view.
-pub const TIER_1_DEFAULT_BUDGET: usize = 25000;
+pub const TIER_1_DEFAULT_BUDGET: usize = 50000;
+
+/// Compute 3D celestial coordinates for all corpus clouds in Galaxy view.
+/// Distributes corpora across 3D space, grouping connected corpora together
+/// based on cojoining cross-corpus edges while guaranteeing spatial sovereignty (no overlapping clouds)
+/// for N >= 10 corpora.
+pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 3]> {
+    let names = catalog.corpus_names();
+    let num_corpora = names.len();
+    if num_corpora == 0 {
+        return HashMap::new();
+    }
+    if num_corpora == 1 {
+        let mut map = HashMap::new();
+        map.insert(names[0].clone(), [0.0, 0.0, 0.0]);
+        return map;
+    }
+
+    // 1. Build lookup of node paths per corpus to measure inter-corpus connectivity
+    let mut corpus_paths: Vec<HashSet<String>> = Vec::with_capacity(num_corpora);
+    for name in &names {
+        let mut paths = HashSet::new();
+        if let Some(snap) = catalog.get_corpus(name) {
+            let pet = snap.graph.inner();
+            for n_idx in pet.node_indices() {
+                let p = pet[n_idx].path.replace('\\', "/");
+                paths.insert(p.clone());
+                if let Some(sub) = p.split('#').nth(1) {
+                    paths.insert(sub.to_string());
+                }
+            }
+        }
+        corpus_paths.push(paths);
+    }
+
+    // 2. Count cross-corpus edge references between each pair of corpora (i, j)
+    let mut inter_links: HashMap<(usize, usize), usize> = HashMap::new();
+    for (i, name) in names.iter().enumerate() {
+        if let Some(snap) = catalog.get_corpus(name) {
+            let pet = snap.graph.inner();
+            for edge_ref in pet.edge_references() {
+                let tgt_p = pet[edge_ref.target()].path.replace('\\', "/");
+                let tgt_sub = tgt_p.split('#').nth(1).unwrap_or("");
+
+                for (j, other_paths) in corpus_paths.iter().enumerate() {
+                    if i != j
+                        && (other_paths.contains(&tgt_p)
+                            || (!tgt_sub.is_empty() && other_paths.contains(tgt_sub)))
+                    {
+                        let key = if i < j { (i, j) } else { (j, i) };
+                        *inter_links.entry(key).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut positions = Vec::with_capacity(num_corpora);
+
+    // If 2 corpora:
+    if num_corpora == 2 {
+        let links = inter_links.get(&(0, 1)).copied().unwrap_or(0);
+        // If cojoining edges exist, pull closer (1800 units total distance), else separate (2800 units)
+        let sep = if links > 0 { 900.0 } else { 1400.0 };
+        positions.push([-sep, 0.0, 0.0]);
+        positions.push([sep, 0.0, 0.0]);
+    } else {
+        // N >= 3: Initialize on 3D spherical Fibonacci lattice
+        let n_f = num_corpora as f32;
+        let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
+        let sphere_radius = 1200.0 + n_f * 250.0;
+
+        for i in 0..num_corpora {
+            let idx_f = i as f32;
+            let y = 1.0 - (idx_f / (n_f - 1.0)) * 2.0;
+            let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
+            let theta = 2.0 * std::f32::consts::PI * idx_f / phi;
+            let x = theta.cos() * radius_at_y * sphere_radius;
+            let y_pos = y * (sphere_radius * 0.6);
+            let z = theta.sin() * radius_at_y * sphere_radius;
+            positions.push([x, y_pos, z]);
+        }
+
+        // Run 50 iterations of spring-electrical relaxation to group cojoined corpora
+        let min_sep = 1600.0_f32; // Minimum distance between any two corpus clouds
+        for _ in 0..50 {
+            let mut forces = vec![[0.0_f32; 3]; num_corpora];
+
+            // All-pairs repulsion (prevent overlap)
+            for i in 0..num_corpora {
+                for j in (i + 1)..num_corpora {
+                    let dx = positions[j][0] - positions[i][0];
+                    let dy = positions[j][1] - positions[i][1];
+                    let dz = positions[j][2] - positions[i][2];
+                    let mut dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    if dist < 1.0 {
+                        dist = 1.0;
+                    }
+                    let nx = dx / dist;
+                    let ny = dy / dist;
+                    let nz = dz / dist;
+
+                    let rep = if dist < min_sep {
+                        (min_sep - dist) * 1.8 + 400000.0 / (dist * dist).max(100.0)
+                    } else {
+                        250000.0 / (dist * dist)
+                    };
+
+                    forces[i][0] -= nx * rep;
+                    forces[i][1] -= ny * rep;
+                    forces[i][2] -= nz * rep;
+
+                    forces[j][0] += nx * rep;
+                    forces[j][1] += ny * rep;
+                    forces[j][2] += nz * rep;
+
+                    // Attraction along cojoining edges
+                    let key = (i, j);
+                    let links = inter_links.get(&key).copied().unwrap_or(0);
+                    if links > 0 {
+                        let target_dist = 1800.0_f32;
+                        if dist > target_dist {
+                            let pull = ((dist - target_dist)
+                                * (0.04 + 0.02 * (links as f32).ln_1p()))
+                            .min(180.0);
+                            forces[i][0] += nx * pull;
+                            forces[i][1] += ny * pull;
+                            forces[i][2] += nz * pull;
+
+                            forces[j][0] -= nx * pull;
+                            forces[j][1] -= ny * pull;
+                            forces[j][2] -= nz * pull;
+                        }
+                    }
+                }
+            }
+
+            // Apply dampening and radial boundary pull
+            for i in 0..num_corpora {
+                let d_center =
+                    (positions[i][0].powi(2) + positions[i][1].powi(2) + positions[i][2].powi(2))
+                        .sqrt();
+                let center_pull = (d_center - sphere_radius) * 0.02;
+                if d_center > 1.0 {
+                    forces[i][0] -= (positions[i][0] / d_center) * center_pull;
+                    forces[i][1] -= (positions[i][1] / d_center) * center_pull;
+                    forces[i][2] -= (positions[i][2] / d_center) * center_pull;
+                }
+
+                positions[i][0] += forces[i][0].clamp(-150.0, 150.0) * 0.3;
+                positions[i][1] += forces[i][1].clamp(-150.0, 150.0) * 0.3;
+                positions[i][2] += forces[i][2].clamp(-150.0, 150.0) * 0.3;
+            }
+        }
+    }
+
+    let mut result = HashMap::with_capacity(num_corpora);
+    for (i, name) in names.into_iter().enumerate() {
+        result.insert(name, positions[i]);
+    }
+    result
+}
+
+/// Fallback single-index celestial coordinate calculation.
+pub fn compute_corpus_center(c_idx: usize, num_corpora: usize) -> [f32; 3] {
+    if num_corpora <= 1 {
+        return [0.0, 0.0, 0.0];
+    }
+    if num_corpora == 2 {
+        let sep = 1350.0;
+        return if c_idx == 0 { [-sep, 0.0, 0.0] } else { [sep, 0.0, 0.0] };
+    }
+
+    let n = num_corpora as f32;
+    let i = c_idx as f32;
+    let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
+    let y = 1.0 - (i / (n - 1.0)) * 2.0;
+    let radius_at_y = (1.0 - y * y).max(0.0).sqrt();
+    let theta = 2.0 * std::f32::consts::PI * i / phi;
+
+    let sphere_radius = 1200.0 + n * 250.0;
+    let x = theta.cos() * radius_at_y * sphere_radius;
+    let y_pos = y * (sphere_radius * 0.55);
+    let z = theta.sin() * radius_at_y * sphere_radius;
+
+    [x, y_pos, z]
+}
 
 /// Compute Tier 0: Galaxy Overview across all loaded corpora or a specific corpus.
-pub fn build_tier_0_overview(catalog: &CorpusCatalog, cluster_mode: ClusterMode) -> GraphLayout {
+pub fn build_tier_0_overview(
+    catalog: &CorpusCatalog,
+    budget: usize,
+    cluster_mode: ClusterMode,
+) -> GraphLayout {
     let mut all_nodes = Vec::new();
     let mut all_edges = Vec::new();
 
     let corpus_names = catalog.corpus_names();
     let num_corpora = corpus_names.len().max(1);
+    let centers = compute_corpus_centers(catalog);
+
+    // Global path -> node_id mapping for cross-corpus links
+    let mut path_to_global_id: HashMap<String, u32> = HashMap::new();
+    let mut node_to_corpus: Vec<usize> = Vec::new();
 
     for (c_idx, name) in corpus_names.iter().enumerate() {
         let Some(snapshot) = catalog.get_corpus(name) else {
@@ -34,26 +230,33 @@ pub fn build_tier_0_overview(catalog: &CorpusCatalog, cluster_mode: ClusterMode)
         };
 
         // Budget per corpus in multi-corpus mode
-        let per_corpus_budget = (TIER_0_BUDGET / num_corpora).max(200);
+        let per_corpus_budget = (budget / num_corpora).max(2000);
         let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
-        // Position offset for galaxy separation: distribute corpora around a balanced circle
-        let angle = 2.0 * std::f32::consts::PI * (c_idx as f32) / (num_corpora as f32);
-        let galaxy_radius = if num_corpora > 1 { 450.0 + (num_corpora as f32) * 50.0 } else { 0.0 };
-        let offset_x = angle.cos() * galaxy_radius;
-        let offset_z = angle.sin() * galaxy_radius;
-
+        let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
         let base_id = all_nodes.len() as u32;
+        // Namespacing community IDs per corpus guarantees commCentroids in frontend never collapses
+        let base_comm = ((c_idx + 1) as u32) * 1000;
         let mut id_map = HashMap::new();
 
         for (local_i, mut node) in layout.nodes.into_iter().enumerate() {
             let global_id = base_id + (local_i as u32);
             id_map.insert(node.id, global_id);
 
+            path_to_global_id.insert(node.path.clone(), global_id);
+            let clean_p = node.path.replace('\\', "/");
+            path_to_global_id.insert(clean_p.clone(), global_id);
+            if let Some(sub) = clean_p.split('#').nth(1) {
+                path_to_global_id.insert(sub.to_string(), global_id);
+            }
+
             node.id = global_id;
-            node.position[0] += offset_x;
-            node.position[2] += offset_z;
+            node.community += base_comm;
+            node.position[0] += center[0];
+            node.position[1] += center[1];
+            node.position[2] += center[2];
             all_nodes.push(node);
+            node_to_corpus.push(c_idx);
         }
 
         for mut edge in layout.edges {
@@ -61,6 +264,43 @@ pub fn build_tier_0_overview(catalog: &CorpusCatalog, cluster_mode: ClusterMode)
                 edge.source = src;
                 edge.target = tgt;
                 all_edges.push(edge);
+            }
+        }
+    }
+
+    // Detect and connect cojoining cross-corpus edges
+    for name in &corpus_names {
+        if let Some(snapshot) = catalog.get_corpus(name) {
+            let pet = snapshot.graph.inner();
+            for edge_ref in pet.edge_references() {
+                let src_node = &pet[edge_ref.source()];
+                let tgt_node = &pet[edge_ref.target()];
+                let src_p = src_node.path.replace('\\', "/");
+                let tgt_p = tgt_node.path.replace('\\', "/");
+
+                if let (Some(&s_id), Some(&t_id)) = (
+                    path_to_global_id.get(&src_p).or_else(|| {
+                        src_p.split('#').nth(1).and_then(|sub| path_to_global_id.get(sub))
+                    }),
+                    path_to_global_id.get(&tgt_p).or_else(|| {
+                        tgt_p.split('#').nth(1).and_then(|sub| path_to_global_id.get(sub))
+                    }),
+                ) {
+                    let s_idx = s_id as usize;
+                    let t_idx = t_id as usize;
+                    if s_id != t_id
+                        && s_idx < node_to_corpus.len()
+                        && t_idx < node_to_corpus.len()
+                        && node_to_corpus[s_idx] != node_to_corpus[t_idx]
+                    {
+                        all_edges.push(EdgeLayout {
+                            source: s_id,
+                            target: t_id,
+                            edge_type: "cross_corpus".to_string(),
+                            weight: 2.0,
+                        });
+                    }
+                }
             }
         }
     }

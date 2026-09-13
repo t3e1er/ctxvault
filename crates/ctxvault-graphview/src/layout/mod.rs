@@ -188,17 +188,24 @@ pub fn assign_color_and_type(
     community: u32,
     ast_types: Option<&HashMap<String, String>>,
 ) -> (String, u32) {
+    let clean_path = path.replace('\\', "/");
+
     // 1. Authoritative AST metadata lookup from meta.db
     if let Some(types) = ast_types {
-        if let Some(sym_type) = types.get(path) {
+        if let Some(sym_type) = types.get(path).or_else(|| types.get(&clean_path)) {
             let color = color_for_entity_type(sym_type, community);
             return (normalize_type_label(sym_type), color);
         }
-        let clean_path = path.replace('\\', "/");
         if let Some(sub) = clean_path.split('#').nth(1) {
             if let Some(sym_type) = types.get(sub) {
                 let color = color_for_entity_type(sym_type, community);
                 return (normalize_type_label(sym_type), color);
+            }
+            if let Some(leaf) = sub.split("::").last() {
+                if let Some(sym_type) = types.get(leaf) {
+                    let color = color_for_entity_type(sym_type, community);
+                    return (normalize_type_label(sym_type), color);
+                }
             }
         }
         if let Some(sub) = clean_path.split("::").last() {
@@ -214,15 +221,44 @@ pub fn assign_color_and_type(
         }
     }
 
-    // 2. Structural file heuristics
-    if path.ends_with(".md") || path.contains("docs/") || path.contains("adr/") {
+    // 2. Structural file & symbol heuristics
+    let leaf = clean_path.split('#').nth(1).unwrap_or(&clean_path);
+    let sym_leaf = leaf.split("::").last().unwrap_or(leaf);
+
+    if clean_path.ends_with(".md") || clean_path.contains("docs/") || clean_path.contains("adr/") {
         ("DocNode".to_string(), 0x3b82f6) // Sapphire Blue
-    } else if path.ends_with(".rs") || path.ends_with(".ts") || path.ends_with(".js") || path.ends_with(".py") || path.ends_with(".go") {
+    } else if !clean_path.contains('#')
+        && (clean_path.ends_with(".rs")
+            || clean_path.ends_with(".ts")
+            || clean_path.ends_with(".js")
+            || clean_path.ends_with(".py")
+            || clean_path.ends_with(".go"))
+    {
         ("Module".to_string(), 0x06b6d4) // Cyan
-    } else if path.contains("::fn ") || path.contains("() ") || path.ends_with(".rs#") {
-        ("Function".to_string(), 0x10b981) // Emerald Neon
-    } else if path.contains("struct ") || path.contains("class ") || path.contains("interface ") {
+    } else if sym_leaf.ends_with('!') || sym_leaf.starts_with("macro_") {
+        ("Macro".to_string(), 0x14b8a6) // Teal
+    } else if sym_leaf.starts_with("trait ")
+        || sym_leaf.ends_with("Trait")
+        || sym_leaf.ends_with("Ext")
+    {
+        ("Trait".to_string(), 0xec4899) // Hot Pink
+    } else if sym_leaf.starts_with("enum ")
+        || sym_leaf.ends_with("Enum")
+        || sym_leaf.ends_with("Kind")
+    {
+        ("Enum".to_string(), 0xf59e0b) // Amber
+    } else if sym_leaf.starts_with("struct ")
+        || sym_leaf.starts_with("class ")
+        || sym_leaf.starts_with("interface ")
+        || sym_leaf.chars().next().map_or(false, |c| c.is_uppercase())
+    {
         ("Struct".to_string(), 0x8b5cf6) // Electric Purple
+    } else if sym_leaf.contains("::fn ")
+        || sym_leaf.contains("()")
+        || sym_leaf.ends_with(".rs#")
+        || sym_leaf.chars().next().map_or(false, |c| c.is_lowercase())
+    {
+        ("Function".to_string(), 0x10b981) // Emerald Neon
     } else {
         // Community-based gradient fallback
         let palette = [

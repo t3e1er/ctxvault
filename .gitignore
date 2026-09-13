@@ -41,4 +41,8 @@ scratch/
 *.log
 
 # Kiro settings (user-specific MCP config)
-.kiro/settings/
+.kiro/settings/
+
+# Local client credentials & profiles (generate via 'ctxvault client init')
+clients.json
+ctxv-clients.json
