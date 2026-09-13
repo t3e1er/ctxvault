@@ -37,3 +37,4 @@ All architectural design decisions in `ctxvault` are formally recorded as **Arch
 | **[[docs/architecture/adr/adr-017-docs-embed-intermediate-indexing-mode]]** | Intermediate Docs-Embed Indexing Mode | Pipeline Optimization |
 | **[[docs/architecture/adr/adr-018-file-skeleton-map-chunking]]** | File Skeleton Map Chunking for Skeleton Mode | Embedding Volume & Throughput |
 | **[[docs/architecture/adr/adr-019-file-level-rrf-fusion]]** | File-Level RRF Fusion Key for Code Search | Search Correctness & Signal Fusion |
+| **[[docs/architecture/adr/adr-020-lean-multiline-text-emission]]** | Lean Multiline Text Emission Protocol Across Progressive Disclosure Turns | Token Efficiency & MCP Wire Protocol |

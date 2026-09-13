@@ -202,15 +202,24 @@ pub fn handle_tools_call_multi_read(
         .and_then(|v| v.as_str())
         .ok_or_else(|| Error::Config("missing tool name".into()))?;
 
-    let arguments =
+    let mut arguments =
         params.get("arguments").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
 
+    if let Value::Object(ref mut map) = arguments {
+        map.entry("format").or_insert_with(|| Value::String("lean".to_string()));
+    }
+
     let result = registry.execute_read(tool_name, manager, arguments)?;
+
+    let text = match result {
+        Value::String(s) => s,
+        other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+    };
 
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+            "text": text
         }]
     }))
 }
@@ -233,10 +242,15 @@ pub fn handle_tools_call_multi_write(
 
     let result = registry.execute_write(tool_name, manager, arguments)?;
 
+    let text = match result {
+        Value::String(s) => s,
+        other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+    };
+
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+            "text": text
         }]
     }))
 }
