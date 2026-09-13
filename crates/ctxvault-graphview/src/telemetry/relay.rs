@@ -15,11 +15,12 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivation {
     /// Timestamp in UNIX milliseconds.
+    #[serde(default)]
     pub timestamp: u64,
     /// Tool name (e.g. search, get_snippet, graph_match, write_note).
     pub tool: String,
     /// Connected AI client ID (e.g. "antigravity", "claude", "gemini").
-    #[serde(default)]
+    #[serde(default, alias = "client")]
     pub client_id: Option<String>,
     /// Connected AI client display name.
     #[serde(default)]
@@ -28,15 +29,24 @@ pub struct AgentActivation {
     #[serde(default)]
     pub client_color: Option<String>,
     /// Target corpus name, if scoped.
+    #[serde(default)]
     pub corpus: Option<String>,
     /// Search query or Cypher pattern, if applicable.
+    #[serde(default, alias = "summary")]
     pub query: Option<String>,
     /// Repository paths of nodes activated or touched.
+    #[serde(default, alias = "hits")]
     pub paths: Vec<String>,
     /// Execution duration in milliseconds.
+    #[serde(default)]
     pub duration_ms: f64,
     /// Whether the tool execution succeeded.
+    #[serde(default = "default_true")]
     pub success: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Telemetry hub holding circular ring buffer and broadcast channel.

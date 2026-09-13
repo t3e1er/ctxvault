@@ -341,6 +341,7 @@ pub fn create_router(state: ServerState) -> Router {
             "/api/events/activations",
             get(handle_sse_activations).post(handle_inject_activation),
         )
+        .route("/api/mcp/activity", post(handle_inject_activation))
         .fallback(handle_embedded_html)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

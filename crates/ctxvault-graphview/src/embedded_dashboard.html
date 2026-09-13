@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ctxvault GraphView — 3D Knowledge Graph & Multi-Agent Activations</title>
+  <title>Ctxvault GraphView</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
@@ -25,9 +26,31 @@
       --text-main: #f1f5f9;
       --text-muted: #94a3b8;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body, html { width: 100%; height: 100%; overflow: hidden; background: var(--bg-dark); color: var(--text-main); }
-    #canvas-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    body,
+    html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg-dark);
+      color: var(--text-main);
+    }
+
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
 
     /* Glassmorphic Overlays */
     .glass-panel {
@@ -52,6 +75,7 @@
       justify-content: space-between;
       padding: 0 20px;
     }
+
     .brand {
       display: flex;
       align-items: center;
@@ -60,6 +84,7 @@
       font-size: 1.15rem;
       letter-spacing: 0.5px;
     }
+
     .brand-glow {
       width: 14px;
       height: 14px;
@@ -68,7 +93,18 @@
       box-shadow: 0 0 16px var(--neon-blue), 0 0 32px var(--neon-blue);
       animation: pulse 2.5s infinite alternate;
     }
-    @keyframes pulse { 0% { transform: scale(0.9); opacity: 0.7; } 100% { transform: scale(1.2); opacity: 1; } }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(0.9);
+        opacity: 0.7;
+      }
+
+      100% {
+        transform: scale(1.2);
+        opacity: 1;
+      }
+    }
 
     .header-controls {
       display: flex;
@@ -83,6 +119,7 @@
       border-radius: 8px;
       border: 1px solid var(--panel-border);
     }
+
     .pill-btn {
       background: transparent;
       border: none;
@@ -94,6 +131,7 @@
       cursor: pointer;
       transition: all 0.2s ease;
     }
+
     .pill-btn.active {
       background: var(--neon-blue);
       color: #030712;
@@ -109,6 +147,7 @@
       padding: 6px 12px;
       width: 320px;
     }
+
     .search-box input {
       background: transparent;
       border: none;
@@ -117,7 +156,10 @@
       width: 100%;
       font-size: 0.85rem;
     }
-    .search-box input::placeholder { color: #64748b; }
+
+    .search-box input::placeholder {
+      color: #64748b;
+    }
 
     /* Left Sidebar: Entity & Filter Panel */
     .sidebar {
@@ -132,6 +174,7 @@
       gap: 18px;
       overflow-y: auto;
     }
+
     .section-title {
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -140,6 +183,7 @@
       font-weight: 700;
       margin-bottom: 8px;
     }
+
     .type-chip {
       display: flex;
       align-items: center;
@@ -153,14 +197,17 @@
       font-size: 0.85rem;
       transition: all 0.2s ease;
     }
+
     .type-chip:hover {
       background: rgba(30, 41, 59, 0.8);
       border-color: var(--panel-border);
     }
+
     .type-chip.active {
       border-color: var(--neon-blue);
       box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
     }
+
     .type-color {
       width: 10px;
       height: 10px;
@@ -181,14 +228,17 @@
       overflow: hidden;
       transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     }
+
     .agent-hud.minimized {
       width: auto;
       min-width: 250px;
       padding: 10px 14px;
     }
+
     .agent-hud.minimized .telemetry-stream {
       display: none;
     }
+
     .hud-toggle-btn {
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid rgba(255, 255, 255, 0.15);
@@ -206,22 +256,34 @@
       padding: 0;
       transition: all 0.15s;
     }
+
     .hud-toggle-btn:hover {
       background: rgba(255, 255, 255, 0.2);
       color: #fff;
     }
+
     .telemetry-stream {
       display: flex;
       flex-direction: column;
       gap: 8px;
       margin-top: 10px;
-      overflow: hidden; /* Top-K: zero scrollbars */
+      overflow: hidden;
+      /* Top-K: zero scrollbars */
       max-height: 380px;
     }
+
     @keyframes slideInDown {
-      from { opacity: 0; transform: translateY(-10px); }
-      to { opacity: 1; transform: translateY(0); }
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
+
     .activation-card {
       background: rgba(15, 23, 42, 0.85);
       border-left: 3px solid var(--neon-pink);
@@ -231,12 +293,14 @@
       animation: slideInDown 0.28s cubic-bezier(0.16, 1, 0.3, 1);
       transition: opacity 0.25s ease, transform 0.25s ease, margin-top 0.25s ease;
     }
+
     .activation-card.drop-off {
       opacity: 0;
       transform: translateY(12px) scale(0.96);
       margin-top: -46px;
       pointer-events: none;
     }
+
     .act-header {
       display: flex;
       justify-content: space-between;
@@ -245,7 +309,12 @@
       font-size: 0.7rem;
       margin-bottom: 4px;
     }
-    .act-tool { font-weight: 700; color: #fff; }
+
+    .act-tool {
+      font-weight: 700;
+      color: #fff;
+    }
+
     .act-client {
       font-size: 0.65rem;
       font-weight: 600;
@@ -254,6 +323,7 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+
     .act-path {
       color: #94a3b8;
       overflow: hidden;
@@ -274,11 +344,35 @@
       align-items: center;
       justify-content: space-between;
     }
-    .node-meta h3 { font-size: 1rem; color: #fff; margin-bottom: 4px; }
-    .node-meta p { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
-    .node-stats { display: flex; gap: 24px; }
-    .stat-val { font-size: 1.15rem; font-weight: 700; color: var(--neon-blue); }
-    .stat-lbl { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
+
+    .node-meta h3 {
+      font-size: 1rem;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .node-meta p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    .node-stats {
+      display: flex;
+      gap: 24px;
+    }
+
+    .stat-val {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--neon-blue);
+    }
+
+    .stat-lbl {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
 
     /* Sliders */
     .slider-row {
@@ -288,13 +382,26 @@
       margin-top: 6px;
       font-size: 0.8rem;
     }
+
     .slider-row input[type="range"] {
       width: 130px;
       accent-color: var(--neon-blue);
     }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
   </style>
 </head>
+
 <body>
   <div id="canvas-container"></div>
 
@@ -320,7 +427,8 @@
       </div>
 
       <!-- Multi-Corpus Selection (Requirement 6) -->
-      <select id="corpus-select" style="background: rgba(15,23,42,0.8); color: #fff; border: 1px solid var(--panel-border); padding: 6px 12px; border-radius: 8px; outline: none; font-size: 0.85rem;">
+      <select id="corpus-select"
+        style="background: rgba(15,23,42,0.8); color: #fff; border: 1px solid var(--panel-border); padding: 6px 12px; border-radius: 8px; outline: none; font-size: 0.85rem;">
         <option value="all">Galaxy: All Corpora</option>
       </select>
 
@@ -371,11 +479,13 @@
       </div>
       <div class="slider-row">
         <span>Cluster Spacing</span>
-        <input type="range" id="cluster-dist-slider" min="1" max="40" value="10" title="Adjust distance between community/directory clusters">
+        <input type="range" id="cluster-dist-slider" min="1" max="40" value="10"
+          title="Adjust distance between community/directory clusters">
       </div>
       <div class="slider-row">
         <span>Node Spread</span>
-        <input type="range" id="node-disp-slider" min="1" max="30" value="10" title="Adjust local dispersion of nodes within clusters">
+        <input type="range" id="node-disp-slider" min="1" max="30" value="10"
+          title="Adjust local dispersion of nodes within clusters">
       </div>
       <div class="slider-row">
         <span>Edge Density</span>
@@ -404,7 +514,9 @@
       </div>
     </div>
     <div class="telemetry-stream" id="telemetry-stream">
-      <div class="awaiting-placeholder" style="color: #64748b; font-size: 0.8rem; text-align: center; margin-top: 20px;">Awaiting agent activity...</div>
+      <div class="awaiting-placeholder"
+        style="color: #64748b; font-size: 0.8rem; text-align: center; margin-top: 20px;">Awaiting agent activity...
+      </div>
     </div>
   </div>
 
@@ -415,9 +527,18 @@
       <p id="inspect-path">Select an entity to inspect graph topology and Turn 1 context</p>
     </div>
     <div class="node-stats">
-      <div><div class="stat-val" id="inspect-degree">-</div><div class="stat-lbl">Degree</div></div>
-      <div><div class="stat-val" id="inspect-comm">-</div><div class="stat-lbl">Community</div></div>
-      <div><div class="stat-val" id="inspect-type">-</div><div class="stat-lbl">Class</div></div>
+      <div>
+        <div class="stat-val" id="inspect-degree">-</div>
+        <div class="stat-lbl">Degree</div>
+      </div>
+      <div>
+        <div class="stat-val" id="inspect-comm">-</div>
+        <div class="stat-lbl">Community</div>
+      </div>
+      <div>
+        <div class="stat-val" id="inspect-type">-</div>
+        <div class="stat-lbl">Class</div>
+      </div>
     </div>
   </div>
 
@@ -494,10 +615,10 @@
 
     // Binary wire protocol parser (32 bytes per node, 12 bytes per edge)
     async function fetchGraphData(corpus, mode, clusterMode = currentClusterMode) {
-      let url = corpus === 'all' 
-        ? `/api/graph/overview?format=binary&cluster_mode=${encodeURIComponent(clusterMode)}` 
+      let url = corpus === 'all'
+        ? `/api/graph/overview?format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`
         : `/api/graph/corpus/${encodeURIComponent(corpus)}?budget=35000&format=binary&cluster_mode=${encodeURIComponent(clusterMode)}`;
-      
+
       const res = await fetch(url);
       const buffer = await res.arrayBuffer();
       const view = new DataView(buffer);
@@ -814,7 +935,7 @@
             <span class="act-client" style="background: ${client.color}22; color: ${client.color}; border: 1px solid ${client.color}55;">${client.name}</span>
             <span class="act-tool">${act.tool}</span>
           </div>
-          <span>${act.duration_ms.toFixed(1)}ms</span>
+          <span>${typeof act.duration_ms === 'number' ? act.duration_ms.toFixed(1) : '0.0'}ms</span>
         </div>
         <div class="act-path">${act.paths && act.paths[0] ? act.paths[0] : (act.query || 'Knowledge traversal')}</div>
       `;
@@ -1119,7 +1240,7 @@
       if (isTrace) {
         // Multi-hop sequential chain vs fanout
         const isFanout = (act.tool === 'graph_match' && act.query && act.query.includes('->') && !act.query.includes('*'))
-                         || (matchedIndices.length > 3 && targetPaths.length > 2);
+          || (matchedIndices.length > 3 && targetPaths.length > 2);
 
         if (isFanout) {
           // 1-to-many fanout: pulse root, then fanout concurrent meteors to all targets
@@ -1603,4 +1724,5 @@
     animate();
   </script>
 </body>
+
 </html>
