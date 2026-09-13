@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -88,6 +88,15 @@ pub struct AgentActivation {
     pub timestamp: u64,
     /// Tool name (e.g. search, get_snippet, graph_match, write_note).
     pub tool: String,
+    /// Connected AI client ID (e.g. "antigravity", "claude", "gemini").
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Connected AI client display name.
+    #[serde(default)]
+    pub client_name: Option<String>,
+    /// Associated theme color (e.g. "#38bdf8").
+    #[serde(default)]
+    pub client_color: Option<String>,
     /// Target corpus name, if scoped.
     pub corpus: Option<String>,
     /// Search query or Cypher pattern, if applicable.
@@ -113,6 +122,8 @@ pub struct MultiCorpusServerState {
     pub active_sessions: Arc<AtomicU64>,
     /// Broadcast channel for agent activity telemetry.
     pub activations: tokio::sync::broadcast::Sender<AgentActivation>,
+    /// Client authentication and tracking registry.
+    pub clients: Arc<ctxvault_common::ClientsRegistry>,
 }
 
 impl MultiCorpusServerState {
@@ -123,12 +134,14 @@ impl MultiCorpusServerState {
     ) -> Self {
         let now = current_timestamp_secs();
         let (activations, _) = tokio::sync::broadcast::channel(1024);
+        let clients = Arc::new(ctxvault_common::client::load_clients_config(None));
         Self {
             manager,
             registry,
             last_activity: Arc::new(AtomicU64::new(now)),
             active_sessions: Arc::new(AtomicU64::new(0)),
             activations,
+            clients,
         }
     }
 }
@@ -155,12 +168,14 @@ pub async fn run_http_server_multi_with_options(
 ) -> Result<()> {
     let now = current_timestamp_secs();
     let (activations, _) = tokio::sync::broadcast::channel(1024);
+    let clients = Arc::new(ctxvault_common::client::load_clients_config(None));
     let state = MultiCorpusServerState {
         manager: Arc::new(RwLock::new(manager)),
         registry: Arc::new(registry),
         last_activity: Arc::new(AtomicU64::new(now)),
         active_sessions: Arc::new(AtomicU64::new(0)),
         activations,
+        clients,
     };
 
     let app = Router::new()
@@ -269,8 +284,38 @@ pub async fn run_http_server_multi_with_options(
 /// Process single or batch JSON-RPC request for multi-corpus server.
 async fn handle_jsonrpc_multi(
     State(state): State<MultiCorpusServerState>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let client_key = headers
+        .get("x-client-key")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+        });
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok());
+
+    if state.clients.require_auth {
+        match client_key {
+            Some(k) if state.clients.find_by_key(k).is_some() => {}
+            _ => {
+                warn!("Unauthorized MCP JSON-RPC request rejected");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(make_error_response(Value::Null, -32000, "Unauthorized: missing or invalid client key")),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let resolved_client = state.clients.resolve(client_key, client_id);
+
     if body.is_array() {
         let requests: Vec<JsonRpcRequest> = match serde_json::from_value(body) {
             Ok(reqs) => reqs,
@@ -313,6 +358,10 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
+                if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+                    let _ = state.activations.send(activation);
+                }
+
                 if let Some(id) = req.id {
                     responses.push(format_rpc_response(id, res));
                 }
@@ -341,6 +390,10 @@ async fn handle_jsonrpc_multi(
                     Err(e) => {
                         warn!(req_id, duration_ms = elapsed_ms, error = %e, "[RES #{req_id}] <-- Error: {} ({:.2}ms)", e, elapsed_ms);
                     }
+                }
+
+                if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+                    let _ = state.activations.send(activation);
                 }
 
                 if let Some(id) = req.id {
@@ -395,7 +448,7 @@ async fn handle_jsonrpc_multi(
             }
         }
 
-        if let Some(activation) = extract_activation(&req, &res, elapsed_ms) {
+        if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
             let _ = state.activations.send(activation);
         }
 
@@ -435,6 +488,7 @@ fn extract_activation(
     req: &JsonRpcRequest,
     res: &Result<Value>,
     duration_ms: f64,
+    client: Option<&ctxvault_common::ClientEntry>,
 ) -> Option<AgentActivation> {
     if req.method != "tools/call" {
         return None;
@@ -468,6 +522,9 @@ fn extract_activation(
     Some(AgentActivation {
         timestamp: current_timestamp_secs() * 1000,
         tool,
+        client_id: client.map(|c| c.id.clone()),
+        client_name: client.map(|c| c.name.clone()),
+        client_color: client.map(|c| c.color.clone()),
         corpus,
         query,
         paths,

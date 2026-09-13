@@ -296,11 +296,27 @@ pub async fn handle_sse_activations(
     Sse::new(combined).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
 }
 
+/// Return configured client profiles and visual identities.
+pub async fn handle_clients(State(state): State<ServerState>) -> Json<ctxvault_common::ClientsRegistry> {
+    Json((*state.clients).clone())
+}
+
 /// Inject synthetic test activation (for testing/demo purposes).
 pub async fn handle_inject_activation(
     State(state): State<ServerState>,
-    Json(activation): Json<AgentActivation>,
+    Json(mut activation): Json<AgentActivation>,
 ) -> StatusCode {
+    if activation.client_color.is_none() {
+        if let Some(entry) = state.clients.resolve(None, activation.client_id.as_deref()) {
+            if activation.client_id.is_none() {
+                activation.client_id = Some(entry.id.clone());
+            }
+            if activation.client_name.is_none() {
+                activation.client_name = Some(entry.name.clone());
+            }
+            activation.client_color = Some(entry.color.clone());
+        }
+    }
     state.telemetry.publish(activation).await;
     StatusCode::ACCEPTED
 }
@@ -316,6 +332,7 @@ pub fn create_router(state: ServerState) -> Router {
     Router::new()
         .route("/api/status", get(handle_status))
         .route("/api/corpora", get(handle_corpora))
+        .route("/api/clients", get(handle_clients))
         .route("/api/graph/overview", get(handle_overview))
         .route("/api/graph/corpus/{name}", get(handle_corpus))
         .route("/api/graph/subgraph", get(handle_subgraph))

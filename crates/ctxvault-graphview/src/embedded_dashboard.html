@@ -175,38 +175,85 @@
       top: 90px;
       right: 16px;
       width: 330px;
-      max-height: 480px;
-      padding: 18px;
+      padding: 14px 16px;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .agent-hud.minimized {
+      width: auto;
+      min-width: 250px;
+      padding: 10px 14px;
+    }
+    .agent-hud.minimized .telemetry-stream {
+      display: none;
+    }
+    .hud-toggle-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #94a3b8;
+      border-radius: 4px;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 700;
+      line-height: 1;
+      padding: 0;
+      transition: all 0.15s;
+    }
+    .hud-toggle-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
     }
     .telemetry-stream {
       display: flex;
       flex-direction: column;
       gap: 8px;
       margin-top: 10px;
-      overflow-y: auto;
+      overflow: hidden; /* Top-K: zero scrollbars */
       max-height: 380px;
     }
+    @keyframes slideInDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     .activation-card {
-      background: rgba(15, 23, 42, 0.7);
+      background: rgba(15, 23, 42, 0.85);
       border-left: 3px solid var(--neon-pink);
       padding: 8px 12px;
       border-radius: 6px;
       font-size: 0.8rem;
-      animation: fadeIn 0.3s ease;
+      animation: slideInDown 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: opacity 0.25s ease, transform 0.25s ease, margin-top 0.25s ease;
     }
-    .activation-card.search { border-left-color: var(--neon-amber); }
-    .activation-card.read { border-left-color: var(--neon-blue); }
-    .activation-card.write { border-left-color: var(--neon-emerald); }
+    .activation-card.drop-off {
+      opacity: 0;
+      transform: translateY(12px) scale(0.96);
+      margin-top: -46px;
+      pointer-events: none;
+    }
     .act-header {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       color: var(--text-muted);
       font-size: 0.7rem;
       margin-bottom: 4px;
     }
     .act-tool { font-weight: 700; color: #fff; }
+    .act-client {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
     .act-path {
       color: #94a3b8;
       overflow: hidden;
@@ -342,12 +389,18 @@
   </div>
 
   <!-- Right Agent Activity Stream (Requirement 5: SSE Activations) -->
-  <div class="agent-hud glass-panel">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-      <div class="section-title" style="margin: 0;">Multi-Agent Activations</div>
-      <div style="font-size: 0.7rem; color: var(--neon-emerald); display: flex; align-items: center; gap: 4px;">
-        <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neon-emerald);"></span>
-        LIVE SSE
+  <div class="agent-hud glass-panel" id="agent-hud">
+    <div style="display: flex; justify-content: space-between; align-items: center; user-select: none;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <div class="section-title" id="hud-title" style="margin: 0;">Multi-Agent Activations</div>
+        <span id="hud-counter" style="font-size: 0.7rem; color: #94a3b8; display: none;"></span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="font-size: 0.7rem; color: var(--neon-emerald); display: flex; align-items: center; gap: 4px;">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--neon-emerald);"></span>
+          LIVE
+        </div>
+        <button id="hud-toggle-btn" class="hud-toggle-btn" title="Toggle HUD visibility">—</button>
       </div>
     </div>
     <div class="telemetry-stream" id="telemetry-stream">
@@ -376,7 +429,11 @@
     let selectedType = 'all';
     let graphData = { nodes: [], edges: [] };
     let activations = new Map(); // path -> { time, intensity }
-    let activeBeacons = []; // Active 3D shockwave rings & floating icon badges
+    let activeBeacons = []; // Active 3D shockwave rings, fog auras, lights & floating icon badges
+    let activeMeteors = []; // Active 3D parabolic meteor trajectories
+    let registeredClients = new Map(); // id -> ClientEntry
+    let totalActivations = 0;
+    const MAX_HUD_CARDS = 5;
     let basePositions = null;
     let commCentroids = new Map();
 
@@ -522,12 +579,27 @@
         activeBeacons.forEach(b => {
           scene.remove(b.ring);
           scene.remove(b.sprite);
+          scene.remove(b.fogAura);
+          if (b.light) scene.remove(b.light);
           if (b.ring.geometry) b.ring.geometry.dispose();
           if (b.ring.material) b.ring.material.dispose();
           if (b.sprite.material && b.sprite.material.map) b.sprite.material.map.dispose();
           if (b.sprite.material) b.sprite.material.dispose();
+          if (b.fogAura.material && b.fogAura.material.map) b.fogAura.material.map.dispose();
+          if (b.fogAura.material) b.fogAura.material.dispose();
         });
         activeBeacons = [];
+      }
+      if (activeMeteors && activeMeteors.length > 0) {
+        activeMeteors.forEach(m => {
+          scene.remove(m.head);
+          scene.remove(m.trail);
+          if (m.head.material && m.head.material.map) m.head.material.map.dispose();
+          if (m.head.material) m.head.material.dispose();
+          if (m.trail.geometry) m.trail.geometry.dispose();
+          if (m.trail.material) m.trail.material.dispose();
+        });
+        activeMeteors = [];
       }
 
       graphData = data;
@@ -695,33 +767,72 @@
       });
     }
 
+    // Load registered client profiles
+    async function loadClients() {
+      try {
+        const res = await fetch('/api/clients');
+        const data = await res.json();
+        if (data && data.clients) {
+          data.clients.forEach(c => registeredClients.set(c.id.toLowerCase(), c));
+        }
+      } catch (err) {
+        console.warn('Clients config fetch failed, using fallback', err);
+      }
+    }
+
+    // Resolve client visual identity
+    function resolveClientInfo(act) {
+      let id = (act.client_id || 'default').toLowerCase();
+      let registered = registeredClients.get(id);
+      let name = act.client_name || (registered ? registered.name : (act.client_id ? act.client_id.toUpperCase() : 'Agent'));
+      let color = act.client_color || (registered ? registered.color : '#38bdf8');
+      return { id, name, color };
+    }
+
     function renderActivationCard(act) {
       const container = document.getElementById('telemetry-stream');
       const placeholder = container.querySelector('.awaiting-placeholder');
       if (placeholder) {
         placeholder.remove();
       }
-      if (container.children.length > 20) container.removeChild(container.lastChild);
+
+      totalActivations++;
+      const hudCounter = document.getElementById('hud-counter');
+      if (hudCounter) {
+        hudCounter.textContent = `• ${totalActivations} events`;
+      }
+
+      const client = resolveClientInfo(act);
 
       const card = document.createElement('div');
-      let actType = 'read';
-      if (act.tool.includes('write') || act.tool.includes('delete') || act.tool.includes('move')) actType = 'write';
-      else if (act.tool.includes('search')) actType = 'search';
-      else if (act.tool.includes('graph')) actType = 'read';
-
-      card.className = `activation-card ${actType}`;
+      card.className = 'activation-card';
+      card.style.borderLeft = `3px solid ${client.color}`;
+      card.style.boxShadow = `0 0 12px ${client.color}22`;
       card.innerHTML = `
         <div class="act-header">
-          <span class="act-tool">${act.tool}</span>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span class="act-client" style="background: ${client.color}22; color: ${client.color}; border: 1px solid ${client.color}55;">${client.name}</span>
+            <span class="act-tool">${act.tool}</span>
+          </div>
           <span>${act.duration_ms.toFixed(1)}ms</span>
         </div>
         <div class="act-path">${act.paths && act.paths[0] ? act.paths[0] : (act.query || 'Knowledge traversal')}</div>
       `;
       container.insertBefore(card, container.firstChild);
+
+      // Top-K Bounded: Drop-off bottom cards past limit
+      while (container.children.length > MAX_HUD_CARDS) {
+        const dropCard = container.lastChild;
+        dropCard.classList.add('drop-off');
+        setTimeout(() => {
+          if (dropCard.parentNode) dropCard.remove();
+        }, 260);
+        break;
+      }
     }
 
-    // Generate floating billboard badge with tool icon & label
-    function createBeaconSprite(icon, label, colorHex) {
+    // Generate floating billboard badge with tool icon & client color
+    function createBeaconSprite(icon, label, colorHex, clientName) {
       const canvas = document.createElement('canvas');
       canvas.width = 384;
       canvas.height = 128;
@@ -764,16 +875,20 @@
       ctx.font = '36px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(icon, x + 20, y + h / 2);
+      ctx.fillText(icon, x + 18, y + h / 2);
 
-      // Label text
-      ctx.font = 'bold 22px "JetBrains Mono", Consolas, -apple-system, sans-serif';
+      // Client name & label
+      ctx.font = 'bold 20px "JetBrains Mono", Consolas, -apple-system, sans-serif';
+      ctx.fillStyle = colorHex;
+      ctx.fillText(clientName, x + 68, y + 30);
+
+      ctx.font = '16px "JetBrains Mono", Consolas, -apple-system, sans-serif';
       ctx.fillStyle = '#f8fafc';
       let displayLabel = label || 'symbol';
-      if (displayLabel.length > 18) {
-        displayLabel = displayLabel.slice(0, 16) + '…';
+      if (displayLabel.length > 20) {
+        displayLabel = displayLabel.slice(0, 18) + '…';
       }
-      ctx.fillText(displayLabel, x + 72, y + h / 2);
+      ctx.fillText(displayLabel, x + 68, y + 56);
       ctx.restore();
 
       const texture = new THREE.CanvasTexture(canvas);
@@ -806,34 +921,159 @@
       return ring;
     }
 
+    // Generate Volumetric Fog Illumination Aura
+    function createVolumetricFogAura(colorHex) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      grad.addColorStop(0, colorHex);
+      grad.addColorStop(0.3, colorHex);
+      grad.addColorStop(0.7, colorHex + '33');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 128, 128);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(25, 25, 1);
+      sprite.renderOrder = 998;
+      return sprite;
+    }
+
+    // Trigger pulse at single node (vertex glow, shockwave, fog aura, pointlight)
+    function triggerSingleNodePulse(idx, pos, colorHex, label, icon, clientName) {
+      if (!particleSystem || idx < 0 || idx >= graphData.nodes.length) return;
+      const colors = particleSystem.geometry.attributes.color.array;
+      const c = new THREE.Color(colorHex);
+
+      // 1. Particle vertex glow
+      colors[idx * 3] = c.r;
+      colors[idx * 3 + 1] = c.g;
+      colors[idx * 3 + 2] = c.b;
+      activations.set(idx, { time: performance.now(), baseColor: graphData.nodes[idx].color_rgb });
+
+      // 2. Shockwave 3D expanding ring
+      const ring = createShockwaveRing(colorHex);
+      ring.position.set(pos[0], pos[1], pos[2]);
+      scene.add(ring);
+
+      // 3. Volumetric Fog Illumination Aura
+      const fogAura = createVolumetricFogAura(colorHex);
+      fogAura.position.set(pos[0], pos[1], pos[2]);
+      scene.add(fogAura);
+
+      // 4. Transient PointLight casting into 3D fog & surrounding nodes
+      const light = new THREE.PointLight(c, 3.5, 180, 2);
+      light.position.set(pos[0], pos[1], pos[2]);
+      scene.add(light);
+
+      // 5. Floating billboard icon badge
+      const sprite = createBeaconSprite(icon, label, colorHex, clientName || 'Agent');
+      sprite.position.set(pos[0], pos[1] + 14, pos[2]);
+      scene.add(sprite);
+
+      activeBeacons.push({
+        ring,
+        sprite,
+        fogAura,
+        light,
+        pos,
+        color: colorHex,
+        startTime: performance.now(),
+        duration: 2600
+      });
+    }
+
+    // Generate 3D Meteor arc projectile for graph traces
+    function createMeteor(p1, p2, colorHex, endNodeIdx, clientName) {
+      const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
+      const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
+      const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
+      const dist = v1.distanceTo(v2);
+      mid.y += Math.max(30, dist * 0.28); // Parabolic 3D arc apex
+
+      const curve = new THREE.QuadraticBezierCurve3(v1, mid, v2);
+
+      // Meteor Head Sprite
+      const headCanvas = document.createElement('canvas');
+      headCanvas.width = 64;
+      headCanvas.height = 64;
+      const hctx = headCanvas.getContext('2d');
+      const hgrad = hctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      hgrad.addColorStop(0, '#ffffff');
+      hgrad.addColorStop(0.35, colorHex);
+      hgrad.addColorStop(1, 'rgba(0,0,0,0)');
+      hctx.fillStyle = hgrad;
+      hctx.fillRect(0, 0, 64, 64);
+
+      const headTex = new THREE.CanvasTexture(headCanvas);
+      const headMat = new THREE.SpriteMaterial({
+        map: headTex,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const head = new THREE.Sprite(headMat);
+      head.scale.set(28, 28, 1);
+      head.position.copy(v1);
+      scene.add(head);
+
+      // Trailing Line Ribbon
+      const TRAIL_LEN = 16;
+      const trailPoints = [];
+      for (let i = 0; i < TRAIL_LEN; i++) {
+        trailPoints.push(v1.clone());
+      }
+      const trailGeo = new THREE.BufferGeometry().setFromPoints(trailPoints);
+      const trailMat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(colorHex),
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const trail = new THREE.Line(trailGeo, trailMat);
+      scene.add(trail);
+
+      return {
+        curve,
+        head,
+        trail,
+        trailPositions: trailPoints,
+        color: colorHex,
+        endNodeIdx,
+        endPos: p2,
+        clientName,
+        startTime: performance.now(),
+        duration: 1100 // 1.1s flight time
+      };
+    }
+
     function triggerGraphActivationPulse(act) {
       if (!particleSystem || !graphData || !graphData.nodes || graphData.nodes.length === 0) return;
       const positions = particleSystem.geometry.attributes.position.array;
-      const colors = particleSystem.geometry.attributes.color.array;
 
-      // Determine tool type, icon, and colors
+      // Determine client identity & color association
+      const client = resolveClientInfo(act);
+      const colorHex = client.color;
+
+      // Tool Icon
       let toolName = (act.tool || '').toLowerCase();
       let icon = '⚡';
-      let colorHex = '#10b981'; // Emerald default
-      let r = 0.06, g = 0.72, b = 0.5;
-
-      if (toolName.includes('search')) {
-        icon = '🔍';
-        colorHex = '#f59e0b'; // Amber
-        r = 0.96; g = 0.62; b = 0.04;
-      } else if (toolName.includes('read') || toolName.includes('get_') || toolName.includes('fetch')) {
-        icon = '📖';
-        colorHex = '#38bdf8'; // Cyan
-        r = 0.22; g = 0.74; b = 0.97;
-      } else if (toolName.includes('write') || toolName.includes('create') || toolName.includes('delete') || toolName.includes('move')) {
-        icon = '✍️';
-        colorHex = '#ec4899'; // Hot Pink
-        r = 0.92; g = 0.28; b = 0.6;
-      } else if (toolName.includes('graph') || toolName.includes('match') || toolName.includes('community')) {
-        icon = '🕸️';
-        colorHex = '#a855f7'; // Purple
-        r = 0.65; g = 0.33; b = 0.96;
-      }
+      if (toolName.includes('search')) icon = '🔍';
+      else if (toolName.includes('read') || toolName.includes('get_') || toolName.includes('fetch')) icon = '📖';
+      else if (toolName.includes('write') || toolName.includes('create') || toolName.includes('delete') || toolName.includes('move')) icon = '✍️';
+      else if (toolName.includes('graph') || toolName.includes('match') || toolName.includes('trace') || toolName.includes('community')) icon = '🕸️';
 
       // Collect target paths or query with slash normalization
       const targetPaths = (act.paths || []).map(p => p.replace(/\\/g, '/').toLowerCase());
@@ -863,7 +1103,7 @@
 
         if (matched) {
           matchedIndices.push(i);
-          if (matchedIndices.length >= 4) break; // Limit to top 4 hits
+          if (matchedIndices.length >= 4) break;
         }
       }
 
@@ -872,39 +1112,34 @@
         matchedIndices.push(0);
       }
 
-      // Pulse each matched node
-      matchedIndices.forEach(idx => {
-        const px = positions[idx * 3];
-        const py = positions[idx * 3 + 1];
-        const pz = positions[idx * 3 + 2];
+      // Check if this is a graph trace traversal
+      const isTrace = (matchedIndices.length >= 2) || toolName.includes('trace') || toolName.includes('graph');
 
-        // 1. Particle vertex glow
-        colors[idx * 3] = r;
-        colors[idx * 3 + 1] = g;
-        colors[idx * 3 + 2] = b;
-        activations.set(idx, { time: performance.now(), baseColor: graphData.nodes[idx].color_rgb });
+      if (isTrace && matchedIndices.length >= 2) {
+        const startIdx = matchedIndices[0];
+        const endIdx = matchedIndices[matchedIndices.length - 1];
+        const p1 = [positions[startIdx * 3], positions[startIdx * 3 + 1], positions[startIdx * 3 + 2]];
+        const p2 = [positions[endIdx * 3], positions[endIdx * 3 + 1], positions[endIdx * 3 + 2]];
 
-        // 2. Shockwave 3D expanding ring
-        const ring = createShockwaveRing(colorHex);
-        ring.position.set(px, py, pz);
-        scene.add(ring);
+        // Pulse start node
+        const n1 = graphData.nodes[startIdx];
+        const label1 = (n1.title || n1.path || '').split('/').pop();
+        triggerSingleNodePulse(startIdx, p1, colorHex, label1, icon, client.name);
 
-        // 3. Floating billboard icon badge
-        const n = graphData.nodes[idx];
-        const label = (n.title || n.path || act.tool || '').split('/').pop();
-        const sprite = createBeaconSprite(icon, label, colorHex);
-        sprite.position.set(px, py + 12, pz);
-        scene.add(sprite);
+        // Spawn meteor from start node to end node
+        activeMeteors.push(createMeteor(p1, p2, colorHex, endIdx, client.name));
+      } else {
+        // Single or multiple node hits (Search, Read, Write, Get Snippet)
+        matchedIndices.forEach(idx => {
+          const px = positions[idx * 3];
+          const py = positions[idx * 3 + 1];
+          const pz = positions[idx * 3 + 2];
+          const n = graphData.nodes[idx];
+          const label = (n.title || n.path || act.tool || '').split('/').pop();
 
-        activeBeacons.push({
-          ring: ring,
-          sprite: sprite,
-          pos: [px, py, pz],
-          color: colorHex,
-          startTime: performance.now(),
-          duration: 2800
+          triggerSingleNodePulse(idx, [px, py, pz], colorHex, label, icon, client.name);
         });
-      });
+      }
 
       particleSystem.geometry.attributes.color.needsUpdate = true;
     }
@@ -1189,7 +1424,7 @@
         particleSystem.geometry.attributes.color.needsUpdate = true;
       }
 
-      // Active beacon pulses (shockwave rings and floating icon badges)
+      // Active beacon pulses (shockwave rings, volumetric fog auras, pointlights, and floating icon badges)
       if (activeBeacons.length > 0) {
         const now = performance.now();
         for (let i = activeBeacons.length - 1; i >= 0; i--) {
@@ -1200,10 +1435,14 @@
           if (progress >= 1.0) {
             scene.remove(b.ring);
             scene.remove(b.sprite);
+            scene.remove(b.fogAura);
+            if (b.light) scene.remove(b.light);
             if (b.ring.geometry) b.ring.geometry.dispose();
             if (b.ring.material) b.ring.material.dispose();
             if (b.sprite.material && b.sprite.material.map) b.sprite.material.map.dispose();
             if (b.sprite.material) b.sprite.material.dispose();
+            if (b.fogAura.material && b.fogAura.material.map) b.fogAura.material.map.dispose();
+            if (b.fogAura.material) b.fogAura.material.dispose();
             activeBeacons.splice(i, 1);
           } else {
             // 1. Expand shockwave ring (cubic ease-out)
@@ -1212,7 +1451,17 @@
             b.ring.material.opacity = Math.max(0, (1.0 - progress) * 1.2);
             b.ring.lookAt(camera.position);
 
-            // 2. Float sprite badge upward and pulse
+            // 2. Volumetric Fog Illumination Aura expansion & soft fade
+            const fogScale = 25.0 + Math.pow(progress, 0.5) * 135.0;
+            b.fogAura.scale.set(fogScale, fogScale, 1);
+            b.fogAura.material.opacity = Math.max(0, (1.0 - progress) * 0.85);
+
+            // 3. Transient PointLight quadratic decay
+            if (b.light) {
+              b.light.intensity = Math.max(0, Math.pow(1.0 - progress, 2) * 3.5);
+            }
+
+            // 4. Float sprite badge upward and pulse
             const floatY = b.pos[1] + 16 + progress * 24;
             b.sprite.position.set(b.pos[0], floatY, b.pos[2]);
 
@@ -1224,6 +1473,40 @@
             } else {
               b.sprite.material.opacity = Math.min(1.0, progress * 4.0);
             }
+          }
+        }
+      }
+
+      // Active Meteors (Graph Trace Trajectories)
+      if (activeMeteors.length > 0) {
+        const now = performance.now();
+        for (let i = activeMeteors.length - 1; i >= 0; i--) {
+          const m = activeMeteors[i];
+          const elapsed = now - m.startTime;
+          const progress = Math.min(1.0, elapsed / m.duration);
+
+          const currentPos = m.curve.getPoint(Math.min(1.0, progress));
+          m.head.position.copy(currentPos);
+
+          // Update trail positions
+          m.trailPositions.shift();
+          m.trailPositions.push(currentPos.clone());
+          m.trail.geometry.setFromPoints(m.trailPositions);
+
+          if (progress >= 1.0) {
+            // Impact burst shockwave + fog pulse at destination
+            const n = graphData.nodes[m.endNodeIdx];
+            const endLabel = (n ? (n.title || n.path) : 'Target').split('/').pop();
+            triggerSingleNodePulse(m.endNodeIdx, m.endPos, m.color, endLabel, '💥', m.clientName);
+
+            // Cleanup meteor Three.js objects
+            scene.remove(m.head);
+            scene.remove(m.trail);
+            if (m.head.material && m.head.material.map) m.head.material.map.dispose();
+            if (m.head.material) m.head.material.dispose();
+            if (m.trail.geometry) m.trail.geometry.dispose();
+            if (m.trail.material) m.trail.material.dispose();
+            activeMeteors.splice(i, 1);
           }
         }
       }
@@ -1252,7 +1535,29 @@
       }
     }
 
+    // HUD Minimize Toggle
+    const hudToggleBtn = document.getElementById('hud-toggle-btn');
+    const agentHud = document.getElementById('agent-hud');
+    const hudCounter = document.getElementById('hud-counter');
+    let isHudMinimized = false;
+
+    if (hudToggleBtn && agentHud) {
+      hudToggleBtn.addEventListener('click', () => {
+        isHudMinimized = !isHudMinimized;
+        if (isHudMinimized) {
+          agentHud.classList.add('minimized');
+          hudToggleBtn.textContent = '+';
+          if (hudCounter) hudCounter.style.display = 'inline';
+        } else {
+          agentHud.classList.remove('minimized');
+          hudToggleBtn.textContent = '—';
+          if (hudCounter) hudCounter.style.display = 'none';
+        }
+      });
+    }
+
     // Startup
+    loadClients();
     loadCorporaList();
     refreshGraph();
     setupSSE();

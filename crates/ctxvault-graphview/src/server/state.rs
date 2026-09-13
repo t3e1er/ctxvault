@@ -20,16 +20,20 @@ pub struct ServerState {
     pub daemon_url: String,
     /// Cached precomputed layouts to prevent redundant layout passes.
     pub layout_cache: Arc<RwLock<HashMap<String, GraphLayout>>>,
+    /// Client authentication and tracking registry.
+    pub clients: Arc<ctxvault_common::ClientsRegistry>,
 }
 
 impl ServerState {
     /// Create new server state.
     pub fn new(catalog: CorpusCatalog, daemon_url: String) -> Self {
+        let clients = Arc::new(ctxvault_common::client::load_clients_config(None));
         Self {
             catalog: Arc::new(RwLock::new(catalog)),
             telemetry: TelemetryHub::new(1024, 256),
             daemon_url,
             layout_cache: Arc::new(RwLock::new(HashMap::new())),
+            clients,
         }
     }
 }

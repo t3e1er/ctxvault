@@ -1,4 +1,4 @@
-﻿//! Shared types, traits, and error definitions for the ctxvault engine.
+//! Shared types, traits, and error definitions for the ctxvault engine.
 //!
 //! This crate contains no business logic — only the contracts that other crates
 //! depend on. Keep it lean: adding a dependency here forces it on every consumer.
@@ -10,9 +10,11 @@
 //! domain [`types`] their signatures speak. Being dependency-light is what keeps
 //! those ports backend-free.
 
+pub mod client;
 pub mod config;
 pub mod error;
 pub mod ports;
 pub mod types;
 
+pub use client::{ClientEntry, ClientsRegistry};
 pub use error::{Error, Result};

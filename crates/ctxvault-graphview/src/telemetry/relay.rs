@@ -18,6 +18,15 @@ pub struct AgentActivation {
     pub timestamp: u64,
     /// Tool name (e.g. search, get_snippet, graph_match, write_note).
     pub tool: String,
+    /// Connected AI client ID (e.g. "antigravity", "claude", "gemini").
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Connected AI client display name.
+    #[serde(default)]
+    pub client_name: Option<String>,
+    /// Associated theme color (e.g. "#38bdf8").
+    #[serde(default)]
+    pub client_color: Option<String>,
     /// Target corpus name, if scoped.
     pub corpus: Option<String>,
     /// Search query or Cypher pattern, if applicable.
