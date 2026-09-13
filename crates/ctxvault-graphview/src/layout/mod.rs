@@ -89,7 +89,7 @@ pub struct LayoutConfig {
     pub damping: f32,
     /// Barnes-Hut opening angle threshold $\theta$ (typically 0.8).
     pub theta: f32,
-    /// Center gravity pulling towards coordinate origin [0,0,0].
+    /// Center gravity pulling towards coordinate origin `[0, 0, 0]`.
     pub center_gravity: f32,
     /// Anchor spring stiffness pulling nodes to their module/community center.
     pub anchor_strength: f32,
