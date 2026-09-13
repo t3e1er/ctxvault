@@ -323,6 +323,14 @@
         <input type="range" id="bloom-slider" min="0" max="30" value="18">
       </div>
       <div class="slider-row">
+        <span>Cluster Spacing</span>
+        <input type="range" id="cluster-dist-slider" min="1" max="40" value="10" title="Adjust distance between community/directory clusters">
+      </div>
+      <div class="slider-row">
+        <span>Node Spread</span>
+        <input type="range" id="node-disp-slider" min="1" max="30" value="10" title="Adjust local dispersion of nodes within clusters">
+      </div>
+      <div class="slider-row">
         <span>Edge Density</span>
         <input type="range" id="edge-slider" min="0" max="100" value="70">
       </div>
@@ -368,6 +376,8 @@
     let selectedType = 'all';
     let graphData = { nodes: [], edges: [] };
     let activations = new Map(); // path -> { time, intensity }
+    let basePositions = null;
+    let commCentroids = new Map();
 
     // Three.js Scene Setup
     const container = document.getElementById('canvas-container');
@@ -601,7 +611,80 @@
       edgeLines = new THREE.LineSegments(lineGeo, lineMat);
       scene.add(edgeLines);
 
+      // Store base coordinates & compute centroids for dynamic cluster spacing
+      basePositions = new Float32Array(count * 3);
+      basePositions.set(positions);
+
+      commCentroids.clear();
+      for (let i = 0; i < count; i++) {
+        const n = data.nodes[i];
+        const c = n.community;
+        const entry = commCentroids.get(c) || { count: 0, cx: 0, cy: 0, cz: 0 };
+        entry.count++;
+        entry.cx += n.position[0];
+        entry.cy += n.position[1];
+        entry.cz += n.position[2];
+        commCentroids.set(c, entry);
+      }
+      commCentroids.forEach(entry => {
+        if (entry.count > 0) {
+          entry.cx /= entry.count;
+          entry.cy /= entry.count;
+          entry.cz /= entry.count;
+        }
+      });
+
       applyDisplayFilters();
+      updatePositionScales();
+    }
+
+    function updatePositionScales() {
+      if (!particleSystem || !graphData || !graphData.nodes || !basePositions) return;
+      const positions = particleSystem.geometry.attributes.position.array;
+      const clusterDistEl = document.getElementById('cluster-dist-slider');
+      const nodeDispEl = document.getElementById('node-disp-slider');
+      const clusterDistScale = clusterDistEl ? parseFloat(clusterDistEl.value) / 10.0 : 1.0;
+      const nodeDispScale = nodeDispEl ? parseFloat(nodeDispEl.value) / 10.0 : 1.0;
+
+      for (let i = 0; i < graphData.nodes.length; i++) {
+        const n = graphData.nodes[i];
+        const c = commCentroids.get(n.community);
+        const cx = c ? c.cx : 0;
+        const cy = c ? c.cy : 0;
+        const cz = c ? c.cz : 0;
+
+        const bx = basePositions[i * 3];
+        const by = basePositions[i * 3 + 1];
+        const bz = basePositions[i * 3 + 2];
+
+        const dx = bx - cx;
+        const dy = by - cy;
+        const dz = bz - cz;
+
+        positions[i * 3] = cx * clusterDistScale + dx * nodeDispScale;
+        positions[i * 3 + 1] = cy * clusterDistScale + dy * nodeDispScale;
+        positions[i * 3 + 2] = cz * clusterDistScale + dz * nodeDispScale;
+      }
+      particleSystem.geometry.attributes.position.needsUpdate = true;
+
+      if (edgeLines && edgeLines.geometry && edgeLines.geometry.attributes.position) {
+        const edgeDensity = parseInt(document.getElementById('edge-slider').value) / 100.0;
+        const edgeBudget = Math.min(graphData.edges.length, Math.floor(graphData.edges.length * edgeDensity));
+        const linePositions = edgeLines.geometry.attributes.position.array;
+        let lineIdx = 0;
+        for (let i = 0; i < edgeBudget && lineIdx + 5 < linePositions.length; i++) {
+          const e = graphData.edges[i];
+          const s = e.source;
+          const t = e.target;
+          linePositions[lineIdx++] = positions[s * 3];
+          linePositions[lineIdx++] = positions[s * 3 + 1];
+          linePositions[lineIdx++] = positions[s * 3 + 2];
+          linePositions[lineIdx++] = positions[t * 3];
+          linePositions[lineIdx++] = positions[t * 3 + 1];
+          linePositions[lineIdx++] = positions[t * 3 + 2];
+        }
+        edgeLines.geometry.attributes.position.needsUpdate = true;
+      }
     }
 
     async function refreshGraph() {
@@ -826,6 +909,8 @@
     document.getElementById('edge-slider').addEventListener('input', () => {
       renderScene(graphData);
     });
+    document.getElementById('cluster-dist-slider').addEventListener('input', updatePositionScales);
+    document.getElementById('node-disp-slider').addEventListener('input', updatePositionScales);
 
     // Mouse Picking
     window.addEventListener('mousemove', (e) => {
