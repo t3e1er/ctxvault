@@ -351,7 +351,7 @@
       </div>
     </div>
     <div class="telemetry-stream" id="telemetry-stream">
-      <div style="color: #64748b; font-size: 0.8rem; text-align: center; margin-top: 20px;">Awaiting agent activity...</div>
+      <div class="awaiting-placeholder" style="color: #64748b; font-size: 0.8rem; text-align: center; margin-top: 20px;">Awaiting agent activity...</div>
     </div>
   </div>
 
@@ -376,6 +376,7 @@
     let selectedType = 'all';
     let graphData = { nodes: [], edges: [] };
     let activations = new Map(); // path -> { time, intensity }
+    let activeBeacons = []; // Active 3D shockwave rings & floating icon badges
     let basePositions = null;
     let commCentroids = new Map();
 
@@ -517,6 +518,17 @@
     function renderScene(data) {
       if (particleSystem) scene.remove(particleSystem);
       if (edgeLines) scene.remove(edgeLines);
+      if (activeBeacons && activeBeacons.length > 0) {
+        activeBeacons.forEach(b => {
+          scene.remove(b.ring);
+          scene.remove(b.sprite);
+          if (b.ring.geometry) b.ring.geometry.dispose();
+          if (b.ring.material) b.ring.material.dispose();
+          if (b.sprite.material && b.sprite.material.map) b.sprite.material.map.dispose();
+          if (b.sprite.material) b.sprite.material.dispose();
+        });
+        activeBeacons = [];
+      }
 
       graphData = data;
       const count = data.nodes.length;
@@ -685,12 +697,17 @@
 
     function renderActivationCard(act) {
       const container = document.getElementById('telemetry-stream');
+      const placeholder = container.querySelector('.awaiting-placeholder');
+      if (placeholder) {
+        placeholder.remove();
+      }
       if (container.children.length > 20) container.removeChild(container.lastChild);
 
       const card = document.createElement('div');
       let actType = 'read';
-      if (act.tool.includes('write')) actType = 'write';
+      if (act.tool.includes('write') || act.tool.includes('delete') || act.tool.includes('move')) actType = 'write';
       else if (act.tool.includes('search')) actType = 'search';
+      else if (act.tool.includes('graph')) actType = 'read';
 
       card.className = `activation-card ${actType}`;
       card.innerHTML = `
@@ -703,21 +720,192 @@
       container.insertBefore(card, container.firstChild);
     }
 
+    // Generate floating billboard badge with tool icon & label
+    function createBeaconSprite(icon, label, colorHex) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 384;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+
+      const x = 14, y = 12, w = 356, h = 82, r = 22;
+      ctx.save();
+      ctx.shadowColor = colorHex;
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      ctx.strokeStyle = colorHex;
+      ctx.lineWidth = 4;
+
+      // Rounded pill badge
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Pin pointer triangle at bottom center
+      const cx = x + w / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 14, y + h);
+      ctx.lineTo(cx + 14, y + h);
+      ctx.lineTo(cx, y + h + 20);
+      ctx.closePath();
+      ctx.fillStyle = colorHex;
+      ctx.fill();
+
+      // Icon (emoji)
+      ctx.font = '36px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(icon, x + 20, y + h / 2);
+
+      // Label text
+      ctx.font = 'bold 22px "JetBrains Mono", Consolas, -apple-system, sans-serif';
+      ctx.fillStyle = '#f8fafc';
+      let displayLabel = label || 'symbol';
+      if (displayLabel.length > 18) {
+        displayLabel = displayLabel.slice(0, 16) + '…';
+      }
+      ctx.fillText(displayLabel, x + 72, y + h / 2);
+      ctx.restore();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.0,
+        depthTest: false,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(70, 35, 1);
+      return sprite;
+    }
+
+    // Generate 3D expanding shockwave ring
+    function createShockwaveRing(colorHex) {
+      const ringGeo = new THREE.RingGeometry(3, 8, 36);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(colorHex),
+        transparent: true,
+        opacity: 1.0,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.renderOrder = 999;
+      return ring;
+    }
+
     function triggerGraphActivationPulse(act) {
-      if (!particleSystem || !act.paths) return;
+      if (!particleSystem || !graphData || !graphData.nodes || graphData.nodes.length === 0) return;
       const positions = particleSystem.geometry.attributes.position.array;
       const colors = particleSystem.geometry.attributes.color.array;
 
-      act.paths.forEach(targetPath => {
-        const idx = graphData.nodes.findIndex(n => n.path.includes(targetPath));
-        if (idx !== -1) {
-          // Pulse node with hot magenta
-          colors[idx * 3] = 0.92;     // R
-          colors[idx * 3 + 1] = 0.28; // G
-          colors[idx * 3 + 2] = 0.6;  // B
-          activations.set(idx, { time: performance.now(), baseColor: graphData.nodes[idx].color_rgb });
+      // Determine tool type, icon, and colors
+      let toolName = (act.tool || '').toLowerCase();
+      let icon = '⚡';
+      let colorHex = '#10b981'; // Emerald default
+      let r = 0.06, g = 0.72, b = 0.5;
+
+      if (toolName.includes('search')) {
+        icon = '🔍';
+        colorHex = '#f59e0b'; // Amber
+        r = 0.96; g = 0.62; b = 0.04;
+      } else if (toolName.includes('read') || toolName.includes('get_') || toolName.includes('fetch')) {
+        icon = '📖';
+        colorHex = '#38bdf8'; // Cyan
+        r = 0.22; g = 0.74; b = 0.97;
+      } else if (toolName.includes('write') || toolName.includes('create') || toolName.includes('delete') || toolName.includes('move')) {
+        icon = '✍️';
+        colorHex = '#ec4899'; // Hot Pink
+        r = 0.92; g = 0.28; b = 0.6;
+      } else if (toolName.includes('graph') || toolName.includes('match') || toolName.includes('community')) {
+        icon = '🕸️';
+        colorHex = '#a855f7'; // Purple
+        r = 0.65; g = 0.33; b = 0.96;
+      }
+
+      // Collect target paths or query with slash normalization
+      const targetPaths = (act.paths || []).map(p => p.replace(/\\/g, '/').toLowerCase());
+      const queryStr = (act.query || '').trim().toLowerCase();
+
+      // Find matching nodes (tolerant matching: substring, basename, or query match)
+      let matchedIndices = [];
+
+      for (let i = 0; i < graphData.nodes.length; i++) {
+        const n = graphData.nodes[i];
+        const nodePath = (n.path || '').replace(/\\/g, '/').toLowerCase();
+        const nodeTitle = (n.title || '').toLowerCase();
+        const nodeBase = nodePath.split('/').pop();
+
+        let matched = false;
+        if (targetPaths.length > 0) {
+          matched = targetPaths.some(tp => {
+            if (tp.length === 0) return false;
+            const tpBase = tp.split('/').pop();
+            return nodePath.includes(tp) || tp.includes(nodePath) || (tpBase && tpBase.length > 2 && tpBase === nodeBase);
+          });
         }
+
+        if (!matched && queryStr.length > 1) {
+          matched = nodePath.includes(queryStr) || nodeTitle.includes(queryStr);
+        }
+
+        if (matched) {
+          matchedIndices.push(i);
+          if (matchedIndices.length >= 4) break; // Limit to top 4 hits
+        }
+      }
+
+      // Fallback if paths didn't match any loaded nodes: pulse top node
+      if (matchedIndices.length === 0 && graphData.nodes.length > 0) {
+        matchedIndices.push(0);
+      }
+
+      // Pulse each matched node
+      matchedIndices.forEach(idx => {
+        const px = positions[idx * 3];
+        const py = positions[idx * 3 + 1];
+        const pz = positions[idx * 3 + 2];
+
+        // 1. Particle vertex glow
+        colors[idx * 3] = r;
+        colors[idx * 3 + 1] = g;
+        colors[idx * 3 + 2] = b;
+        activations.set(idx, { time: performance.now(), baseColor: graphData.nodes[idx].color_rgb });
+
+        // 2. Shockwave 3D expanding ring
+        const ring = createShockwaveRing(colorHex);
+        ring.position.set(px, py, pz);
+        scene.add(ring);
+
+        // 3. Floating billboard icon badge
+        const n = graphData.nodes[idx];
+        const label = (n.title || n.path || act.tool || '').split('/').pop();
+        const sprite = createBeaconSprite(icon, label, colorHex);
+        sprite.position.set(px, py + 12, pz);
+        scene.add(sprite);
+
+        activeBeacons.push({
+          ring: ring,
+          sprite: sprite,
+          pos: [px, py, pz],
+          color: colorHex,
+          startTime: performance.now(),
+          duration: 2800
+        });
       });
+
       particleSystem.geometry.attributes.color.needsUpdate = true;
     }
 
@@ -999,6 +1187,45 @@
           }
         });
         particleSystem.geometry.attributes.color.needsUpdate = true;
+      }
+
+      // Active beacon pulses (shockwave rings and floating icon badges)
+      if (activeBeacons.length > 0) {
+        const now = performance.now();
+        for (let i = activeBeacons.length - 1; i >= 0; i--) {
+          const b = activeBeacons[i];
+          const elapsed = now - b.startTime;
+          const progress = Math.min(1.0, elapsed / b.duration);
+
+          if (progress >= 1.0) {
+            scene.remove(b.ring);
+            scene.remove(b.sprite);
+            if (b.ring.geometry) b.ring.geometry.dispose();
+            if (b.ring.material) b.ring.material.dispose();
+            if (b.sprite.material && b.sprite.material.map) b.sprite.material.map.dispose();
+            if (b.sprite.material) b.sprite.material.dispose();
+            activeBeacons.splice(i, 1);
+          } else {
+            // 1. Expand shockwave ring (cubic ease-out)
+            const ringScale = 1.0 + Math.pow(progress, 0.6) * 22.0;
+            b.ring.scale.set(ringScale, ringScale, ringScale);
+            b.ring.material.opacity = Math.max(0, (1.0 - progress) * 1.2);
+            b.ring.lookAt(camera.position);
+
+            // 2. Float sprite badge upward and pulse
+            const floatY = b.pos[1] + 16 + progress * 24;
+            b.sprite.position.set(b.pos[0], floatY, b.pos[2]);
+
+            const pulse = 1.0 + 0.12 * Math.sin(progress * Math.PI * 4);
+            b.sprite.scale.set(70 * pulse, 35 * pulse, 1);
+
+            if (progress > 0.65) {
+              b.sprite.material.opacity = Math.max(0, (1.0 - progress) / 0.35);
+            } else {
+              b.sprite.material.opacity = Math.min(1.0, progress * 4.0);
+            }
+          }
+        }
       }
 
       // Raycasting for Inspector
