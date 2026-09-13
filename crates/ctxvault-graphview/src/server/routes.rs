@@ -129,6 +129,31 @@ pub async fn handle_corpora(State(state): State<ServerState>) -> Json<Value> {
     Json(serde_json::json!({ "corpora": names }))
 }
 
+/// Return 3D centers and metadata for each corpus cloud in Galaxy view.
+pub async fn handle_clouds(State(state): State<ServerState>) -> Json<Value> {
+    let catalog = state.catalog.read().await;
+    let corpus_names = catalog.corpus_names();
+    let num_corpora = corpus_names.len().max(1);
+    let mut clouds = Vec::new();
+
+    for (c_idx, name) in corpus_names.iter().enumerate() {
+        let Some(snapshot) = catalog.get_corpus(name) else { continue; };
+        let angle = 2.0 * std::f32::consts::PI * (c_idx as f32) / (num_corpora as f32);
+        let galaxy_radius = if num_corpora > 1 { 450.0 + (num_corpora as f32) * 50.0 } else { 0.0 };
+        let offset_x = angle.cos() * galaxy_radius;
+        let offset_z = angle.sin() * galaxy_radius;
+
+        clouds.push(serde_json::json!({
+            "name": name,
+            "center": [offset_x, 60.0, offset_z],
+            "nodes": snapshot.graph.node_count(),
+            "edges": snapshot.graph.edge_count(),
+        }));
+    }
+
+    Json(serde_json::json!({ "clouds": clouds }))
+}
+
 /// Tier 0: Galaxy Overview handler.
 pub async fn handle_overview(
     State(state): State<ServerState>,
@@ -333,6 +358,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/status", get(handle_status))
         .route("/api/corpora", get(handle_corpora))
         .route("/api/clients", get(handle_clients))
+        .route("/api/graph/clouds", get(handle_clouds))
         .route("/api/graph/overview", get(handle_overview))
         .route("/api/graph/corpus/{name}", get(handle_corpus))
         .route("/api/graph/subgraph", get(handle_subgraph))

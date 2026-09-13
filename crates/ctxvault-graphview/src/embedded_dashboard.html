@@ -409,7 +409,7 @@
   <header class="glass-panel">
     <div class="brand">
       <div class="brand-glow"></div>
-      <span>ctxvault GraphView</span>
+      <span>CtxVault GraphView</span>
     </div>
 
     <div class="header-controls">
@@ -495,6 +495,19 @@
         <span>Activation Decay</span>
         <input type="range" id="decay-slider" min="1" max="10" value="3">
       </div>
+      <div class="slider-row" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" id="corpus-labels-toggle" checked style="accent-color: var(--neon-blue);">
+          <span>Corpus Cloud Badges</span>
+        </label>
+      </div>
+      <div class="slider-row">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" id="auto-orbit-toggle" checked style="accent-color: var(--neon-blue);">
+          <span>Auto Orbit</span>
+        </label>
+        <input type="range" id="orbit-speed-slider" min="1" max="30" value="8" title="Adjust camera orbit speed">
+      </div>
     </div>
   </div>
 
@@ -578,6 +591,11 @@
     controls.dampingFactor = 0.05;
     controls.maxDistance = 5000;
     controls.minDistance = 20;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.8;
+
+    const corpusBadgeGroup = new THREE.Group();
+    scene.add(corpusBadgeGroup);
 
     // Post-processing Bloom
     const composer = new THREE.EffectComposer(renderer);
@@ -841,6 +859,7 @@
 
       fitCameraToGraph();
       applyDisplayFilters();
+      populateCorpusBadges(data);
     }
 
     function fitCameraToGraph() {
@@ -1148,6 +1167,125 @@
       sprite.scale.set(25, 25, 1);
       sprite.renderOrder = 998;
       return sprite;
+    }
+
+    // Generate Floating 3D Corpus Cloud Badge
+    function createCorpusBadge(name, subtitle, position) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+
+      const x = 12, y = 12, w = 488, h = 136, r = 24;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+
+      const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+      grad.addColorStop(0, 'rgba(15, 23, 42, 0.94)');
+      grad.addColorStop(1, 'rgba(30, 41, 59, 0.94)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#38bdf8';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(x + r + 20, y + 2);
+      ctx.lineTo(x + w - r - 20, y + 2);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.font = '54px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🪐', x + 24, y + h / 2);
+
+      ctx.font = 'bold 34px "Inter", "JetBrains Mono", Consolas, sans-serif';
+      ctx.fillStyle = '#f8fafc';
+      let title = name || 'Corpus';
+      if (title.length > 20) title = title.slice(0, 18) + '…';
+      ctx.fillText(title, x + 96, y + 50);
+
+      ctx.font = '500 22px "Inter", -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(subtitle, x + 98, y + 96);
+      ctx.restore();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const mat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.95,
+        depthTest: false,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.position.set(position[0], position[1] + 60, position[2]);
+      sprite.scale.set(160, 50, 1);
+      sprite.renderOrder = 1000;
+      return sprite;
+    }
+
+    async function populateCorpusBadges(data) {
+      while (corpusBadgeGroup.children.length > 0) {
+        const child = corpusBadgeGroup.children.pop();
+        if (child.material && child.material.map) child.material.map.dispose();
+        if (child.material) child.material.dispose();
+      }
+
+      const isEnabled = document.getElementById('corpus-labels-toggle')?.checked ?? true;
+      corpusBadgeGroup.visible = isEnabled;
+
+      if (currentCorpus === 'all') {
+        try {
+          const res = await fetch('/api/graph/clouds');
+          const cloudData = await res.json();
+          if (cloudData && cloudData.clouds) {
+            cloudData.clouds.forEach(c => {
+              const badge = createCorpusBadge(
+                c.name,
+                `${c.nodes.toLocaleString()} nodes • ${c.edges.toLocaleString()} edges`,
+                c.center
+              );
+              corpusBadgeGroup.add(badge);
+            });
+          }
+        } catch (err) {
+          console.warn('Failed to fetch corpus clouds', err);
+        }
+      } else if (data && data.nodes && data.nodes.length > 0) {
+        // Degree-weighted centroid for single corpus
+        let totalWeight = 0;
+        let wx = 0, wy = 0, wz = 0;
+        for (let i = 0; i < data.nodes.length; i++) {
+          const n = data.nodes[i];
+          const weight = Math.max(1, n.degree || 1);
+          totalWeight += weight;
+          wx += n.position[0] * weight;
+          wy += n.position[1] * weight;
+          wz += n.position[2] * weight;
+        }
+        const center = [wx / totalWeight, wy / totalWeight, wz / totalWeight];
+        const badge = createCorpusBadge(
+          currentCorpus,
+          `${data.nodes.length.toLocaleString()} nodes • ${data.edges.length.toLocaleString()} edges`,
+          center
+        );
+        corpusBadgeGroup.add(badge);
+      }
     }
 
     // Trigger pulse at single node (vertex glow, shockwave, fog aura, pointlight)
@@ -1618,6 +1756,27 @@
     });
     document.getElementById('cluster-dist-slider').addEventListener('input', updatePositionScales);
     document.getElementById('node-disp-slider').addEventListener('input', updatePositionScales);
+
+    const orbitToggle = document.getElementById('auto-orbit-toggle');
+    if (orbitToggle) {
+      orbitToggle.addEventListener('change', (e) => {
+        controls.autoRotate = e.target.checked;
+      });
+    }
+
+    const orbitSpeedSlider = document.getElementById('orbit-speed-slider');
+    if (orbitSpeedSlider) {
+      orbitSpeedSlider.addEventListener('input', (e) => {
+        controls.autoRotateSpeed = parseFloat(e.target.value) / 10.0;
+      });
+    }
+
+    const corpusLabelsToggle = document.getElementById('corpus-labels-toggle');
+    if (corpusLabelsToggle) {
+      corpusLabelsToggle.addEventListener('change', (e) => {
+        corpusBadgeGroup.visible = e.target.checked;
+      });
+    }
 
     // Mouse Picking
     window.addEventListener('mousemove', (e) => {
