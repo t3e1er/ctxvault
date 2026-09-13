@@ -170,7 +170,8 @@ pub fn build_tier_1_corpus(
         .into_iter()
         .enumerate()
         .map(|(i, path)| {
-            let (entity_type, color_rgb) = assign_color_and_type(&path, communities[i]);
+            let (entity_type, color_rgb) =
+                assign_color_and_type(&path, communities[i], Some(&snapshot.ast_types));
             let deg = degrees[i];
             let size = 2.0 + (deg as f32).sqrt().min(15.0);
 
@@ -279,7 +280,8 @@ pub fn build_tier_2_local(
         .enumerate()
         .map(|(i, path)| {
             let is_center = path == center_path;
-            let (entity_type, mut color) = assign_color_and_type(&path, communities[i]);
+            let (entity_type, mut color) =
+                assign_color_and_type(&path, communities[i], Some(&snapshot.ast_types));
             if is_center {
                 color = 0xf59e0b; // Bright amber for focal node
             }

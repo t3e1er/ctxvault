@@ -135,16 +135,67 @@ pub fn fnv1a_hash(s: &str) -> u32 {
     hash
 }
 
-/// Assign distinct aesthetic neon colors based on entity type and community.
-pub fn assign_color_and_type(path: &str, community: u32) -> (String, u32) {
+/// Map entity type name to a distinct cyber-aesthetic neon color.
+pub fn color_for_entity_type(entity_type: &str, community: u32) -> u32 {
+    match entity_type.to_lowercase().as_str() {
+        "docnode" | "doc" | "document" | "markdown" => 0x3b82f6, // Sapphire Blue
+        "function" | "method" => 0x10b981,                       // Emerald Neon
+        "struct" | "class" => 0x8b5cf6,                          // Electric Purple
+        "trait" | "interface" => 0xec4899,                       // Hot Pink
+        "enum" | "typealias" | "type" => 0xf59e0b,               // Amber
+        "module" | "file" | "package" => 0x06b6d4,               // Cyan
+        "constant" | "macro" => 0x14b8a6,                        // Teal
+        _ => {
+            let palette = [
+                0x3b82f6, 0x10b981, 0x8b5cf6, 0xf59e0b, 0xec4899, 0x06b6d4, 0x14b8a6, 0x6366f1,
+                0xe11d48, 0x84cc16,
+            ];
+            palette[(community as usize) % palette.len()]
+        }
+    }
+}
+
+/// Assign distinct aesthetic neon colors based on AST entity type, path heuristics, and community.
+pub fn assign_color_and_type(
+    path: &str,
+    community: u32,
+    ast_types: Option<&HashMap<String, String>>,
+) -> (String, u32) {
+    // 1. Authoritative AST metadata lookup from meta.db
+    if let Some(types) = ast_types {
+        if let Some(sym_type) = types.get(path) {
+            let color = color_for_entity_type(sym_type, community);
+            return (sym_type.clone(), color);
+        }
+        let clean_path = path.replace('\\', "/");
+        if let Some(sub) = clean_path.split('#').nth(1) {
+            if let Some(sym_type) = types.get(sub) {
+                let color = color_for_entity_type(sym_type, community);
+                return (sym_type.clone(), color);
+            }
+        }
+        if let Some(sub) = clean_path.split("::").last() {
+            if let Some(sym_type) = types.get(sub) {
+                let color = color_for_entity_type(sym_type, community);
+                return (sym_type.clone(), color);
+            }
+        }
+        let base_name = clean_path.split('/').next_back().unwrap_or(path);
+        if let Some(sym_type) = types.get(base_name) {
+            let color = color_for_entity_type(sym_type, community);
+            return (sym_type.clone(), color);
+        }
+    }
+
+    // 2. Structural file heuristics
     if path.ends_with(".md") || path.contains("docs/") || path.contains("adr/") {
         ("DocNode".to_string(), 0x3b82f6) // Sapphire Blue
+    } else if path.ends_with(".rs") || path.ends_with(".ts") || path.ends_with(".js") || path.ends_with(".py") || path.ends_with(".go") {
+        ("Module".to_string(), 0x06b6d4) // Cyan
     } else if path.contains("::fn ") || path.contains("() ") || path.ends_with(".rs#") {
         ("Function".to_string(), 0x10b981) // Emerald Neon
     } else if path.contains("struct ") || path.contains("class ") || path.contains("interface ") {
         ("Struct".to_string(), 0x8b5cf6) // Electric Purple
-    } else if path.contains("mod ") || (path.contains('/') && !path.contains('.')) {
-        ("Module".to_string(), 0x06b6d4) // Cyan
     } else {
         // Community-based gradient fallback
         let palette = [

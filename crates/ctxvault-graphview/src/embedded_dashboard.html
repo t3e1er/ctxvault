@@ -994,13 +994,13 @@
       });
     }
 
-    // Generate 3D Meteor arc projectile for graph traces
-    function createMeteor(p1, p2, colorHex, endNodeIdx, clientName) {
+    // Generate 3D Meteor arc projectile for graph traces & orbital strikes
+    function createMeteor(p1, p2, colorHex, endNodeIdx, clientName, duration = 1000, onImpact = null) {
       const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
       const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
       const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
       const dist = v1.distanceTo(v2);
-      mid.y += Math.max(30, dist * 0.28); // Parabolic 3D arc apex
+      mid.y += Math.max(25, dist * 0.25); // Parabolic 3D arc apex
 
       const curve = new THREE.QuadraticBezierCurve3(v1, mid, v2);
 
@@ -1055,7 +1055,8 @@
         endPos: p2,
         clientName,
         startTime: performance.now(),
-        duration: 1100 // 1.1s flight time
+        duration,
+        onImpact
       };
     }
 
@@ -1103,7 +1104,7 @@
 
         if (matched) {
           matchedIndices.push(i);
-          if (matchedIndices.length >= 4) break;
+          if (matchedIndices.length >= 6) break;
         }
       }
 
@@ -1113,31 +1114,65 @@
       }
 
       // Check if this is a graph trace traversal
-      const isTrace = (matchedIndices.length >= 2) || toolName.includes('trace') || toolName.includes('graph');
+      const isTrace = (matchedIndices.length >= 2) && (toolName.includes('trace') || toolName.includes('graph'));
 
-      if (isTrace && matchedIndices.length >= 2) {
-        const startIdx = matchedIndices[0];
-        const endIdx = matchedIndices[matchedIndices.length - 1];
-        const p1 = [positions[startIdx * 3], positions[startIdx * 3 + 1], positions[startIdx * 3 + 2]];
-        const p2 = [positions[endIdx * 3], positions[endIdx * 3 + 1], positions[endIdx * 3 + 2]];
+      if (isTrace) {
+        // Multi-hop sequential chain vs fanout
+        const isFanout = (act.tool === 'graph_match' && act.query && act.query.includes('->') && !act.query.includes('*'))
+                         || (matchedIndices.length > 3 && targetPaths.length > 2);
 
-        // Pulse start node
-        const n1 = graphData.nodes[startIdx];
-        const label1 = (n1.title || n1.path || '').split('/').pop();
-        triggerSingleNodePulse(startIdx, p1, colorHex, label1, icon, client.name);
+        if (isFanout) {
+          // 1-to-many fanout: pulse root, then fanout concurrent meteors to all targets
+          const rootIdx = matchedIndices[0];
+          const rootPos = [positions[rootIdx * 3], positions[rootIdx * 3 + 1], positions[rootIdx * 3 + 2]];
+          const rootNode = graphData.nodes[rootIdx];
+          triggerSingleNodePulse(rootIdx, rootPos, colorHex, (rootNode.title || rootNode.path || '').split('/').pop(), icon, client.name);
 
-        // Spawn meteor from start node to end node
-        activeMeteors.push(createMeteor(p1, p2, colorHex, endIdx, client.name));
+          for (let k = 1; k < matchedIndices.length; k++) {
+            const tgtIdx = matchedIndices[k];
+            const tgtPos = [positions[tgtIdx * 3], positions[tgtIdx * 3 + 1], positions[tgtIdx * 3 + 2]];
+            setTimeout(() => {
+              activeMeteors.push(createMeteor(rootPos, tgtPos, colorHex, tgtIdx, client.name, 850));
+            }, (k - 1) * 90);
+          }
+        } else {
+          // Sequential N-hop cascading path: n0 -> n1 -> n2 -> ... -> nk
+          const chainNodes = matchedIndices.slice(0, 5);
+          const startIdx = chainNodes[0];
+          const startPos = [positions[startIdx * 3], positions[startIdx * 3 + 1], positions[startIdx * 3 + 2]];
+          const startNode = graphData.nodes[startIdx];
+          triggerSingleNodePulse(startIdx, startPos, colorHex, (startNode.title || startNode.path || '').split('/').pop(), icon, client.name);
+
+          for (let hop = 0; hop < chainNodes.length - 1; hop++) {
+            const sIdx = chainNodes[hop];
+            const tIdx = chainNodes[hop + 1];
+            const sPos = [positions[sIdx * 3], positions[sIdx * 3 + 1], positions[sIdx * 3 + 2]];
+            const tPos = [positions[tIdx * 3], positions[tIdx * 3 + 1], positions[tIdx * 3 + 2]];
+
+            setTimeout(() => {
+              activeMeteors.push(createMeteor(sPos, tPos, colorHex, tIdx, client.name, 700));
+            }, hop * 420);
+          }
+        }
       } else {
-        // Single or multiple node hits (Search, Read, Write, Get Snippet)
-        matchedIndices.forEach(idx => {
+        // High-energy Orbital Inbound Meteor Strike for Search, Read, Write, Get Snippet
+        matchedIndices.forEach((idx, hitIndex) => {
           const px = positions[idx * 3];
           const py = positions[idx * 3 + 1];
           const pz = positions[idx * 3 + 2];
           const n = graphData.nodes[idx];
           const label = (n.title || n.path || act.tool || '').split('/').pop();
 
-          triggerSingleNodePulse(idx, [px, py, pz], colorHex, label, icon, client.name);
+          setTimeout(() => {
+            const angle = Math.random() * Math.PI * 2;
+            const skyRadius = 150 + Math.random() * 80;
+            const skyY = py + 240 + Math.random() * 80;
+            const skyOrigin = [px + Math.cos(angle) * skyRadius, skyY, pz + Math.sin(angle) * skyRadius];
+
+            activeMeteors.push(createMeteor(skyOrigin, [px, py, pz], colorHex, idx, client.name, 520, () => {
+              triggerSingleNodePulse(idx, [px, py, pz], colorHex, label, icon, client.name);
+            }));
+          }, hitIndex * 120);
         });
       }
 
@@ -1494,10 +1529,14 @@
           m.trail.geometry.setFromPoints(m.trailPositions);
 
           if (progress >= 1.0) {
-            // Impact burst shockwave + fog pulse at destination
-            const n = graphData.nodes[m.endNodeIdx];
-            const endLabel = (n ? (n.title || n.path) : 'Target').split('/').pop();
-            triggerSingleNodePulse(m.endNodeIdx, m.endPos, m.color, endLabel, '💥', m.clientName);
+            if (m.onImpact) {
+              m.onImpact();
+            } else {
+              // Impact burst shockwave + fog pulse at destination
+              const n = graphData.nodes[m.endNodeIdx];
+              const endLabel = (n ? (n.title || n.path) : 'Target').split('/').pop();
+              triggerSingleNodePulse(m.endNodeIdx, m.endPos, m.color, endLabel, '💥', m.clientName);
+            }
 
             // Cleanup meteor Three.js objects
             scene.remove(m.head);

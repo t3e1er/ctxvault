@@ -18,6 +18,8 @@ pub struct CorpusSnapshot {
     pub index_dir: PathBuf,
     /// Loaded petgraph knowledge graph.
     pub graph: KnowledgeGraph,
+    /// Authoritative AST-derived symbol types from meta.db (key -> symbol_type).
+    pub ast_types: Arc<HashMap<String, String>>,
 }
 
 impl CorpusSnapshot {
@@ -34,14 +36,56 @@ impl CorpusSnapshot {
         let graph = KnowledgeGraph::load(&graph_path)
             .map_err(|e| GraphViewError::GraphLoad(format!("{}: {}", name, e)))?;
 
+        // Extract AST-derived entity classes from SQLite catalog meta.db
+        let mut ast_types = HashMap::new();
+        let meta_path = index_dir.join("meta.db");
+        if meta_path.exists() {
+            if let Ok(conn) = rusqlite::Connection::open_with_flags(
+                &meta_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            ) {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT name, scope_path, file_path, symbol_type FROM code_symbols",
+                ) {
+                    if let Ok(rows) = stmt.query_map([], |row| {
+                        let name: String = row.get(0)?;
+                        let scope: String = row.get(1)?;
+                        let file: String = row.get(2)?;
+                        let sym_type: String = row.get(3)?;
+                        Ok((name, scope, file, sym_type))
+                    }) {
+                        for row in rows.flatten() {
+                            let (name, scope, file, sym_type) = row;
+                            if !name.is_empty() {
+                                ast_types.insert(name.clone(), sym_type.clone());
+                            }
+                            if !scope.is_empty() {
+                                ast_types.insert(scope.clone(), sym_type.clone());
+                                ast_types.insert(format!("{}:{}", file, scope), sym_type.clone());
+                                ast_types.insert(format!("{}#{}", file, scope), sym_type.clone());
+                            }
+                            ast_types.insert(format!("{}:{}", file, name), sym_type.clone());
+                            ast_types.insert(format!("{}#{}", file, name), sym_type.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         info!(
             corpus = %name,
             nodes = graph.node_count(),
             edges = graph.edge_count(),
+            ast_symbols = ast_types.len(),
             "Loaded read-only corpus graph snapshot"
         );
 
-        Ok(Self { name: name.to_string(), index_dir: index_dir.to_path_buf(), graph })
+        Ok(Self {
+            name: name.to_string(),
+            index_dir: index_dir.to_path_buf(),
+            graph,
+            ast_types: Arc::new(ast_types),
+        })
     }
 }
 

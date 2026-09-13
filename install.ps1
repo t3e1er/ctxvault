@@ -97,6 +97,15 @@ try {
     # Optional alias copy
     Copy-Item -Path $SourceExe.FullName -Destination "$InstallDir\ctxv.exe" -Force -ErrorAction SilentlyContinue
 
+    # GraphView UI wrapper: allow direct invocation via ctxvault-graphview
+    $SourceGraphExe = Get-ChildItem -Path $TempDir -Filter "ctxvault-graphview.exe" -Recurse | Select-Object -First 1
+    if ($SourceGraphExe) {
+        Copy-Item -Path $SourceGraphExe.FullName -Destination "$InstallDir\ctxvault-graphview.exe" -Force -ErrorAction SilentlyContinue
+    } else {
+        $GraphviewCmd = Join-Path $InstallDir "ctxvault-graphview.cmd"
+        Set-Content -Path $GraphviewCmd -Value "@echo off`r`n`"%~dp0ctxvault.exe`" graphview %*" -Force -Encoding ASCII
+    }
+
     # Place updater script beside binary so ctxvault update points to local immutable script
     if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
         Copy-Item -Path $PSCommandPath -Destination (Join-Path $InstallDir "install.ps1") -Force -ErrorAction SilentlyContinue
