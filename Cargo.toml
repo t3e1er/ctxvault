@@ -79,7 +79,7 @@ rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 # File watching / locking / filtering
 notify = "8.2"
 notify-debouncer-full = "0.7"
-fs4 = "0.13"
+fs4 = "1.1"
 ignore = "0.4"
 
 # Compression & Archiving
