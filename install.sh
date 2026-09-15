@@ -12,6 +12,7 @@ SKIP_CHECKSUM=false
 TAG=""
 SKIP_MODELS=false
 SKIP_RULES=false
+AUTH=false
 AGENTS=""
 
 while [ $# -gt 0 ]; do
@@ -34,6 +35,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-rules)
             SKIP_RULES=true
+            shift
+            ;;
+        --auth)
+            AUTH=true
             shift
             ;;
         --agents)
@@ -176,6 +181,9 @@ if [ "$FAST" = true ]; then
 fi
 if [ "$SKIP_RULES" = true ]; then
     INSTALL_ARGS="$INSTALL_ARGS --rules=false"
+fi
+if [ "$AUTH" = true ]; then
+    INSTALL_ARGS="$INSTALL_ARGS --auth"
 fi
 if [ -n "$AGENTS" ]; then
     INSTALL_ARGS="$INSTALL_ARGS --agents=$AGENTS"

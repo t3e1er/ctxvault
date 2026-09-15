@@ -3,19 +3,20 @@
 //! Provides a streamable HTTP JSON-RPC 2.0 server using `axum`, enabling
 //! tool querying, liveness health checks, and SSE session streams.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::stream::{self, Stream};
+use futures_util::stream;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -281,29 +282,46 @@ pub async fn run_http_server_multi_with_options(
 // HTTP Request Handlers
 // ---------------------------------------------------------------------------
 
-/// Process single or batch JSON-RPC request for multi-corpus server.
-async fn handle_jsonrpc_multi(
-    State(state): State<MultiCorpusServerState>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Response {
-    let client_key = headers
+/// Extract authentication key from HTTP headers or query string parameters.
+fn extract_auth_key(headers: &HeaderMap, params: &HashMap<String, String>) -> Option<String> {
+    headers
         .get("x-api-key")
         .or_else(|| headers.get("x-client-key"))
         .and_then(|v| v.to_str().ok())
+        .map(String::from)
         .or_else(|| {
             headers
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer "))
-        });
-    let client_id = headers
+                .map(String::from)
+        })
+        .or_else(|| params.get("api_key").cloned())
+        .or_else(|| params.get("token").cloned())
+}
+
+/// Extract client ID from HTTP headers or query string parameters.
+fn extract_client_id(headers: &HeaderMap, params: &HashMap<String, String>) -> Option<String> {
+    headers
         .get("x-client-id")
         .or_else(|| headers.get("x-api-client-id"))
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .or_else(|| params.get("client_id").cloned())
+}
+
+/// Process single or batch JSON-RPC request for multi-corpus server.
+async fn handle_jsonrpc_multi(
+    State(state): State<MultiCorpusServerState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let client_key = extract_auth_key(&headers, &params);
+    let client_id = extract_client_id(&headers, &params);
 
     if state.clients.require_auth {
-        match client_key {
+        match client_key.as_deref() {
             Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
             _ => {
                 warn!("Unauthorized MCP JSON-RPC request rejected");
@@ -320,7 +338,7 @@ async fn handle_jsonrpc_multi(
         }
     }
 
-    let resolved_client = state.clients.resolve(client_key, client_id);
+    let resolved_client = state.clients.resolve(client_key.as_deref(), client_id.as_deref());
 
     if body.is_array() {
         let requests: Vec<JsonRpcRequest> = match serde_json::from_value(body) {
@@ -474,21 +492,12 @@ async fn handle_jsonrpc_multi(
 /// Server-Sent Events stream for agent telemetry activations.
 pub async fn handle_activations_sse(
     State(state): State<MultiCorpusServerState>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
     if state.clients.require_auth {
-        let client_key = headers
-            .get("x-api-key")
-            .or_else(|| headers.get("x-client-key"))
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| {
-                headers
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.strip_prefix("Bearer "))
-            });
-
-        match client_key {
+        let client_key = extract_auth_key(&headers, &params);
+        match client_key.as_deref() {
             Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
             _ => {
                 warn!("Unauthorized MCP SSE activations connection rejected");
@@ -629,16 +638,31 @@ fn extract_activation(
 /// Server-Sent Events stream for MCP session handshake.
 pub async fn handle_sse(
     State(state): State<MultiCorpusServerState>,
-) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
     use futures_util::StreamExt;
+    if state.clients.require_auth {
+        let client_key = extract_auth_key(&headers, &params);
+        match client_key.as_deref() {
+            Some(k) if !k.is_empty() && state.clients.is_valid_key(k) => {}
+            _ => {
+                warn!("Unauthorized MCP SSE stream connection rejected");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
     state.active_sessions.fetch_add(1, Ordering::SeqCst);
     state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
     info!("[SSE] --> Client opened SSE event stream handshake");
     let session_event = Event::default().event("endpoint").data("/mcp");
 
-    let stream = stream::once(async move { Ok(session_event) }).chain(stream::pending());
+    let stream = stream::once(async move { Ok::<Event, Infallible>(session_event) })
+        .chain(stream::pending());
 
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .into_response()
 }
 
 /// Non-blocking liveness health check for multi-corpus server.

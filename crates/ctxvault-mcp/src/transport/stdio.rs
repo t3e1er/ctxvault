@@ -26,8 +26,15 @@ use crate::transport::dispatch::{
 ///
 /// Reads newline-delimited JSON-RPC messages from stdin, forwards them over HTTP
 /// to a remote MCP server, and writes responses back to stdout.
-pub async fn run_stdio_proxy(server_url: &str) -> Result<()> {
-    let transport = HttpMcpTransport::new(server_url);
+pub async fn run_stdio_proxy(server_url: &str, api_key: Option<&str>) -> Result<()> {
+    let mut transport = HttpMcpTransport::new(server_url);
+    let env_key = std::env::var("CTXV_API_KEY").ok();
+    let effective_key = api_key.or(env_key.as_deref());
+    if let Some(key) = effective_key {
+        if !key.trim().is_empty() {
+            transport = transport.with_api_key(key.trim());
+        }
+    }
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin);

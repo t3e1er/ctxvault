@@ -142,36 +142,95 @@ pub fn generate_default_config() -> ClientsRegistry {
                 id: "antigravity".to_string(),
                 name: "Antigravity Agent".to_string(),
                 key: Some(generate_token("ag")),
-                color: "#38bdf8".to_string(),
+                color: "#38bdf8".to_string(), // Cyan
             },
             ClientEntry {
                 id: "claude".to_string(),
                 name: "Claude Desktop".to_string(),
                 key: Some(generate_token("claude")),
-                color: "#f97316".to_string(),
+                color: "#f97316".to_string(), // Orange
             },
             ClientEntry {
                 id: "gemini".to_string(),
                 name: "Gemini CLI".to_string(),
                 key: Some(generate_token("gemini")),
-                color: "#ec4899".to_string(),
+                color: "#ec4899".to_string(), // Magenta
+            },
+            ClientEntry {
+                id: "cursor".to_string(),
+                name: "Cursor".to_string(),
+                key: Some(generate_token("cursor")),
+                color: "#10b981".to_string(), // Emerald
+            },
+            ClientEntry {
+                id: "windsurf".to_string(),
+                name: "Windsurf".to_string(),
+                key: Some(generate_token("windsurf")),
+                color: "#06b6d4".to_string(), // Teal
+            },
+            ClientEntry {
+                id: "vscode".to_string(),
+                name: "VS Code Copilot".to_string(),
+                key: Some(generate_token("vscode")),
+                color: "#3b82f6".to_string(), // Blue
+            },
+            ClientEntry {
+                id: "zed".to_string(),
+                name: "Zed".to_string(),
+                key: Some(generate_token("zed")),
+                color: "#eab308".to_string(), // Yellow
             },
             ClientEntry {
                 id: "roo".to_string(),
                 name: "Roo Code".to_string(),
                 key: Some(generate_token("roo")),
-                color: "#10b981".to_string(),
+                color: "#14b8a6".to_string(), // Mint
+            },
+            ClientEntry {
+                id: "kiro".to_string(),
+                name: "Kiro CLI".to_string(),
+                key: Some(generate_token("kiro")),
+                color: "#8b5cf6".to_string(), // Violet
             },
             ClientEntry {
                 id: "default".to_string(),
                 name: "Anonymous Agent".to_string(),
                 key: None,
-                color: "#a855f7".to_string(),
+                color: "#a855f7".to_string(), // Purple
             },
         ],
         require_auth: false,
         daemon_key: Some(generate_token("daemon")),
     }
+}
+
+impl ClientsRegistry {
+    /// Retrieve the key for a given client ID, generating and persisting a new one if missing.
+    pub fn get_or_create_client_key(&mut self, client_id: &str) -> String {
+        let lower = client_id.to_lowercase();
+        if let Some(entry) = self.clients.iter_mut().find(|c| c.id.to_lowercase() == lower) {
+            if let Some(ref k) = entry.key {
+                return k.clone();
+            }
+            let new_key = generate_token(&lower);
+            entry.key = Some(new_key.clone());
+            return new_key;
+        }
+
+        let new_key = generate_token(&lower);
+        self.clients.push(ClientEntry {
+            id: client_id.to_string(),
+            name: format!("{client_id} Client"),
+            key: Some(new_key.clone()),
+            color: default_client_color(),
+        });
+        new_key
+    }
+}
+
+/// Get the canonical path for central `clients.json`.
+pub fn get_central_clients_path() -> PathBuf {
+    crate::config::get_cache_dir().join("clients.json")
 }
 
 /// Discover candidate paths for `clients.json`.
@@ -186,9 +245,62 @@ pub fn get_client_config_candidates() -> Vec<PathBuf> {
 
     candidates.push(PathBuf::from("clients.json"));
     candidates.push(PathBuf::from("ctxv-clients.json"));
-    candidates.push(crate::config::get_cache_dir().join("clients.json"));
+    candidates.push(get_central_clients_path());
 
     candidates
+}
+
+/// Save a `ClientsRegistry` configuration to a target path on disk.
+pub fn save_clients_config(registry: &ClientsRegistry, path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json_str = serde_json::to_string_pretty(registry)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, json_str)?;
+    Ok(())
+}
+
+/// Ensure central `clients.json` exists in central cache directory.
+///
+/// If `generate_if_missing` is true, generates a fresh `ClientsRegistry` populated with
+/// secure API keys for all supported agents and writes it to disk.
+pub fn ensure_central_clients_config(
+    generate_if_missing: bool,
+    require_auth: bool,
+) -> std::io::Result<(ClientsRegistry, PathBuf)> {
+    let central_path = get_central_clients_path();
+
+    if central_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&central_path) {
+            if let Ok(mut reg) = serde_json::from_str::<ClientsRegistry>(&content) {
+                let mut changed = false;
+                if require_auth && !reg.require_auth {
+                    reg.require_auth = true;
+                    changed = true;
+                }
+                if reg.daemon_key.is_none() {
+                    reg.daemon_key = Some(generate_token("daemon"));
+                    changed = true;
+                }
+                if changed {
+                    let _ = save_clients_config(&reg, &central_path);
+                }
+                return Ok((reg, central_path));
+            }
+        }
+    }
+
+    if generate_if_missing {
+        let mut reg = generate_default_config();
+        if require_auth {
+            reg.require_auth = true;
+        }
+        save_clients_config(&reg, &central_path)?;
+        Ok((reg, central_path))
+    } else {
+        Ok((load_clients_config(Some(&central_path)), central_path))
+    }
 }
 
 /// Load the clients registry from disk, falling back to built-in defaults.
@@ -284,5 +396,44 @@ mod tests {
 
         let resolved_default = reg.resolve(None, None).unwrap();
         assert_eq!(resolved_default.id, "default");
+    }
+
+    #[test]
+    fn test_expanded_clients_in_default_config() {
+        let generated = generate_default_config();
+        for id in &[
+            "antigravity",
+            "claude",
+            "gemini",
+            "cursor",
+            "windsurf",
+            "vscode",
+            "zed",
+            "roo",
+            "kiro",
+        ] {
+            let client = generated.find_by_id(id);
+            assert!(client.is_some(), "Client {id} should exist in default config");
+            let k = client.unwrap().key.as_ref();
+            assert!(k.is_some(), "Client {id} should have an auto-generated key");
+            assert!(generated.is_valid_key(k.unwrap()));
+        }
+    }
+
+    #[test]
+    fn test_get_or_create_client_key() {
+        let mut reg = ClientsRegistry::default();
+        let key1 = reg.get_or_create_client_key("cursor");
+        assert!(key1.starts_with("cursor_"));
+        assert!(reg.is_valid_key(&key1));
+
+        // Calling again returns the identical existing key
+        let key2 = reg.get_or_create_client_key("cursor");
+        assert_eq!(key1, key2);
+
+        // A new unrecognized agent gets added
+        let custom_key = reg.get_or_create_client_key("my-custom-agent");
+        assert!(custom_key.starts_with("my-custom-agent_"));
+        assert!(reg.find_by_id("my-custom-agent").is_some());
     }
 }

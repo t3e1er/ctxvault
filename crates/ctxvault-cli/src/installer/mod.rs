@@ -49,6 +49,8 @@ You have access to the `ctxvault` Model Context Protocol (MCP) server (17 author
 pub struct AgentTarget {
     /// Human-readable agent name.
     pub name: &'static str,
+    /// Registered client identity (e.g. "antigravity", "claude", "cursor").
+    pub client_id: &'static str,
     /// Absolute path to configuration file.
     pub path: PathBuf,
 }
@@ -97,10 +99,12 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     // 1. Antigravity / Gemini
     targets.push(AgentTarget {
         name: "Antigravity IDE",
+        client_id: "antigravity",
         path: home_path.join(".gemini").join("antigravity-ide").join("mcp_config.json"),
     });
     targets.push(AgentTarget {
         name: "Gemini CLI / Extension",
+        client_id: "gemini",
         path: home_path.join(".gemini").join("config").join("mcp_config.json"),
     });
 
@@ -109,10 +113,12 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "Cursor (Global Settings)",
+            client_id: "cursor",
             path: app_data.join("Cursor").join("User").join("mcp.json"),
         });
         targets.push(AgentTarget {
             name: "Cursor (Roo/Cline MCP)",
+            client_id: "roo",
             path: app_data
                 .join("Cursor")
                 .join("User")
@@ -126,11 +132,13 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "Cursor",
+            client_id: "cursor",
             path: config_dir.join("Cursor").join("User").join("mcp.json"),
         });
     }
     targets.push(AgentTarget {
         name: "Cursor (User Profile)",
+        client_id: "cursor",
         path: home_path.join(".cursor").join("mcp.json"),
     });
 
@@ -139,6 +147,7 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "Claude Desktop",
+            client_id: "claude",
             path: app_data.join("Claude").join("claude_desktop_config.json"),
         });
     }
@@ -146,14 +155,20 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "Claude Desktop",
+            client_id: "claude",
             path: home_path.join(".claude").join("claude_desktop_config.json"),
         });
     }
-    targets.push(AgentTarget { name: "Claude Code CLI", path: home_path.join(".claude.json") });
+    targets.push(AgentTarget {
+        name: "Claude Code CLI",
+        client_id: "claude",
+        path: home_path.join(".claude.json"),
+    });
 
     // 4. Windsurf
     targets.push(AgentTarget {
         name: "Windsurf",
+        client_id: "windsurf",
         path: home_path.join(".codeium").join("windsurf").join("mcp_config.json"),
     });
 
@@ -162,10 +177,12 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "VS Code User MCP",
+            client_id: "vscode",
             path: app_data.join("Code").join("User").join("mcp.json"),
         });
         targets.push(AgentTarget {
             name: "GitHub Copilot Chat MCP",
+            client_id: "vscode",
             path: app_data
                 .join("Code")
                 .join("User")
@@ -178,6 +195,7 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     {
         targets.push(AgentTarget {
             name: "VS Code User MCP",
+            client_id: "vscode",
             path: config_dir.join("Code").join("User").join("mcp.json"),
         });
     }
@@ -185,12 +203,19 @@ pub fn detect_agents() -> Vec<AgentTarget> {
     // 6. Zed
     #[cfg(windows)]
     {
-        targets.push(AgentTarget { name: "Zed", path: app_data.join("Zed").join("settings.json") });
+        targets.push(AgentTarget {
+            name: "Zed",
+            client_id: "zed",
+            path: app_data.join("Zed").join("settings.json"),
+        });
     }
     #[cfg(not(windows))]
     {
-        targets
-            .push(AgentTarget { name: "Zed", path: config_dir.join("zed").join("settings.json") });
+        targets.push(AgentTarget {
+            name: "Zed",
+            client_id: "zed",
+            path: config_dir.join("zed").join("settings.json"),
+        });
     }
 
     // 7. Kiro CLI
@@ -198,6 +223,7 @@ pub fn detect_agents() -> Vec<AgentTarget> {
         std::env::var("KIRO_HOME").map(PathBuf::from).unwrap_or_else(|_| home_path.join(".kiro"));
     targets.push(AgentTarget {
         name: "Kiro CLI (Global Settings)",
+        client_id: "kiro",
         path: kiro_home.join("settings").join("mcp.json"),
     });
 
@@ -269,6 +295,7 @@ pub fn run_install(
     install_rules: bool,
     workspace_dir: Option<&Path>,
     filter_agents: Option<&[String]>,
+    with_auth: bool,
 ) -> anyhow::Result<InstallSummary> {
     let binary_command = if let Some(dir) = install_dir {
         let exe = if cfg!(windows) { "ctxvault.exe" } else { "ctxvault" };
@@ -277,10 +304,18 @@ pub fn run_install(
         "ctxvault".to_string()
     };
 
+    let mut clients_registry = if with_auth {
+        let (reg, _) = ctxvault_common::client::ensure_central_clients_config(true, false)?;
+        Some(reg)
+    } else {
+        None
+    };
+
     let mut targets = detect_agents();
     if let Some(ws) = workspace_dir {
         targets.push(AgentTarget {
             name: "Kiro CLI (Workspace Settings)",
+            client_id: "kiro",
             path: ws.join(".kiro").join("settings").join("mcp.json"),
         });
     }
@@ -322,22 +357,32 @@ pub fn run_install(
         // Ensure mcpServers object exists
         let servers = root_map.entry("mcpServers".to_string()).or_insert_with(|| json!({}));
 
-        if let Some(servers_map) = servers.as_object_mut() {
-            servers_map.insert(
-                "ctxvault".to_string(),
+        let mut server_entry = json!({
+            "command": binary_command,
+            "args": []
+        });
+
+        if let Some(ref mut reg) = clients_registry {
+            let key = reg.get_or_create_client_key(target.client_id);
+            server_entry.as_object_mut().unwrap().insert(
+                "env".to_string(),
                 json!({
-                    "command": binary_command,
-                    "args": []
+                    "CTXV_API_KEY": key
                 }),
             );
+        }
+
+        if let Some(servers_map) = servers.as_object_mut() {
+            servers_map.insert("ctxvault".to_string(), server_entry);
         }
 
         let target_display = target.path.display().to_string();
 
         if dry_run {
+            let auth_note = if with_auth { " (with CTXV_API_KEY credentials)" } else { "" };
             summary.dry_run_detected.push(format!(
-                "{} -> Would configure zero-arg ctxvault at: {}",
-                target.name, target_display
+                "{} -> Would configure ctxvault{} at: {}",
+                target.name, auth_note, target_display
             ));
         } else {
             if let Some(parent) = target.path.parent() {
@@ -402,6 +447,22 @@ pub fn run_install(
     };
 
     for agents_dir in kiro_dirs {
+        let mut scout_server = json!({
+            "command": binary_command,
+            "args": ["--profile", "scout"]
+        });
+        let mut analysis_server = json!({
+            "command": binary_command,
+            "args": ["--profile", "analysis"]
+        });
+
+        if let Some(ref mut reg) = clients_registry {
+            let key = reg.get_or_create_client_key("kiro");
+            let env_map = json!({ "CTXV_API_KEY": key });
+            scout_server.as_object_mut().unwrap().insert("env".to_string(), env_map.clone());
+            analysis_server.as_object_mut().unwrap().insert("env".to_string(), env_map);
+        }
+
         let scout_profile = json!({
             "name": "ctxvault-scout",
             "description": "Fast exploratory code & doc scout agent using ctxvault scout profile",
@@ -409,10 +470,7 @@ pub fn run_install(
             "tools": ["read", "grep", "glob"],
             "includeMcpJson": false,
             "mcpServers": {
-                "ctxvault": {
-                    "command": binary_command,
-                    "args": ["--profile", "scout"]
-                }
+                "ctxvault": scout_server
             }
         });
         let analysis_profile = json!({
@@ -422,10 +480,7 @@ pub fn run_install(
             "tools": ["read", "grep", "glob"],
             "includeMcpJson": false,
             "mcpServers": {
-                "ctxvault": {
-                    "command": binary_command,
-                    "args": ["--profile", "analysis"]
-                }
+                "ctxvault": analysis_server
             }
         });
 
@@ -449,7 +504,23 @@ pub fn run_install(
         }
     }
 
+    if let Some(ref reg) = clients_registry {
+        if !dry_run {
+            let central_path = ctxvault_common::client::get_central_clients_path();
+            let _ = ctxvault_common::client::save_clients_config(reg, &central_path);
+        }
+    }
+
     Ok(summary)
+}
+
+/// Auto-populate credentials into detected MCP client configuration files.
+pub fn autopopulate_clients(
+    install_dir: Option<&Path>,
+    dry_run: bool,
+    filter_agents: Option<&[String]>,
+) -> anyhow::Result<InstallSummary> {
+    run_install(install_dir, dry_run, true, false, None, filter_agents, true)
 }
 
 #[cfg(test)]
@@ -478,7 +549,7 @@ mod tests {
         let ws_kiro_settings = ws_kiro.join("settings");
         fs::create_dir_all(&ws_kiro_settings).unwrap();
 
-        let summary = run_install(None, false, true, true, Some(&ws), None).unwrap();
+        let summary = run_install(None, false, true, true, Some(&ws), None, false).unwrap();
 
         // 1. Verify workspace Kiro mcp.json was created/configured
         let mcp_json_path = ws_kiro_settings.join("mcp.json");
@@ -512,5 +583,25 @@ mod tests {
             .contains("ctxvault MCP Steering Protocol"));
 
         assert!(!summary.configured.is_empty());
+    }
+
+    #[test]
+    fn test_installer_with_auth_populates_credentials() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("workspace_auth");
+        let ws_kiro_settings = ws.join(".kiro").join("settings");
+        fs::create_dir_all(&ws_kiro_settings).unwrap();
+
+        let summary = run_install(None, false, true, false, Some(&ws), None, true).unwrap();
+        assert!(!summary.configured.is_empty());
+
+        let mcp_json_path = ws_kiro_settings.join("mcp.json");
+        assert!(mcp_json_path.exists());
+        let mcp_content: Value =
+            serde_json::from_str(&fs::read_to_string(&mcp_json_path).unwrap()).unwrap();
+
+        let env_key = mcp_content["mcpServers"]["ctxvault"]["env"]["CTXV_API_KEY"].as_str();
+        assert!(env_key.is_some(), "CTXV_API_KEY must be populated in mcpServers.ctxvault.env");
+        assert!(env_key.unwrap().starts_with("kiro_"));
     }
 }

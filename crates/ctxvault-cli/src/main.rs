@@ -152,6 +152,9 @@ enum Commands {
         /// Target specific coding agents only (comma-separated, e.g. "antigravity,cursor,claude").
         #[arg(long)]
         agents: Option<String>,
+        /// Auto-populate agent configuration with dedicated authentication API keys (CTXV_API_KEY).
+        #[arg(long)]
+        auth: bool,
     },
     /// View and edit ctxvault configuration.
     Config {
@@ -244,6 +247,18 @@ enum ClientAction {
     },
     /// List configured client profiles and authentication status.
     List,
+    /// Auto-populate detected MCP client config files with dedicated authentication credentials.
+    Autopopulate {
+        /// Dry-run mode: display modifications without writing to disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Target specific coding agents only (comma-separated, e.g. "antigravity,cursor,claude").
+        #[arg(long)]
+        agents: Option<String>,
+        /// Target installation directory containing ctxvault binary.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -380,7 +395,7 @@ async fn main() -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     if let Some(cmd) = &cli.command {
         match cmd {
-            Commands::Install { dir, yes, dry_run, rules, rules_dir, fast: _, agents } => {
+            Commands::Install { dir, yes, dry_run, rules, rules_dir, fast: _, agents, auth } => {
                 let current_dir = std::env::current_dir().ok();
                 let ws_dir = if *rules {
                     rules_dir.as_deref().or(current_dir.as_deref())
@@ -400,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
                     *rules || rules_dir.is_some(),
                     ws_dir,
                     agent_filters.as_deref(),
+                    *auth,
                 )?;
                 if *dry_run {
                     println!("\n=== ctxvault Agent Configuration (DRY RUN) ===");
@@ -592,7 +608,13 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Commands::Graphview { bind, corpora_dir, daemon, daemon_key } => {
-                if let Some(ref k) = daemon_key {
+                let effective_key = if let Some(ref k) = daemon_key {
+                    Some(k.clone())
+                } else {
+                    let config = ctxvault_common::client::load_clients_config(None);
+                    config.daemon_key
+                };
+                if let Some(ref k) = effective_key {
                     std::env::set_var("CTXV_INTERNAL_API_KEY", k);
                 }
                 ctxvault_graphview::run_graphview_server(
@@ -648,6 +670,34 @@ async fn main() -> anyhow::Result<()> {
                             "  * {:<20} ID: {:<12} Color: {:<8} Key: {}",
                             c.name, c.id, c.color, key_display
                         );
+                    }
+                    return Ok(());
+                }
+                ClientAction::Autopopulate { dry_run, agents, dir } => {
+                    let agent_filters = agents.as_ref().map(|a| {
+                        a.split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                    });
+                    let summary = installer::autopopulate_clients(
+                        dir.as_deref(),
+                        *dry_run,
+                        agent_filters.as_deref(),
+                    )?;
+                    if *dry_run {
+                        println!("\n=== ctxvault Client Credentials Autopopulate (DRY RUN) ===");
+                        for line in summary.dry_run_detected {
+                            println!("  [dry-run] {}", line);
+                        }
+                    } else {
+                        println!("\n=== ctxvault Client Credentials Autopopulate Complete ===");
+                        for line in summary.configured {
+                            println!("  [+] Autopopulated {}", line);
+                        }
+                    }
+                    for line in summary.skipped {
+                        println!("  [-] Skipped {}", line);
                     }
                     return Ok(());
                 }
@@ -719,7 +769,7 @@ async fn main() -> anyhow::Result<()> {
         let server_url = &cli.server;
         if !is_server_healthy(server_url).await {
             tracing::info!(server = %server_url, "central daemon is down; spawning background server");
-            spawn_daemon(&cli.bind, cli.idle_timeout, &cli.log_level, cli.watch)?;
+            spawn_daemon(&cli.bind, cli.idle_timeout, &cli.log_level, cli.watch, cli.require_auth)?;
 
             // Poll /health until server is responsive (up to 5 seconds deadline)
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -738,7 +788,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         tracing::info!(server = %server_url, "bridging stdio JSON-RPC to central daemon");
-        transport::run_stdio_proxy(server_url).await?;
+        let api_key = std::env::var("CTXV_API_KEY").ok();
+        transport::run_stdio_proxy(server_url, api_key.as_deref()).await?;
         return Ok(());
     }
 
@@ -747,7 +798,8 @@ async fn main() -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     if matches!(cli.mode, Mode::Proxy) {
         tracing::info!(server = %cli.server, "starting stdio MCP proxy -> remote server");
-        transport::run_stdio_proxy(&cli.server).await?;
+        let api_key = std::env::var("CTXV_API_KEY").ok();
+        transport::run_stdio_proxy(&cli.server, api_key.as_deref()).await?;
         return Ok(());
     }
 
@@ -792,6 +844,14 @@ async fn main() -> anyhow::Result<()> {
     // Local / Server Modes
     // -----------------------------------------------------------------------
     tracing::info!(mode = ?cli.mode, daemon = cli.daemon, "starting ctxvault engine");
+
+    if cli.require_auth {
+        let (config, path) = ctxvault_common::client::ensure_central_clients_config(true, true)?;
+        tracing::info!(path = %path.display(), "authenticated mode active; loaded central clients registry");
+        if let Some(ref dk) = config.daemon_key {
+            tracing::info!(daemon_key = %dk, "daemon-to-graphview relay key active");
+        }
+    }
 
     // Build the multi-corpus manager.
     let mut manager = CorpusManager::new();
@@ -965,6 +1025,7 @@ fn spawn_daemon(
     idle_timeout: u64,
     log_level: &str,
     watch: bool,
+    require_auth: bool,
 ) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(current_exe);
@@ -984,6 +1045,9 @@ fn spawn_daemon(
     }
     if idle_timeout > 0 {
         cmd.arg(format!("--idle-timeout={}", idle_timeout));
+    }
+    if require_auth {
+        cmd.arg("--require-auth");
     }
 
     #[cfg(windows)]
