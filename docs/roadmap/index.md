@@ -34,3 +34,7 @@ This section tracks the technical roadmap and Request for Comments (RFC) enginee
 | **[[docs/roadmap/RFC-markdown-templates-and-frontmatter-edge-schema]]** | Markdown Templates & Frontmatter Edge Schema | Proposed | Native .templates/*.md standard with frontmatter schema, edge synthesis, and scaffolding. |
 | **[[docs/roadmap/RFC-lean-multiline-text-emission]]** | Lean Multiline Text Emission Protocol | Implemented | Eliminating JSON context overhead via indented Cypher ASCII trees and markdown blocks (~69% token savings). |
 | **[[docs/roadmap/RFC-graphview]]** | Standalone 3D GraphView & Multi-Agent Activation Substrate | Implementing | Zero-overhead sidecar 3D visualization, 1M+ node binary protocol, and real-time SSE agent telemetry. |
+| **[[docs/roadmap/RFC-algorithmic-semantic-bridging]]** | Algorithmic Semantic Bridging & Code Graph Synthesis | Proposed | Sub-minute CPU-only semantic graph bridging (11 signals, RoTSQ 4-bit, RRI) for 100K+ file codebases. |
+| **[[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]]** | SOTA Code Retrieval & High-Throughput Semantic Bridging | Proposed (Next Up) | Sub-second CPU semantic bridging (SIF, 256-bit MRL binary embeddings, AST pattern injection, Query-Time PPR) for 100K+ files. |
+| **[[docs/roadmap/RFC-document-extractors-and-projections]]** | Pluggable Document Extractors & Derived Projections | Proposed | Pure-Rust ingestion for Word (.docx), PDF (.pdf), and HTML (.html) via disposable Derived Text Projections and modality disambiguation. |
+

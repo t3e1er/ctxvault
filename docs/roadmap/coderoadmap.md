@@ -430,3 +430,46 @@ Identified during LLM agent context profiling and benchmark evaluation against `
    - *Turn 2a (`get_snippet`)*: Bounded source blocks with 1-based prefixed line numbers (`L<num>: `), docstrings in markdown blockquotes, grammar-driven incoming/outgoing relationships, and outbound navigation hints (`-> [T2b callers]`, `-> [T3 full file]`).
    - *Turn 2b (`graph_match`)*: 2-space indented Cypher ASCII trees with quantified blast radius summary header (`[direct: D, transitive: T, files: F, depth: H]`), cycle detection markers, and hub suppression annotations (`... (+N more)`).
    - *Turn 3 (`read_file`)*: Line-numbered markdown blocks for single files or batch arrays (`paths: [...]`) with zero JSON quote/newline escaping overhead.
+
+---
+
+## 11. Upcoming Engineering Milestones
+
+### 11.1 SOTA Code Retrieval & High-Throughput Semantic Bridging (Next Up — Active Milestone)
+*Authoritative RFC*: [[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]]  
+*Status*: **Next Up / Active Milestone**  
+*Scope*: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`
+
+Identified to eliminate the 35–55 minute ONNX CPU embedding bottleneck on 100K+ file repositories without dedicated GPUs:
+
+1. **Sub-Minute CPU Semantic Bridging**:
+   - **Static SIF Projections**: Smooth Inverse Frequency weighted embeddings over Tree-sitter code tokens, executing in **~10 seconds for 500,000 symbols** entirely on CPU.
+   - **256-Bit Matryoshka Binary Embeddings (MRL)**: Sign-quantized binary fingerprints requiring only **16 MB of total RAM** for 500k symbols, evaluated via single-cycle AVX-512 / AVX2 `POPCNT` (<1ms SIMD candidate scoring).
+   - **AST Pattern Injection**: Pre-tokenized syntactic pattern tokens injected directly into Tantivy BM25 postings, bridging lexical-semantic synonym gaps at zero marginal CPU cost.
+2. **Query-Time Personalized PageRank (HippoRAG Diffusion)**:
+   - Eliminates graph edge bloat and pre-computation by executing 2-hop PPR random walks on demand across Petgraph at query time.
+   - Leaves Petgraph's topology completely clean (zero artificial `[:semantically_related]` edges), achieving sub-2ms diffusion without combinatorial path explosion.
+
+---
+
+### 11.2 Pluggable Document Extractors & Derived Text Projections (Word, PDF, HTML) (Queued — Specification Complete)
+*Authoritative RFC*: [[docs/roadmap/RFC-document-extractors-and-projections]]  
+*Status*: **Queued (Sequenced following SOTA Code Retrieval)**  
+*Scope*: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`
+
+Expands `ctxvault` beyond Markdown notes into polyglot document vaults while strictly preserving Non-Negotiable Invariant #1 (disk as authoritative ground truth) and the Zero-Copy File-Offset architecture:
+
+1. **Corpus Modality Disambiguation**:
+   - Deterministically separates code UI templates (`.html` in React/Vue/Go projects) from documentation articles (Sphinx/Doxygen/Confluence HTML exports).
+   - Introduces `CorpusType` (`code_repo`, `doc_vault`, `mixed`), explicit `doc_patterns` (`docs/**`, `specs/**`, `wiki/**`), and content-based text-to-tag heuristics.
+   - Filters binary fixtures (`.pdf`, `.docx` in `tests/fixtures/`) from indexing unless explicitly opted into document roots.
+2. **Derived Text Projections (DTP)**:
+   - Stores disposable, deterministic, line-numbered text projections under `.index/projections/<path>.txt`.
+   - The authoritative `.docx`, `.pdf`, or `.html` file on disk remains the sole source of truth; projections are 100% rebuildable upon index refresh.
+   - Slices byte offsets (`start_byte..end_byte`) and lines (`start_line..end_line`) directly from the projected file in the OS page cache for sub-millisecond `get_snippet` and `read_file` performance.
+3. **100% Pure-Rust Ingestion Adapters**:
+   - **Word (`.docx`)**: `quick-xml` + `zip` streaming OpenXML parser with heading-style mapping and GFM table generation (<2ms per document, zero C runtime).
+   - **PDF (`.pdf`)**: `lopdf` + `pdf_extract` text-and-vector parser with `<!-- Page N -->` line anchors and reading-order reconstruction (strictly scoped to selectable text PDFs, omitting C OCR engines).
+   - **HTML (`.html`)**: `tl` / `scraper` with automatic chrome stripping (`<nav>`, `<header>`, `<footer>`, `<script>`, `<style>`) and semantic Markdown synthesis.
+4. **Strict Read-Only Ingestion Boundary**:
+   - `write_note` strictly rejects non-markdown formats. Principle 3 knowledge crystallization authors canonical Markdown notes linking to extracted documents via `derived_from: ["specs/architecture.docx"]`.
