@@ -1151,6 +1151,7 @@ fn load_or_default_config(corpus_path: &Path) -> anyhow::Result<CorpusConfig> {
                 ],
             },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         })
     }
 }

@@ -22,6 +22,7 @@ fn fast_corpus_config(name: &str, corpus_path: &Path) -> CorpusConfig {
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
         templates_dir: None,
+        exclude: ctxvault_common::config::ExcludeConfig::default(),
     }
 }
 

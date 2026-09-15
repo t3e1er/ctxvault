@@ -28,6 +28,7 @@ fn test_kubernetes_traversal_with_code_edge_class() {
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
         templates_dir: None,
+        exclude: ctxvault_common::config::ExcludeConfig::default(),
     };
 
     let start_open = std::time::Instant::now();

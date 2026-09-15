@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.60"
+version = "0.0.61"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -76,10 +76,11 @@ petgraph = { version = "0.8", features = ["serde-1"] }
 # Database
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 
-# File watching / locking
+# File watching / locking / filtering
 notify = "8.2"
 notify-debouncer-full = "0.7"
 fs4 = "0.13"
+ignore = "0.4"
 
 # Compression & Archiving
 tar = "0.4"
