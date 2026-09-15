@@ -7,6 +7,7 @@ param(
     [string]$Tag,
     [switch]$SkipModels,
     [switch]$SkipRules,
+    [switch]$Auth,
     [string]$Agents,
     [string]$Repo = $(if ($env:CTXV_GITHUB_REPO) { $env:CTXV_GITHUB_REPO } elseif ($env:CXTV_GITHUB_REPO) { $env:CXTV_GITHUB_REPO } else { "t3e1er/ctxvault" }),
     [string]$InstallDir = $(if ($env:CTXV_INSTALL_DIR) { $env:CTXV_INSTALL_DIR } elseif ($env:CXTV_INSTALL_DIR) { $env:CXTV_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\ctxvault\bin" })
@@ -160,6 +161,7 @@ try {
     $InstallArgs = @("install", "-y", "--dir=$InstallDir")
     if ($Fast) { $InstallArgs += "--fast" }
     if ($SkipRules) { $InstallArgs += "--rules=false" }
+    if ($Auth) { $InstallArgs += "--auth" }
     if ($Agents) { $InstallArgs += "--agents=$Agents" }
     & "$InstallDir\ctxvault.exe" @InstallArgs
 
