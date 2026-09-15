@@ -13,6 +13,7 @@ related:
   - "[[docs/architecture/implementation/cross-corpus-federation]]"
   - "[[docs/architecture/implementation/mcp-transport]]"
   - "[[docs/architecture/implementation/graphview]]"
+  - "[[docs/architecture/implementation/file-exclusion]]"
 ---
 
 # Implementation & Systems Architecture Hub
@@ -24,6 +25,7 @@ related:
 ## Architectural Pillars
 
 * **[[docs/architecture/implementation/hexagonal-architecture]]**: Ports & adapters pattern; zero leaking of Tantivy, rusqlite, or ONNX types across module boundaries.
+* **[[docs/architecture/implementation/file-exclusion]]**: Central corpus gitignore-equivalent pattern matcher, subtree pruning, and multi-layered indexing skips.
 * **[[docs/architecture/implementation/cast-chunking]]**: Tree-sitter cAST polyglot parsing across 16+ languages with parent scope breadcrumb injection.
 * **[[docs/architecture/implementation/gpu-and-directml]]**: DirectX 12 DirectML acceleration, AIMD VRAM governor, and TDR driver watchdog resilience.
 * **[[docs/architecture/implementation/zero-copy-storage]]**: Packed binary vector files, zero-copy byte offsets, and SQLite catalog design.

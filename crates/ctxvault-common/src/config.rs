@@ -34,6 +34,128 @@ pub struct CorpusConfig {
     /// 4. `docs/templates`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub templates_dir: Option<String>,
+    /// File exclusion / ignore configuration for file discovery and indexing.
+    #[serde(default)]
+    pub exclude: ExcludeConfig,
+}
+
+/// Configuration for file and directory exclusion during indexing and watching.
+/// Uses gitignore-compatible glob pattern syntax.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExcludeConfig {
+    /// Whether to automatically inherit patterns from `.gitignore` at the corpus root.
+    #[serde(default = "default_true")]
+    pub use_gitignore: bool,
+
+    /// Whether to automatically load patterns from `.ctxvaultignore` (or `.cbmignore`) at the corpus root.
+    #[serde(default = "default_true")]
+    pub use_ctxvaultignore: bool,
+
+    /// Array of gitignore-style glob patterns for excluding paths from indexing.
+    /// Defaults to standard VCS, build artifact, dependency, test, and binary patterns.
+    #[serde(default = "default_exclude_patterns")]
+    pub patterns: Vec<String>,
+
+    /// Additional custom exclude patterns (appended to `patterns`).
+    #[serde(default)]
+    pub additional_patterns: Vec<String>,
+}
+
+impl Default for ExcludeConfig {
+    fn default() -> Self {
+        Self {
+            use_gitignore: true,
+            use_ctxvaultignore: true,
+            patterns: default_exclude_patterns(),
+            additional_patterns: Vec::new(),
+        }
+    }
+}
+
+impl ExcludeConfig {
+    /// Attempt to parse lines from a `.gitignore` file and append them to `patterns`.
+    pub fn lift_from_gitignore(&mut self, gitignore_path: &std::path::Path) {
+        if let Ok(content) = std::fs::read_to_string(gitignore_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    if !self.patterns.iter().any(|p| p == trimmed) {
+                        self.patterns.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Default indexing exclude patterns.
+pub fn default_exclude_patterns() -> Vec<String> {
+    vec![
+        // VCS & Tool metadata
+        ".git".to_string(),
+        ".svn".to_string(),
+        ".hg".to_string(),
+        ".index/".to_string(),
+        ".fastembed_cache/".to_string(),
+        // Dependencies
+        "node_modules/".to_string(),
+        "vendor/".to_string(),
+        "Pods/".to_string(),
+        // Build artifacts & compiler output
+        "target/".to_string(),
+        "dist/".to_string(),
+        "build/".to_string(),
+        "out/".to_string(),
+        "bin/".to_string(),
+        "obj/".to_string(),
+        // Virtualenvs & runtime caches
+        ".venv/".to_string(),
+        "venv/".to_string(),
+        "env/".to_string(),
+        "__pycache__/".to_string(),
+        ".cache/".to_string(),
+        ".mypy_cache/".to_string(),
+        ".pytest_cache/".to_string(),
+        ".ruff_cache/".to_string(),
+        ".next/".to_string(),
+        ".nuxt/".to_string(),
+        ".turbo/".to_string(),
+        // Test suites & fixture directories (avoids ingesting test suites/data by default)
+        "tests/".to_string(),
+        "test/".to_string(),
+        "__tests__/".to_string(),
+        "testdata/".to_string(),
+        "fixtures/".to_string(),
+        "spec/".to_string(),
+        "specs/".to_string(),
+        // Common test filename patterns
+        "*.test.*".to_string(),
+        "*.spec.*".to_string(),
+        "*_test.go".to_string(),
+        "*_test.py".to_string(),
+        // Binaries, compiled objects & databases
+        "*.exe".to_string(),
+        "*.dll".to_string(),
+        "*.so".to_string(),
+        "*.dylib".to_string(),
+        "*.bin".to_string(),
+        "*.wasm".to_string(),
+        "*.pyc".to_string(),
+        "*.pyo".to_string(),
+        "*.class".to_string(),
+        "*.o".to_string(),
+        "*.a".to_string(),
+        "*.db".to_string(),
+        "*.sqlite".to_string(),
+        "*.sqlite3".to_string(),
+        // Archives
+        "*.zip".to_string(),
+        "*.tar".to_string(),
+        "*.gz".to_string(),
+        "*.bz2".to_string(),
+        "*.xz".to_string(),
+        "*.7z".to_string(),
+    ]
 }
 
 /// Indexing mode controlling which index backends are populated.
@@ -580,5 +702,39 @@ mod tests {
         "#;
         let config_skeleton: CorpusConfig = toml::from_str(toml_skeleton).unwrap();
         assert_eq!(config_skeleton.index_mode, IndexMode::Skeleton);
+    }
+
+    #[test]
+    fn parse_corpus_config_with_exclude() {
+        let toml_str = r#"
+            name = "exclude-test"
+            path = "./repo"
+
+            [exclude]
+            use_gitignore = false
+            use_ctxvaultignore = true
+            patterns = ["custom_dir/", "*.custom"]
+            additional_patterns = ["!custom_dir/keep.txt"]
+        "#;
+        let config: CorpusConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.exclude.use_gitignore);
+        assert!(config.exclude.use_ctxvaultignore);
+        assert_eq!(config.exclude.patterns, vec!["custom_dir/", "*.custom"]);
+        assert_eq!(config.exclude.additional_patterns, vec!["!custom_dir/keep.txt"]);
+    }
+
+    #[test]
+    fn corpus_config_default_exclude() {
+        let toml_str = r#"
+            name = "default-exclude"
+            path = "./repo"
+        "#;
+        let config: CorpusConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.exclude.use_gitignore);
+        assert!(config.exclude.use_ctxvaultignore);
+        assert!(config.exclude.patterns.contains(&"tests/".to_string()));
+        assert!(config.exclude.patterns.contains(&"node_modules/".to_string()));
+        assert!(config.exclude.patterns.contains(&"target/".to_string()));
+        assert!(config.exclude.additional_patterns.is_empty());
     }
 }

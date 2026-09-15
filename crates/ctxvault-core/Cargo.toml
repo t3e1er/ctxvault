@@ -47,10 +47,11 @@ petgraph = { workspace = true }
 # Database
 rusqlite = { workspace = true }
 
-# File watching / locking
+# File watching / locking / filtering
 notify = { workspace = true }
 notify-debouncer-full = { workspace = true }
 fs4 = { workspace = true }
+ignore = { workspace = true }
 
 # Compression / Packaging
 tar = { workspace = true }

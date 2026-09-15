@@ -242,6 +242,7 @@ mod tests {
             embedding: EmbeddingConfig { model: "jina-embeddings-v2-base-code".to_string() },
             graph: Default::default(),
             templates_dir: None,
+            exclude: Default::default(),
         };
 
         let mut engine = Engine::open(config, &index_dir).unwrap();

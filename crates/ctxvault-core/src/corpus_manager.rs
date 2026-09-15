@@ -256,6 +256,7 @@ impl CorpusManager {
                 embedding: ctxvault_common::config::EmbeddingConfig::default(),
                 graph: ctxvault_common::config::GraphConfig::default(),
                 templates_dir: None,
+                exclude: ctxvault_common::config::ExcludeConfig::default(),
             }
         };
 
@@ -383,6 +384,7 @@ impl CorpusManager {
             },
             graph: ctxvault_common::config::GraphConfig::default(),
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
 
         self.add_corpus_with_index_dir(config, &target_index_dir)?;
@@ -1169,6 +1171,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         }
     }
 
@@ -1312,6 +1315,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: vec![implements] },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         }
     }
 

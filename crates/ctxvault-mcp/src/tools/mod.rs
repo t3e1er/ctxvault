@@ -2939,7 +2939,7 @@ fn handle_move_note(engine: &mut Engine, args: Value) -> Result<Value> {
         let new_link = format!("[[{}]]", new_name);
 
         // Walk all .md files in corpus.
-        let files = walk_markdown_files_for_rewrite(&corpus_path)?;
+        let files = walk_markdown_files_for_rewrite(&corpus_path, engine.exclude_matcher())?;
         for (rel_path, file_path) in &files {
             // Skip the moved file itself.
             if *rel_path == params.to {
@@ -2988,18 +2988,22 @@ fn handle_move_note(engine: &mut Engine, args: Value) -> Result<Value> {
 }
 
 /// Walk .md files for wikilink rewriting (same as engine's internal walk but accessible here).
-fn walk_markdown_files_for_rewrite(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+fn walk_markdown_files_for_rewrite(
+    root: &Path,
+    matcher: &ctxvault_core::index::exclude::ExcludeMatcher,
+) -> Result<Vec<(String, PathBuf)>> {
     let mut results = Vec::new();
     if !root.exists() {
         return Ok(results);
     }
-    walk_dir_for_rewrite(root, root, &mut results)?;
+    walk_dir_for_rewrite(root, root, matcher, &mut results)?;
     Ok(results)
 }
 
 fn walk_dir_for_rewrite(
     root: &Path,
     current: &Path,
+    matcher: &ctxvault_core::index::exclude::ExcludeMatcher,
     results: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     let entries = fs::read_dir(current)?;
@@ -3007,14 +3011,14 @@ fn walk_dir_for_rewrite(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            // Skip hidden directories.
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
-                    continue;
-                }
+            if matcher.is_excluded(&path, true) {
+                continue;
             }
-            walk_dir_for_rewrite(root, &path, results)?;
+            walk_dir_for_rewrite(root, &path, matcher, results)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            if matcher.is_excluded(&path, false) {
+                continue;
+            }
             let rel = path.strip_prefix(root).map_err(|e| {
                 Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
             })?;
@@ -3298,6 +3302,7 @@ mod tests {
                 }],
             },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         }
     }
 
@@ -3874,6 +3879,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
         add_test_corpus(&mut manager, config);
 
@@ -3922,6 +3928,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
         let docs_config = CorpusConfig {
             name: "docs".to_string(),
@@ -3932,6 +3939,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
 
         add_test_corpus(&mut manager, wiki_config);
@@ -4016,6 +4024,7 @@ mod tests {
                 embedding: EmbeddingConfig::default(),
                 graph: GraphConfig { edge_types: Vec::new() },
                 templates_dir: None,
+                exclude: ctxvault_common::config::ExcludeConfig::default(),
             };
             add_test_corpus(&mut manager, config);
         }
@@ -4101,6 +4110,7 @@ mod tests {
                 }],
             },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         }
     }
 
@@ -4299,6 +4309,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
         add_test_corpus(&mut manager, config);
 
@@ -4329,6 +4340,7 @@ mod tests {
             embedding: EmbeddingConfig::default(),
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         };
         add_test_corpus(&mut manager, config);
 

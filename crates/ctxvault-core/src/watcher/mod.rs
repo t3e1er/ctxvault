@@ -57,21 +57,23 @@ pub struct CorpusWatcher {
 
 impl CorpusWatcher {
     /// Start watching a directory for indexable markdown and code file changes.
-    ///
-    /// Returns a `CorpusWatcher` whose [`recv`](Self::recv) and
-    /// [`try_recv`](Self::try_recv) methods yield classified events.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying OS watcher cannot be created or the
-    /// path cannot be watched.
     pub fn start(watch_path: &Path) -> Result<Self> {
+        Self::start_with_matcher(watch_path, None)
+    }
+
+    /// Start watching a directory with an optional ExcludeMatcher for gitignore-style exclusions.
+    pub fn start_with_matcher(
+        watch_path: &Path,
+        matcher: Option<std::sync::Arc<crate::index::exclude::ExcludeMatcher>>,
+    ) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<FileEvent>(256);
 
         let mut watcher =
             notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
                 if let Ok(event) = res {
-                    if let Some(file_event) = classify_event(&event) {
+                    if let Some(file_event) =
+                        classify_event_with_matcher(&event, matcher.as_deref())
+                    {
                         // Best-effort send; if the receiver is gone we silently drop.
                         let _ = tx.blocking_send(file_event);
                     }
@@ -137,7 +139,11 @@ pub fn spawn_corpus_watcher(
     debounce_duration: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut watcher = match CorpusWatcher::start(&root_path) {
+        let matcher = {
+            let mgr = manager.read().await;
+            mgr.get_engine(&corpus_name).ok().map(|e| std::sync::Arc::clone(e.exclude_matcher()))
+        };
+        let mut watcher = match CorpusWatcher::start_with_matcher(&root_path, matcher) {
             Ok(w) => {
                 tracing::info!(corpus = %corpus_name, path = %root_path.display(), "started continuous file watcher");
                 w
@@ -208,17 +214,31 @@ fn is_markdown(path: &Path) -> bool {
 
 /// Returns `true` if the path is an indexable documentation or code file and not in an ignored dir.
 pub fn is_indexable(path: &Path) -> bool {
-    for component in path.components() {
-        if let std::path::Component::Normal(c) = component {
-            let s = c.to_string_lossy();
-            if s == ".git"
-                || s == "target"
-                || s == "node_modules"
-                || s == ".index"
-                || s == ".fastembed_cache"
-                || (s.starts_with('.') && s != "." && s != "..")
-            {
-                return false;
+    is_indexable_with_matcher(path, None)
+}
+
+/// Returns `true` if the path is an indexable documentation or code file and not excluded by matcher.
+pub fn is_indexable_with_matcher(
+    path: &Path,
+    matcher: Option<&crate::index::exclude::ExcludeMatcher>,
+) -> bool {
+    if let Some(m) = matcher {
+        if m.is_excluded(path, path.is_dir()) {
+            return false;
+        }
+    } else {
+        for component in path.components() {
+            if let std::path::Component::Normal(c) = component {
+                let s = c.to_string_lossy();
+                if s == ".git"
+                    || s == "target"
+                    || s == "node_modules"
+                    || s == ".index"
+                    || s == ".fastembed_cache"
+                    || (s.starts_with('.') && s != "." && s != "..")
+                {
+                    return false;
+                }
             }
         }
     }
@@ -232,8 +252,18 @@ pub fn is_indexable(path: &Path) -> bool {
 /// Classify a raw notify [`Event`] into an optional [`FileEvent`].
 ///
 /// Only events affecting indexable files produce a result.
+#[cfg(test)]
 fn classify_event(event: &Event) -> Option<FileEvent> {
-    let indexable_paths: Vec<&PathBuf> = event.paths.iter().filter(|p| is_indexable(p)).collect();
+    classify_event_with_matcher(event, None)
+}
+
+/// Classify a raw notify [`Event`] with an optional ExcludeMatcher.
+fn classify_event_with_matcher(
+    event: &Event,
+    matcher: Option<&crate::index::exclude::ExcludeMatcher>,
+) -> Option<FileEvent> {
+    let indexable_paths: Vec<&PathBuf> =
+        event.paths.iter().filter(|p| is_indexable_with_matcher(p, matcher)).collect();
 
     if indexable_paths.is_empty() {
         return None;

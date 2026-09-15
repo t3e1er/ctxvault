@@ -29,6 +29,7 @@ fn build_manager(name: &str, corpus_path: &std::path::Path) -> CorpusManager {
         embedding: EmbeddingConfig::default(),
         graph: GraphConfig::default(),
         templates_dir: None,
+        exclude: ctxvault_common::config::ExcludeConfig::default(),
     };
 
     let mut manager = CorpusManager::new();

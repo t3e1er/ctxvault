@@ -611,6 +611,7 @@ dependencies = [
  "ctxvault-common",
  "fs4",
  "hnsw_rs",
+ "ignore",
  "notify",
  "notify-debouncer-full",
  "ort",

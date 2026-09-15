@@ -85,6 +85,7 @@ pub struct Engine {
     vector_index: Option<VectorIndex>,
     embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
+    exclude_matcher: Arc<crate::index::exclude::ExcludeMatcher>,
 }
 
 /// Result of a delta scan comparing filesystem state against the index.
@@ -129,6 +130,9 @@ impl Engine {
         graph: KnowledgeGraph,
         vector_index: Option<VectorIndex>,
     ) -> Self {
+        let corpus_root = PathBuf::from(&config.path);
+        let exclude_matcher =
+            Arc::new(crate::index::exclude::ExcludeMatcher::new(&corpus_root, &config.exclude));
         Self {
             config,
             store,
@@ -137,6 +141,7 @@ impl Engine {
             vector_index,
             embedder: RwLock::new(None), // Lazily initialized
             index_dir,
+            exclude_matcher,
         }
     }
 
@@ -674,7 +679,7 @@ impl Engine {
 
         // 2. Walk the corpus directory.
         let corpus_path = PathBuf::from(&self.config.path);
-        let disk_files = walk_markdown_files(&corpus_path)?;
+        let disk_files = walk_markdown_files(&corpus_path, &self.exclude_matcher)?;
 
         let mut new_files = Vec::new();
         let mut modified_files = Vec::new();
@@ -902,6 +907,9 @@ impl Engine {
                     deleted_files.push(rel_path);
                 }
             } else {
+                if self.exclude_matcher.is_excluded(&full_path, full_path.is_dir()) {
+                    continue;
+                }
                 // File exists: check if new or modified
                 let content = match Self::read_file_lossy(&full_path) {
                     Ok(c) => c,
@@ -1001,7 +1009,7 @@ impl Engine {
         let commit_batch_size = if batch_size == 0 || batch_size == 50 { 500 } else { batch_size };
         let corpus_id = self.config.name.clone();
         let corpus_path = PathBuf::from(&self.config.path);
-        let mut disk_files = walk_markdown_files(&corpus_path)?;
+        let mut disk_files = walk_markdown_files(&corpus_path, &self.exclude_matcher)?;
         disk_files.sort_by(|a, b| a.0.cmp(&b.0));
         let total_files = disk_files.len();
 
@@ -1609,6 +1617,11 @@ impl Engine {
         &self.index_dir
     }
 
+    /// Get the compiled file exclude matcher for this engine.
+    pub fn exclude_matcher(&self) -> &Arc<crate::index::exclude::ExcludeMatcher> {
+        &self.exclude_matcher
+    }
+
     /// Get the embedding dimensions for this engine.
     pub fn embedding_dimension(&self) -> usize {
         self.vector_index.as_ref().map(|vi| vi.dimensions()).unwrap_or_else(|| {
@@ -2026,20 +2039,24 @@ fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before epoch").as_secs() as i64
 }
 
-/// Recursively walk a directory and collect all `.md` files.
+/// Recursively walk a directory and collect all indexable files (.md and polyglot source code).
 /// Returns `(relative_path, absolute_path)` pairs.
-fn walk_markdown_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+fn walk_markdown_files(
+    root: &Path,
+    matcher: &crate::index::exclude::ExcludeMatcher,
+) -> Result<Vec<(String, PathBuf)>> {
     let mut results = Vec::new();
     if !root.exists() {
         return Ok(results);
     }
-    walk_dir_recursive(root, root, &mut results)?;
+    walk_dir_recursive(root, root, matcher, &mut results)?;
     Ok(results)
 }
 
 fn walk_dir_recursive(
     root: &Path,
     current: &Path,
+    matcher: &crate::index::exclude::ExcludeMatcher,
     results: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     let entries = fs::read_dir(current)?;
@@ -2047,21 +2064,16 @@ fn walk_dir_recursive(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            // Skip hidden directories and common build/dependency artifacts
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.')
-                    || name == "target"
-                    || name == "node_modules"
-                    || name == "dist"
-                    || name == "build"
-                    || name == "venv"
-                    || name == ".venv"
-                {
-                    continue;
-                }
+            // Check exclusion for directories; prune subtrees immediately
+            if matcher.is_excluded(&path, true) {
+                continue;
             }
-            walk_dir_recursive(root, &path, results)?;
+            walk_dir_recursive(root, &path, matcher, results)?;
         } else {
+            // Check exclusion for individual files
+            if matcher.is_excluded(&path, false) {
+                continue;
+            }
             let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
             let is_code = crate::parser::code::is_code_file(&path);
             if is_md || is_code {
@@ -2115,6 +2127,7 @@ mod tests {
                 }],
             },
             templates_dir: None,
+            exclude: ctxvault_common::config::ExcludeConfig::default(),
         }
     }
 
@@ -2675,5 +2688,49 @@ class DataIngest:
         assert!(edges.iter().any(|e| e.edge_type == "calls"
             && e.source == "Engine > search_hybrid"
             && e.target == "execute_rrf"));
+    }
+
+    #[test]
+    fn test_indexing_excludes_test_and_node_modules() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("repo");
+        fs::create_dir_all(corpus_dir.join("src")).unwrap();
+        fs::create_dir_all(corpus_dir.join("tests")).unwrap();
+        fs::create_dir_all(corpus_dir.join("node_modules").join("pkg")).unwrap();
+        fs::create_dir_all(corpus_dir.join("target").join("debug")).unwrap();
+
+        // Valid source file
+        fs::write(corpus_dir.join("src").join("main.rs"), "fn main() { println!(\"hello\"); }")
+            .unwrap();
+        // Excluded test file in tests/
+        fs::write(corpus_dir.join("tests").join("integration_test.rs"), "fn test_it() {}").unwrap();
+        // Excluded test file in src/
+        fs::write(corpus_dir.join("src").join("app.test.rs"), "fn app_test() {}").unwrap();
+        // Excluded dependency
+        fs::write(
+            corpus_dir.join("node_modules").join("pkg").join("index.js"),
+            "module.exports = {};",
+        )
+        .unwrap();
+        // Excluded build artifact
+        fs::write(corpus_dir.join("target").join("debug").join("out.rs"), "fn out() {}").unwrap();
+        // .gitignore rule
+        fs::write(corpus_dir.join(".gitignore"), "secrets.rs\n").unwrap();
+        fs::write(corpus_dir.join("secrets.rs"), "fn secret() {}").unwrap();
+
+        let mut config = test_config(&corpus_dir);
+        config.index_mode = ctxvault_common::config::IndexMode::Fast;
+
+        let index_dir = tmp.path().join("index");
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+        let sync_res = engine.delta_scan_paginated(500).unwrap();
+
+        // Only src/main.rs should be indexed!
+        assert_eq!(sync_res.new_files, vec!["src/main.rs"]);
+        assert!(engine.store().get_file("src/main.rs").unwrap().is_some());
+        assert!(engine.store().get_file("tests/integration_test.rs").unwrap().is_none());
+        assert!(engine.store().get_file("src/app.test.rs").unwrap().is_none());
+        assert!(engine.store().get_file("node_modules/pkg/index.js").unwrap().is_none());
+        assert!(engine.store().get_file("secrets.rs").unwrap().is_none());
     }
 }
