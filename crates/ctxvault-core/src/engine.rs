@@ -17,7 +17,7 @@ use ctxvault_common::config::{ChunkingConfig, CorpusConfig, IndexMode};
 use ctxvault_common::ports::{GraphStore, MetadataCatalog};
 use ctxvault_common::types::{
     ChunkEmbedPolicy, ChunkRecord, Document, Edge, EntityKind, FileFormat, IndexingState,
-    IndexingStatus,
+    IndexingStatus, Modality,
 };
 use ctxvault_common::{Error, Result};
 
@@ -84,6 +84,7 @@ pub struct Engine {
     bm25: BM25Index,
     graph: KnowledgeGraph,
     vector_index: Option<VectorIndex>,
+    binary_index: crate::search::binary::BinarySearchIndex,
     embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
     exclude_matcher: Arc<crate::index::exclude::ExcludeMatcher>,
@@ -124,6 +125,7 @@ impl Engine {
     /// - `bm25`: Opened Tantivy BM25 index.
     /// - `graph`: Loaded or fresh knowledge graph.
     /// - `vector_index`: Loaded or fresh vector index, or `None` in Fast Mode.
+    /// - `binary_index`: Loaded or fresh 256-bit binary fingerprints index.
     pub fn from_parts(
         config: CorpusConfig,
         index_dir: PathBuf,
@@ -131,6 +133,7 @@ impl Engine {
         bm25: BM25Index,
         graph: KnowledgeGraph,
         vector_index: Option<VectorIndex>,
+        binary_index: crate::search::binary::BinarySearchIndex,
     ) -> Self {
         let corpus_root = PathBuf::from(&config.path);
         let exclude_matcher =
@@ -143,6 +146,7 @@ impl Engine {
             bm25,
             graph,
             vector_index,
+            binary_index,
             embedder: RwLock::new(None), // Lazily initialized
             index_dir,
             exclude_matcher,
@@ -256,6 +260,37 @@ impl Engine {
                 self.bm25.remove_document(rel_path)?;
                 self.bm25.add_document(rel_path, Some(&file_title), &[], &res.chunks)?;
 
+                // 3b. Binary Fingerprints (Pillars 2 & 3)
+                {
+                    use ctxvault_common::types::FingerprintRecord;
+                    let mut fps = Vec::new();
+                    for sym in &res.symbols {
+                        let fp_text = format!(
+                            "{} {} {}",
+                            sym.name,
+                            sym.signature,
+                            sym.docstring.as_deref().unwrap_or("")
+                        );
+                        let fp = self.binary_index.project_query(&fp_text).unwrap_or_default();
+                        fps.push(FingerprintRecord {
+                            id: sym.scope_path.clone(),
+                            fingerprint: fp,
+                            modality: Modality::Code,
+                        });
+                    }
+                    for chunk in &res.chunks {
+                        let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                        fps.push(FingerprintRecord {
+                            id: format!("{rel_path}:chunk:{}", chunk.chunk_index),
+                            fingerprint: fp,
+                            modality: Modality::Code,
+                        });
+                    }
+                    if !fps.is_empty() {
+                        let _ = self.binary_index.index_fingerprints(&fps);
+                    }
+                }
+
                 // 4. Vector index: clear existing vectors for this doc
                 if let Some(ref mut vi) = self.vector_index {
                     vi.remove_document(rel_path);
@@ -355,6 +390,27 @@ impl Engine {
         // 5. Remove old document from BM25, add new.
         self.bm25.remove_document(rel_path)?;
         self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
+
+        // 5b. Binary Fingerprints (Pillars 2 & 3)
+        {
+            use ctxvault_common::types::FingerprintRecord;
+            let mut fps = Vec::new();
+            for chunk in &chunks {
+                let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                fps.push(FingerprintRecord {
+                    id: if chunk.chunk_index == 0 {
+                        rel_path.to_string()
+                    } else {
+                        format!("{rel_path}:chunk:{}", chunk.chunk_index)
+                    },
+                    fingerprint: fp,
+                    modality: Modality::Docs,
+                });
+            }
+            if !fps.is_empty() {
+                let _ = self.binary_index.index_fingerprints(&fps);
+            }
+        }
 
         // 6. Vector index: clear existing vectors for this doc
         if let Some(ref mut vi) = self.vector_index {
@@ -622,6 +678,37 @@ impl Engine {
             self.bm25.remove_document(path)?;
             self.bm25.add_document(path, Some(&file_title), &[], &record.raw_chunks)?;
 
+            // 3b. Binary Fingerprints (Pillars 2 & 3)
+            {
+                use ctxvault_common::types::FingerprintRecord;
+                let mut fps = Vec::new();
+                for sym in &record.symbols {
+                    let fp_text = format!(
+                        "{} {} {}",
+                        sym.name,
+                        sym.signature,
+                        sym.docstring.as_deref().unwrap_or("")
+                    );
+                    let fp = self.binary_index.project_query(&fp_text).unwrap_or_default();
+                    fps.push(FingerprintRecord {
+                        id: sym.scope_path.clone(),
+                        fingerprint: fp,
+                        modality: Modality::Code,
+                    });
+                }
+                for chunk in &record.raw_chunks {
+                    let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                    fps.push(FingerprintRecord {
+                        id: format!("{path}:chunk:{}", chunk.chunk_index),
+                        fingerprint: fp,
+                        modality: Modality::Code,
+                    });
+                }
+                if !fps.is_empty() {
+                    let _ = self.binary_index.index_fingerprints(&fps);
+                }
+            }
+
             // 4. Vector index: clear existing vectors for this doc
             if let Some(ref mut vi) = self.vector_index {
                 vi.remove_document(path);
@@ -671,6 +758,27 @@ impl Engine {
             // 3. BM25
             self.bm25.remove_document(path)?;
             self.bm25.add_document(path, doc.title.as_deref(), &doc.tags, &record.raw_chunks)?;
+
+            // 3b. Binary Fingerprints (Pillars 2 & 3)
+            {
+                use ctxvault_common::types::FingerprintRecord;
+                let mut fps = Vec::new();
+                for chunk in &record.raw_chunks {
+                    let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                    fps.push(FingerprintRecord {
+                        id: if chunk.chunk_index == 0 {
+                            path.to_string()
+                        } else {
+                            format!("{path}:chunk:{}", chunk.chunk_index)
+                        },
+                        fingerprint: fp,
+                        modality: Modality::Docs,
+                    });
+                }
+                if !fps.is_empty() {
+                    let _ = self.binary_index.index_fingerprints(&fps);
+                }
+            }
 
             // 4. Vector index: clear existing vectors for this doc
             if let Some(ref mut vi) = self.vector_index {
@@ -1323,6 +1431,10 @@ impl Engine {
                 });
             }
         }
+        // Save binary fingerprints index.
+        if !self.binary_index.is_empty() {
+            let _ = self.binary_index.save_to_path(&self.index_dir.join("fingerprints.bin"));
+        }
         Ok(())
     }
 
@@ -1428,6 +1540,7 @@ impl Engine {
         crate::search_service::CoreSearchService::new(
             &self.bm25,
             self.vector_index.as_ref(),
+            Some(&self.binary_index),
             &self.graph,
             self.embedder_arc(),
             self.code_paths_set(),
@@ -1447,6 +1560,16 @@ impl Engine {
     /// Check whether the engine is running in Skeleton Mode.
     pub fn is_skeleton_mode(&self) -> bool {
         self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton
+    }
+
+    /// Access the in-memory binary search index.
+    pub fn binary_index(&self) -> &crate::search::binary::BinarySearchIndex {
+        &self.binary_index
+    }
+
+    /// Access the mutable in-memory binary search index.
+    pub fn binary_index_mut(&mut self) -> &mut crate::search::binary::BinarySearchIndex {
+        &mut self.binary_index
     }
 
     /// Update the index mode dynamically, allocating or dropping the vector index as appropriate.
@@ -1587,6 +1710,11 @@ impl Engine {
 
     /// Get a port-typed reference to the graph for traversal/queries.
     pub fn graph(&self) -> &impl GraphStore {
+        &self.graph
+    }
+
+    /// Get a concrete reference to the underlying KnowledgeGraph.
+    pub fn knowledge_graph(&self) -> &crate::graph::KnowledgeGraph {
         &self.graph
     }
 

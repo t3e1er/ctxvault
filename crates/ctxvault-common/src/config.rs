@@ -48,6 +48,25 @@ pub struct CorpusConfig {
     pub code_patterns: Vec<String>,
 }
 
+impl Default for CorpusConfig {
+    fn default() -> Self {
+        Self {
+            name: "default".to_string(),
+            path: ".".to_string(),
+            mode: CorpusMode::default(),
+            index_mode: IndexMode::default(),
+            chunking: ChunkingConfig::default(),
+            embedding: EmbeddingConfig::default(),
+            graph: GraphConfig::default(),
+            templates_dir: None,
+            exclude: ExcludeConfig::default(),
+            corpus_type: CorpusType::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
+        }
+    }
+}
+
 /// Configuration for file and directory exclusion during indexing and watching.
 /// Uses gitignore-compatible glob pattern syntax.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

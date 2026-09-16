@@ -433,22 +433,42 @@ Identified during LLM agent context profiling and benchmark evaluation against `
 
 ---
 
+### 10.7 Dedicated Data Science Benchmarking & Resource Profiling Harness (Delivered)
+*Authoritative Concept Doc*: [[docs/concepts/search/benchmarking-harness]]  
+*Implementation*: [`crates/ctxvault-bench/`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench) (`ctxv-bench`)
+
+Engineered for empirical evaluation and ablation of all retrieval modes against ground-truth corpora without MCP JSON-RPC protocol overhead:
+
+1. **Indexing Pipeline & Resource Profiling**:
+   - Measures wall-clock stage timings: AST tree-sitter parsing, Tantivy BM25 postings, static SIF projections, 256-bit binary fingerprints, Petgraph AST edge resolution, and optional dense ONNX re-embedding.
+   - Measures indexing throughput (documents/second, files/second) and tracks process memory via [`MemoryTracker`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/profile/memory.rs) (peak RSS, memory delta).
+   - Profiles storage footprint via [`DiskProfiler`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/profile/disk.rs): SQLite `meta.db`, Tantivy `tantivy/`, binary `fingerprints.bin`, Petgraph `graph.bin`, vectors `vectors.bin`, text projections `projections/`, and index expansion ratios.
+2. **Retrieval Algorithm Quality & Latency Ablation**:
+   - Supports isolated and hybrid evaluations across `bm25`, `binary` (SIF+Hamming), `ppr` (HippoRAG diffusion), `fast` (3-way RRF), `semantic` (dense ONNX), and `full` (BM25+ONNX+Graph).
+   - Computes standard IR metrics: Recall@K, Precision@K, MRR@K, NDCG@K (with graded relevance), score separation, and latency percentiles (p50, p90, p95, p99, QPS).
+3. **Multi-Format Exporters**:
+   - Exports GitHub markdown comparison tables (`report.md`), machine-readable JSON (`report.json`), and tabular CSV (`report.csv`) for Python / Pandas / Jupyter data science workflows.
+
+---
+
 ## 11. Upcoming Engineering Milestones
 
-### 11.1 SOTA Code Retrieval & High-Throughput Semantic Bridging (Next Up — Active Milestone)
+### 11.1 SOTA Code Retrieval & High-Throughput Semantic Bridging (Completed / Delivered)
 *Authoritative RFC*: [[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]]  
-*Status*: **Next Up / Active Milestone**  
+*Status*: **Completed / Delivered**  
 *Scope*: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`
 
-Identified to eliminate the 35–55 minute ONNX CPU embedding bottleneck on 100K+ file repositories without dedicated GPUs:
+Eliminated the 35–55 minute ONNX CPU embedding bottleneck on 100K+ file repositories without dedicated GPUs via a 4-pillar sub-minute retrieval engine:
 
 1. **Sub-Minute CPU Semantic Bridging**:
-   - **Static SIF Projections**: Smooth Inverse Frequency weighted embeddings over Tree-sitter code tokens, executing in **~10 seconds for 500,000 symbols** entirely on CPU.
-   - **256-Bit Matryoshka Binary Embeddings (MRL)**: Sign-quantized binary fingerprints requiring only **16 MB of total RAM** for 500k symbols, evaluated via single-cycle AVX-512 / AVX2 `POPCNT` (<1ms SIMD candidate scoring).
-   - **AST Pattern Injection**: Pre-tokenized syntactic pattern tokens injected directly into Tantivy BM25 postings, bridging lexical-semantic synonym gaps at zero marginal CPU cost.
+   - **Static SIF Projections**: Smooth Inverse Frequency weighted embeddings over Tree-sitter code tokens and document text ([`SifEngine`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/sif.rs)), executing in **~10 seconds for 500,000 symbols** entirely on CPU with power-iteration 1st principal component removal.
+   - **256-Bit Matryoshka Binary Embeddings (MRL)**: Sign-quantized binary fingerprints ([`BinaryFingerprint`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/types.rs), [`BinarySearchIndex`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/binary.rs)) requiring only **16 MB of total RAM** for 500k symbols, serialized via `postcard` to `.index/fingerprints.bin` and evaluated via single-cycle AVX2/AVX-512 `count_ones()` POPCOUNT (<1ms SIMD candidate scoring).
+   - **AST Pattern Injection**: Pre-tokenized syntactic pattern tokens ([`extract_semantic_tokens`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/code/patterns.rs)) injected directly into Tantivy BM25 postings, bridging lexical-semantic synonym gaps at zero marginal CPU cost.
 2. **Query-Time Personalized PageRank (HippoRAG Diffusion)**:
-   - Eliminates graph edge bloat and pre-computation by executing 2-hop PPR random walks on demand across Petgraph at query time.
+   - Eliminates graph edge bloat and pre-computation by executing 2-hop PPR random walks on demand across Petgraph at query time ([`personalized_pagerank`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/graph/diffusion.rs)).
    - Leaves Petgraph's topology completely clean (zero artificial `[:semantically_related]` edges), achieving sub-2ms diffusion without combinatorial path explosion.
+3. **Fast Hybrid Search Mode**:
+   - Exposed as `mode="fast"` across [`SearchService`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search_service.rs), [`search_fast`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/mod.rs), [`search_explain_fast`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/mod.rs), and the MCP `search` tool in [`crates/ctxvault-mcp/src/tools/mod.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs).
 
 ---
 

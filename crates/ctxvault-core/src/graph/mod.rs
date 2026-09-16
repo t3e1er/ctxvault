@@ -1,6 +1,7 @@
 //! Knowledge graph: typed directed edges, traversal, PPR, subgraph extraction.
 
 pub mod code;
+pub mod diffusion;
 pub mod hybrid_lsp;
 pub mod query;
 pub mod scip;
@@ -316,6 +317,16 @@ impl KnowledgeGraph {
     /// Get the NodeIndex for a path.
     pub fn get_node(&self, path: &str) -> Option<NodeIndex> {
         self.node_map.get(path).copied()
+    }
+
+    /// Access the internal node map mapping paths to NodeIndex.
+    pub fn node_map(&self) -> &HashMap<String, NodeIndex> {
+        &self.node_map
+    }
+
+    /// Access the underlying directed Petgraph instance.
+    pub fn inner_graph(&self) -> &DiGraph<GraphNode, GraphEdge> {
+        &self.graph
     }
 
     /// Whether a node with the given path exists in the graph.

@@ -1,0 +1,98 @@
+---
+title: "Retrieval & Indexing Data Science Benchmark Harness"
+description: "Architecture, metrics, resource profiling, and usage guide for the dedicated `ctxvault-bench` workspace crate and CLI (`ctxv-bench`)."
+category: "concepts"
+status: "implemented"
+tags: ["benchmarks", "data-science", "retrieval", "metrics", "ndcg", "mrr", "profiling", "latency", "memory"]
+related:
+  - "[[docs/index]]"
+  - "[[docs/roadmap/coderoadmap]]"
+  - "[[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]]"
+  - "[[docs/concepts/search/hybrid-retrieval-theory]]"
+---
+
+# Retrieval & Indexing Data Science Benchmark Harness
+
+`ctxvault-bench` is a dedicated workspace crate and command-line harness (`ctxv-bench`) engineered for empirical Information Retrieval (IR) evaluation, algorithmic ablation, and indexing resource profiling across Markdown notes and polyglot codebases.
+
+---
+
+## 1. Architectural Principles & Isolation
+
+1. **Zero Production Bloat**: Benchmarking datasets, ground-truth judgments (QRELS), statistical evaluators, and reporting exporters are isolated inside `crates/ctxvault-bench`. Production binaries ([`ctxvault-cli`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-cli) and [`ctxvault-mcp`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp)) remain lightweight and fast.
+2. **Direct Engine & Port Access**: Rather than invoking the MCP JSON-RPC transport, `ctxv-bench` interacts directly with core engine ports ([`MetadataCatalog`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs), [`TextIndex`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs), [`AlgorithmicSearchIndex`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs), [`GraphStore`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs), [`SearchService`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs)) for zero-overhead micro-benchmarking and precise latency timing.
+3. **Dual Surface (CLI + Reusable Library)**:
+   - **Library**: [`ctxvault_bench::*`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/lib.rs) provides reusable profiling and IR calculation tools for automated CI integration tests.
+   - **CLI Binary**: `ctxv-bench` provides subcommands (`index`, `eval`, `all`) for interactive experimentation and report generation.
+
+---
+
+## 2. Indexing Resource Profiler
+
+The indexing profiler ([`IndexProfiler`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/profile/index_profiler.rs)) executes a clean or incremental build and records:
+- **Wall-Clock Stage Timings**:
+  - Total elapsed indexing time.
+  - Reindex stage (AST tree-sitter parsing, Tantivy BM25 postings, static SIF projections, binary fingerprints, and Petgraph AST edges).
+  - Commit & checkpoint stage (SQLite flush, Tantivy commit, binary persistence).
+  - Optional dense neural ONNX re-embedding stage.
+- **Throughput**: Documents / files per second.
+- **Memory Footprint**: Process resident set size (RSS), peak RSS, and memory delta via [`MemoryTracker`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/profile/memory.rs).
+- **Disk Storage Breakdown & Expansion**: Measures `.index/` files (`meta.db`, `tantivy/`, `fingerprints.bin`, `graph.bin`, `vectors.bin`, `projections/`) against source bytes and computes the expansion ratio via [`DiskProfiler`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/profile/disk.rs).
+
+---
+
+## 3. Retrieval Algorithm Quality & Latency Ablation
+
+Evaluates each individual algorithm against a ground-truth QRELS dataset ([`DatasetLoader`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/dataset/loader.rs)):
+
+| Retrieval Mode | Underlying Port / Mechanism |
+|---|---|
+| `bm25` | Tantivy Okapi BM25 lexical inverted index with injected syntactic pattern tokens. |
+| `binary` | Static SIF projection + 256-bit MRL binary Hamming scan via single-cycle AVX-512 / AVX2 POPCOUNT. |
+| `ppr` | Isolated HippoRAG 2-hop personalized PageRank diffusion across Petgraph code and doc topology. |
+| `fast` | 3-Way Reciprocal Rank Fusion fusing BM25, Binary Hamming, and PPR diffusion without neural ONNX models. |
+| `semantic` | Dense vector cosine similarity via ONNX embeddings (`jina-embeddings-v2-base-code`). |
+| `full` | 3-Signal hybrid search fusing BM25, dense ONNX vectors, and BFS graph proximity. |
+
+### Measured Information Retrieval & Latency Metrics
+- **Recall@K**: Proportion of ground-truth relevant documents retrieved in the top $K$.
+- **Precision@K**: Fraction of top $K$ retrieved results that are relevant.
+- **MRR@K**: Mean Reciprocal Rank ($1 / \text{rank}$ of the first relevant hit).
+- **NDCG@K**: Normalized Discounted Cumulative Gain with support for graded relevance ($0$ to $3$).
+- **Score Separation**: Confidence ratio ($\text{Score}_{\text{top-1}} / \text{Score}_{\text{top-K}}$).
+- **Latency Percentiles**: Measured high-resolution timings (p50, p90, p95, p99, mean, min, max) and sustained throughput (QPS) via [`LatencyTracker`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/metrics/latency.rs).
+
+---
+
+## 4. CLI Usage Guide (`ctxv-bench`)
+
+### 1. Profile Indexing Only
+```bash
+cargo run -p ctxvault-bench -- index \
+  --corpus /path/to/corpus \
+  --clean \
+  --output ./benchmarks/index_profile.json
+```
+
+### 2. Run Retrieval Evaluation Only
+```bash
+cargo run -p ctxvault-bench -- eval \
+  --corpus /path/to/corpus \
+  --queries ./benchmarks/queries.json \
+  --modes bm25,binary,ppr,fast,full \
+  --k 5 \
+  --output ./benchmarks/retrieval_report.md
+```
+
+### 3. Run Full Pipeline (Index Profiling + Retrieval Ablation)
+```bash
+cargo run -p ctxvault-bench -- all \
+  --corpus /path/to/corpus \
+  --queries ./benchmarks/queries.json \
+  --clean \
+  --output-dir ./benchmarks/output
+```
+Generates three reports:
+- `report.md`: GitHub-formatted comparison tables for humans and PR summaries.
+- `report.json`: Machine-readable JSON for automated CI regression tracking.
+- `report.csv`: Tabular CSV for data analysis in Python / Pandas / Jupyter.

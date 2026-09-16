@@ -194,14 +194,28 @@ impl<'a> AstExtractor<'a> {
                 chunk_text
             };
 
+            // Extract AST pattern tokens & normalized identifier expansions (Pillar 1)
+            let sem_tokens =
+                super::patterns::extract_semantic_tokens(raw_node_text, &name, &full_scope);
+            let final_emit_text = if sem_tokens.is_empty() {
+                emit_text
+            } else {
+                format!("{emit_text}\n// Semantic tokens: {}", sem_tokens.join(" "))
+            };
+
             // Register AST chunk
             let embed_policy =
                 classify_embed_policy(sym_type, raw_node_text, lang, &self.file_path);
-            let chunk =
-                Chunk::new(&self.file_path, self.chunk_index, emit_text, start_byte, end_byte)
-                    .with_code_metadata(lang.name(), &full_scope, start_line, end_line)
-                    .with_embed_policy(embed_policy)
-                    .with_skeleton_text(skeleton_text);
+            let chunk = Chunk::new(
+                &self.file_path,
+                self.chunk_index,
+                final_emit_text,
+                start_byte,
+                end_byte,
+            )
+            .with_code_metadata(lang.name(), &full_scope, start_line, end_line)
+            .with_embed_policy(embed_policy)
+            .with_skeleton_text(skeleton_text);
             self.chunks.push(chunk);
             self.chunk_index += 1;
 

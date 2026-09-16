@@ -38,7 +38,7 @@ use ctxvault_common::{Error, Result};
 use crate::embedding::Embedder;
 use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
-use crate::search;
+use crate::search::{self, binary::BinarySearchIndex};
 use crate::vector_index::VectorIndex;
 
 /// Core adapter implementing the [`SearchService`] port.
@@ -49,6 +49,7 @@ use crate::vector_index::VectorIndex;
 pub struct CoreSearchService<'a> {
     bm25: &'a BM25Index,
     vector_index: Option<&'a VectorIndex>,
+    binary_index: Option<&'a BinarySearchIndex>,
     graph: &'a KnowledgeGraph,
     embedder: Option<Arc<Embedder>>,
     code_paths: HashSet<String>,
@@ -59,6 +60,7 @@ impl<'a> CoreSearchService<'a> {
     ///
     /// - `bm25`: the corpus BM25 index (always present).
     /// - `vector_index`: the vector index, or `None` in fast mode.
+    /// - `binary_index`: the binary fingerprints index for fast CPU search.
     /// - `graph`: the corpus knowledge graph.
     /// - `embedder`: an initialized embedder (owned `Arc` clone), or `None`
     ///   when unavailable. Holding the `Arc` (rather than a borrow) frees the
@@ -67,11 +69,12 @@ impl<'a> CoreSearchService<'a> {
     pub fn new(
         bm25: &'a BM25Index,
         vector_index: Option<&'a VectorIndex>,
+        binary_index: Option<&'a BinarySearchIndex>,
         graph: &'a KnowledgeGraph,
         embedder: Option<Arc<Embedder>>,
         code_paths: HashSet<String>,
     ) -> Self {
-        Self { bm25, vector_index, graph, embedder, code_paths }
+        Self { bm25, vector_index, binary_index, graph, embedder, code_paths }
     }
 }
 
@@ -82,6 +85,29 @@ impl SearchService for CoreSearchService<'_> {
         let modality = query.modality;
 
         let mut results = match mode {
+            "fast" => {
+                let edge_class_filter = match query.edge_class.as_deref() {
+                    Some(s) => EdgeClass::from_str_name(s),
+                    None => match modality {
+                        Modality::Code => Some(EdgeClass::Code),
+                        Modality::Docs => Some(EdgeClass::Semantic),
+                        Modality::Both => None,
+                    },
+                };
+                let empty_binary = BinarySearchIndex::new();
+                let binary = self.binary_index.unwrap_or(&empty_binary);
+                let results = search::search_fast(
+                    self.bm25,
+                    binary,
+                    self.graph,
+                    &query.query,
+                    limit,
+                    modality,
+                    edge_class_filter,
+                    &self.code_paths,
+                )?;
+                Ok(results)
+            }
             "bm25" => {
                 let mut results = search::search_bm25(self.bm25, &query.query, limit, modality)?;
                 search::enrich_results_with_lineage(&mut results, self.graph);
@@ -212,7 +238,7 @@ impl SearchService for CoreSearchService<'_> {
                 Ok(results)
             }
             other => Err(Error::Config(format!(
-                "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain",
+                "invalid search mode '{}': expected one of bm25, semantic, hybrid, graph, explain, fast",
                 other
             ))),
         }?;
@@ -229,10 +255,27 @@ impl SearchService for CoreSearchService<'_> {
         let limit = query.limit.unwrap_or(10);
         let modality = query.modality;
 
+        let code_paths = &self.code_paths;
+
+        if query.mode.as_deref() == Some("fast") {
+            let edge_class_filter = query.edge_class.as_deref().and_then(EdgeClass::from_str_name);
+            let empty_binary = BinarySearchIndex::new();
+            let binary = self.binary_index.unwrap_or(&empty_binary);
+            return search::search_explain_fast(
+                self.bm25,
+                binary,
+                self.graph,
+                &query.query,
+                limit,
+                modality,
+                edge_class_filter,
+                code_paths,
+            );
+        }
+
         let graph_depth = query.graph_depth.unwrap_or(2);
         let edge_type_filter = query.edge_types.as_deref();
         let edge_class_filter = query.edge_class.as_deref().and_then(EdgeClass::from_str_name);
-        let code_paths = &self.code_paths;
 
         // Try to get a query embedding for full 3-signal explanation.
         let query_embedding =

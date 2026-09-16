@@ -152,6 +152,26 @@ impl EngineBuilder {
             store.insert_edge_types(&edge_type_records)?;
         }
 
-        Ok(Engine::from_parts(config, index_dir.to_path_buf(), store, bm25, graph, vector_index))
+        // 7. Load or create binary search index (fingerprints.bin).
+        let fingerprints_path = index_dir.join("fingerprints.bin");
+        let binary_index = if fingerprints_path.exists() {
+            crate::search::binary::BinarySearchIndex::load_from_path(&fingerprints_path)
+                .unwrap_or_else(|e| {
+                    warn!("Failed to load fingerprints from disk, starting fresh: {}", e);
+                    crate::search::binary::BinarySearchIndex::new()
+                })
+        } else {
+            crate::search::binary::BinarySearchIndex::new()
+        };
+
+        Ok(Engine::from_parts(
+            config,
+            index_dir.to_path_buf(),
+            store,
+            bm25,
+            graph,
+            vector_index,
+            binary_index,
+        ))
     }
 }
