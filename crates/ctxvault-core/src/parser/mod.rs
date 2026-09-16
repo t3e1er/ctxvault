@@ -2,6 +2,7 @@
 
 pub mod chunker;
 pub mod code;
+pub mod document;
 pub mod frontmatter;
 pub mod markdown;
 pub mod wikilink;

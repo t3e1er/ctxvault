@@ -23,6 +23,9 @@ fn fast_corpus_config(name: &str, corpus_path: &Path) -> CorpusConfig {
         graph: GraphConfig::default(),
         templates_dir: None,
         exclude: ctxvault_common::config::ExcludeConfig::default(),
+        corpus_type: Default::default(),
+        doc_patterns: Vec::new(),
+        code_patterns: Vec::new(),
     }
 }
 

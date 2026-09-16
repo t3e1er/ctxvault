@@ -1,8 +1,11 @@
 //! Index management: orchestrates tantivy (BM25) and HNSW (vector) indices.
 
+pub mod classifier;
 pub mod exclude;
 pub mod pipeline;
 pub mod skeleton;
+
+pub use classifier::{FileClassification, FileClassifier};
 
 use std::path::Path;
 

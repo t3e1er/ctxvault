@@ -257,6 +257,9 @@ impl CorpusManager {
                 graph: ctxvault_common::config::GraphConfig::default(),
                 templates_dir: None,
                 exclude: ctxvault_common::config::ExcludeConfig::default(),
+                corpus_type: ctxvault_common::config::CorpusType::default(),
+                doc_patterns: Vec::new(),
+                code_patterns: Vec::new(),
             }
         };
 
@@ -385,6 +388,9 @@ impl CorpusManager {
             graph: ctxvault_common::config::GraphConfig::default(),
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: ctxvault_common::config::CorpusType::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
 
         self.add_corpus_with_index_dir(config, &target_index_dir)?;
@@ -1172,6 +1178,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: ctxvault_common::config::CorpusType::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         }
     }
 
@@ -1316,6 +1325,9 @@ mod tests {
             graph: GraphConfig { edge_types: vec![implements] },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: ctxvault_common::config::CorpusType::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         }
     }
 

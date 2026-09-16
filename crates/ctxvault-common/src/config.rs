@@ -37,6 +37,15 @@ pub struct CorpusConfig {
     /// File exclusion / ignore configuration for file discovery and indexing.
     #[serde(default)]
     pub exclude: ExcludeConfig,
+    /// Corpus role/type for modality disambiguation: "code_repo" (default), "doc_vault", or "mixed".
+    #[serde(default, rename = "type", alias = "corpus_type")]
+    pub corpus_type: CorpusType,
+    /// Explicit glob patterns governing promotion of rich files to documentation (e.g. `["docs/**", "wiki/**"]`).
+    #[serde(default)]
+    pub doc_patterns: Vec<String>,
+    /// Explicit glob patterns governing routing of files to code (e.g. `["src/**", "app/**"]`).
+    #[serde(default)]
+    pub code_patterns: Vec<String>,
 }
 
 /// Configuration for file and directory exclusion during indexing and watching.
@@ -182,6 +191,19 @@ pub enum CorpusMode {
     ReadWrite,
     /// Search and read only — write tools are suppressed.
     ReadOnly,
+}
+
+/// Corpus role/type for modality disambiguation.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CorpusType {
+    /// Code repository (default): source code takes precedence; HTML in source dirs is treated as code.
+    #[default]
+    CodeRepo,
+    /// Documentation vault: rich documents (HTML, PDF, DOCX) and markdown notes take precedence.
+    DocVault,
+    /// Mixed repository: both code and rich documentation are present; uses pattern and content heuristics.
+    Mixed,
 }
 
 /// Chunking strategy configuration.
