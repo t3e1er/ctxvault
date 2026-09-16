@@ -437,9 +437,9 @@ checksum = "4f4c707c6a209cbe82d10abd08e1ea8995e9ea937d2550646e02798948992be0"
 
 [[package]]
 name = "cfg-if"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "cfg_aliases"
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-bench"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "clap",
  "ctxvault-common",
@@ -708,6 +708,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "toml",
  "tracing",
@@ -716,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-cli"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "anyhow",
  "clap",
@@ -738,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-common"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "blake3",
  "serde",
@@ -749,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-core"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -836,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-graphview"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "anyhow",
  "axum",
@@ -861,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "ctxvault-mcp"
-version = "0.0.62"
+version = "0.0.70"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3817,13 +3818,13 @@ dependencies = [
 
 [[package]]
 name = "synstructure"
-version = "0.13.2"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -4504,9 +4505,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-cuda"
-version = "0.21.1"
+version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "715eecfee69b15991de5b9f78009c6d4cb34e18d20d028304a75d38528cddb45"
+checksum = "e88ed4ad300c2fb7ed7dde1d9c1b0926bd93fc8ae1c8766898191bd85f2220f5"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5018,9 +5019,9 @@ dependencies = [
 
 [[package]]
 name = "ureq-proto"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b0809a01d1ca5a51ca70db32bb2a19157582a526505ef3c19e3b343a59aa5ad"
+checksum = "f86fd172ccca569e458f61b6bdd6220965a9ef36e672a6852953b51a0e1583be"
 dependencies = [
  "base64 0.23.1",
  "http",
@@ -5652,13 +5653,13 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
+checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.5",
  "synstructure",
 ]
 
@@ -5693,13 +5694,13 @@ dependencies = [
 
 [[package]]
 name = "zerofrom-derive"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.5",
  "synstructure",
 ]
 

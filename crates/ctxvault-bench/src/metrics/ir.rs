@@ -24,6 +24,12 @@ pub struct QueryEvaluationMetrics {
     pub hits_at_k: usize,
     /// Total ground-truth relevant documents for this query.
     pub total_relevant: usize,
+    /// Optional Turn-1 cluster recall at cutoff K (true if target or 1-hop neighbor is in top-K).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_recall_at_k: Option<f64>,
+    /// Optional minimum graph hop distance to target among top-K candidates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_hop_distance: Option<usize>,
 }
 
 /// Evaluator computing standard Information Retrieval metrics.
@@ -45,6 +51,8 @@ impl IrEvaluator {
                 score_separation: 0.0,
                 hits_at_k: 0,
                 total_relevant: 0,
+                cluster_recall_at_k: None,
+                min_hop_distance: None,
             };
         }
 
@@ -109,6 +117,44 @@ impl IrEvaluator {
             score_separation,
             hits_at_k: hits,
             total_relevant: judgments.len(),
+            cluster_recall_at_k: None,
+            min_hop_distance: None,
         }
+    }
+
+    /// Evaluate retrieval results including Turn-1 structural orientation metrics.
+    ///
+    /// - `anchor_cluster`: Set of 1-hop neighbor paths or structural anchors surrounding the ground-truth targets.
+    /// - `hop_distances`: Map from candidate path to graph shortest-path distance to the nearest target.
+    pub fn evaluate_with_orientation(
+        results: &[SearchResult],
+        judgments: &[RelevanceJudgment],
+        k: usize,
+        anchor_cluster: Option<&std::collections::HashSet<String>>,
+        hop_distances: Option<&HashMap<String, usize>>,
+    ) -> QueryEvaluationMetrics {
+        let mut metrics = Self::evaluate(results, judgments, k);
+
+        let top_k: Vec<&SearchResult> = results.iter().take(k).collect();
+
+        // 1. Cluster Recall@K: True if target OR 1-hop anchor is in top-K
+        if let Some(anchors) = anchor_cluster {
+            let target_paths: std::collections::HashSet<&str> =
+                judgments.iter().map(|j| j.path.as_str()).collect();
+
+            let found = top_k.iter().any(|r| {
+                target_paths.contains(r.path.as_str()) || anchors.contains(r.path.as_str())
+            });
+            metrics.cluster_recall_at_k = Some(if found { 1.0 } else { 0.0 });
+        }
+
+        // 2. Minimum hop distance to target among top-K
+        if let Some(distances) = hop_distances {
+            let min_hop =
+                top_k.iter().filter_map(|r| distances.get(r.path.as_str()).copied()).min();
+            metrics.min_hop_distance = min_hop;
+        }
+
+        metrics
     }
 }

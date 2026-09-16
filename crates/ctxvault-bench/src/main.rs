@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
-use ctxvault_bench::dataset::DatasetLoader;
+use ctxvault_bench::dataset::{DatasetLoader, PublicBenchmarkAdapter, PublicBenchmarkFormat};
 use ctxvault_bench::profile::{IndexProfiler, IndexProfilerOptions};
-use ctxvault_bench::report::{CsvReporter, JsonReporter, MarkdownReporter};
+use ctxvault_bench::report::{CsvReporter, JsonReporter, LatexReporter, MarkdownReporter};
 use ctxvault_bench::runners::RetrievalMode;
 use ctxvault_bench::sweep::{BenchmarkSuite, BenchmarkSuiteReport};
 use ctxvault_common::config::CorpusConfig;
@@ -102,6 +102,21 @@ enum Commands {
         /// Output directory to write report.md, report.json, and report.csv
         #[arg(short, long)]
         output_dir: Option<PathBuf>,
+    },
+
+    /// Import and convert a public benchmark dataset (CodeSearchNet, RepoBench-R, or SWE-bench)
+    Import {
+        /// Path to the external dataset file (JSON or JSONL)
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Format: codesearchnet (or csn), repobench (or rb), swebench (or swe)
+        #[arg(short, long)]
+        format: String,
+
+        /// Output path for the converted benchmark dataset JSON
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -248,6 +263,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\n{md}");
             }
         }
+
+        Commands::Import { input, format, output } => {
+            let fmt = match format.to_lowercase().trim() {
+                "codesearchnet" | "csn" | "advtest" => PublicBenchmarkFormat::CodeSearchNet,
+                "repobench" | "repobench-r" | "rb" => PublicBenchmarkFormat::RepoBench,
+                "swebench" | "swe-bench" | "swe" => PublicBenchmarkFormat::SweBench,
+                other => {
+                    return Err(format!(
+                        "Unknown benchmark format '{other}'. Valid formats: codesearchnet, repobench, swebench"
+                    )
+                    .into());
+                }
+            };
+
+            println!("Converting {} using format {:?}...", input.display(), fmt);
+            let dataset = PublicBenchmarkAdapter::convert_file(&input, fmt)?;
+            let json_str = serde_json::to_string_pretty(&dataset)?;
+
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output, json_str)?;
+            println!(
+                "Successfully converted {} queries to: {}",
+                dataset.queries.len(),
+                output.display()
+            );
+        }
     }
 
     Ok(())
@@ -268,6 +311,10 @@ fn output_report(
             "csv" => {
                 let csv_str = CsvReporter::render_retrieval_csv(report);
                 fs::write(path, csv_str)?;
+            }
+            "tex" | "latex" => {
+                let tex_str = LatexReporter::render(report);
+                fs::write(path, tex_str)?;
             }
             _ => {
                 fs::write(path, &md)?;

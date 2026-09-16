@@ -12,12 +12,18 @@ pub mod report;
 pub mod runners;
 pub mod sweep;
 
-pub use dataset::{BenchmarkDataset, BenchmarkQuery, DatasetLoader, RelevanceJudgment};
-pub use metrics::{IrEvaluator, LatencyStats, LatencyTracker, QueryEvaluationMetrics};
+pub use dataset::{
+    AdapterError, BenchmarkDataset, BenchmarkQuery, DatasetLoader, PublicBenchmarkAdapter,
+    PublicBenchmarkFormat, RelevanceJudgment,
+};
+pub use metrics::{
+    IrEvaluator, LatencyStats, LatencyTracker, QueryEvaluationMetrics, SignificanceEvaluator,
+    SignificanceResult,
+};
 pub use profile::{
     DiskBreakdown, DiskProfiler, IndexProfiler, IndexProfilerOptions, IndexingProfileReport,
     MemoryMetrics, MemoryTracker,
 };
-pub use report::{CsvReporter, JsonReporter, MarkdownReporter};
+pub use report::{CsvReporter, JsonReporter, LatexReporter, MarkdownReporter};
 pub use runners::{QueryRunner, QueryRunnerOptions, RetrievalMode};
 pub use sweep::{BenchmarkSuite, BenchmarkSuiteReport, ModeEvaluationSummary};

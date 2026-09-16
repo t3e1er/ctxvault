@@ -434,7 +434,7 @@ Identified during LLM agent context profiling and benchmark evaluation against `
 ---
 
 ### 10.7 Dedicated Data Science Benchmarking & Resource Profiling Harness (Delivered)
-*Authoritative Concept Doc*: [[docs/concepts/search/benchmarking-harness]]  
+*Authoritative Concept Docs*: [[docs/concepts/search/benchmarking-harness]], [[docs/concepts/search/evaluation-methodology]]  
 *Implementation*: [`crates/ctxvault-bench/`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench) (`ctxv-bench`)
 
 Engineered for empirical evaluation and ablation of all retrieval modes against ground-truth corpora without MCP JSON-RPC protocol overhead:
@@ -446,8 +446,16 @@ Engineered for empirical evaluation and ablation of all retrieval modes against 
 2. **Retrieval Algorithm Quality & Latency Ablation**:
    - Supports isolated and hybrid evaluations across `bm25`, `binary` (SIF+Hamming), `ppr` (HippoRAG diffusion), `fast` (3-way RRF), `semantic` (dense ONNX), and `full` (BM25+ONNX+Graph).
    - Computes standard IR metrics: Recall@K, Precision@K, MRR@K, NDCG@K (with graded relevance), score separation, and latency percentiles (p50, p90, p95, p99, QPS).
-3. **Multi-Format Exporters**:
-   - Exports GitHub markdown comparison tables (`report.md`), machine-readable JSON (`report.json`), and tabular CSV (`report.csv`) for Python / Pandas / Jupyter data science workflows.
+   - Evaluates Turn-1 topological orientation metrics ([`IrEvaluator::evaluate_with_orientation`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/metrics/ir.rs)): **Cluster Recall@K** and **Mean Hop Distance** ($\bar{H}_d$) to ground truth on Petgraph.
+3. **Public Benchmark Ingestion & External Ground Truth**:
+   - Native adapters ([`PublicBenchmarkAdapter`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/dataset/adapters.rs)) and CLI command `ctxv-bench import` for:
+     - **CodeSearchNet / AdvTest** (polyglot Go, Java, JS, Python function docstrings).
+     - **RepoBench-R** (cross-file repository retrieval context).
+     - **SWE-bench Lite** (git diff patch parsing for bug localization).
+4. **Statistical Significance Testing**:
+   - Hypothesis testing via [`SignificanceEvaluator`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/metrics/significance.rs): paired Student's $t$-test and Wilcoxon signed-rank test across metric distributions.
+5. **Multi-Format Publication Exporters**:
+   - Exports GitHub markdown comparison tables (`report.md`), publication-ready LaTeX `booktabs` tables (`report.tex` via [`LatexReporter`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/report/latex.rs)), machine-readable JSON (`report.json`), and tabular CSV (`report.csv`).
 
 ---
 
