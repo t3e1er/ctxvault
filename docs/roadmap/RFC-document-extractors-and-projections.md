@@ -2,7 +2,7 @@
 title: "RFC: Pluggable Document Extractors, Derived Text Projections & Modality Disambiguation"
 description: "Architectural specification for ingesting Word (.docx), PDF (.pdf), and HTML (.html) documents in 100% pure Rust via Derived Text Projections and deterministic corpus modality disambiguation."
 category: "roadmap"
-status: "proposed"
+status: "accepted"
 tags: ["rfc", "documents", "docx", "pdf", "html", "extractors", "projections", "zero-copy", "modality"]
 related:
   - "[[docs/index]]"
@@ -15,7 +15,7 @@ related:
 
 # RFC: Pluggable Document Extractors, Derived Text Projections & Modality Disambiguation
 
-**Status**: Proposed  
+**Status**: Accepted (Implemented)  
 **Scope**: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`  
 **Date**: September 2026  
 **Target Version**: `0.3.0`+ (Sequenced directly following [[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]])  
@@ -27,7 +27,7 @@ related:
 
 `ctxvault` was engineered from first principles around two foundational invariants:
 1. **Non-Negotiable Invariant #1 (Markdown/Source as Authoritative Ground Truth)**: Files on disk are king. All derived indices (Tantivy BM25, HNSW vectors, SQLite metadata catalog, Petgraph) are disposable, transient, and 100% rebuildable from disk.
-2. **Zero-Copy File-Offset Architecture** ([[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]]): Chunks in SQLite store zero redundant source text; instead, [`fetch_chunk_text`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/engine.rs#L1718-L1738) and [`read_single_file`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs#L1502-L1561) read exact byte-range slices (`start_byte..end_byte`) and line ranges (`start_line..end_line`) directly from the authoritative source files cached in the OS kernel page cache.
+2. **Zero-Copy File-Offset Architecture** ([[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]]): Chunks in SQLite store zero redundant source text; instead, [`fetch_chunk_text`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/engine.rs) and [`read_single_file`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs) read exact byte-range slices (`start_byte..end_byte`) and line ranges (`start_line..end_line`) directly from the authoritative source files cached in the OS kernel page cache.
 
 While this zero-copy model excels for plain UTF-8 text files (Markdown notes and polyglot source code), expanding `ctxvault` to support **Microsoft Word (`.docx`)**, **Portable Document Format (`.pdf`)**, and **HyperText Markup Language (`.html`)** introduces three fundamental architectural tensions:
 
@@ -64,7 +64,7 @@ This RFC resolves this trilemma by introducing:
 ## 2. Corpus Modality Disambiguation: Code vs. Docs
 
 ### 2.1 The Current Baseline
-Currently in [`crates/ctxvault-core/src/parser/code/languages.rs:L59-L60`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/parser/code/languages.rs#L59-L60), `Html` (`.html`, `.htm`) is hardcoded as a `SupportedLanguage` parsed via Tree-sitter. In [`walk_dir_recursive`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/engine.rs#L2077-L2089), any file matching `is_code_file` is routed to the code pipeline, while only `.md` is routed to documentation.
+Currently in [`crates/ctxvault-core/src/parser/code/languages.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/code/languages.rs), `Html` (`.html`, `.htm`) is supported as a code template language. In the discovery walker [`crates/ctxvault-core/src/engine.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/engine.rs), classification is now mediated dynamically via [`FileClassifier`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/index/classifier.rs).
 
 This causes immediate failures in mixed repositories:
 - **False Code Classification**: Sphinx/Doxygen/Confluence HTML documentation exports are treated as code, missing heading-based chunk hierarchy, document title metadata, and being filtered out when querying `search(modality="docs")`.
@@ -301,7 +301,7 @@ The existing 3-tier progressive disclosure contract is seamlessly preserved:
 
 1. **Tantivy Okapi BM25**: Extracted document titles and normalized chunk texts are tokenized with Okapi BM25 scoring. Document metadata (author, subject) is indexed as filterable facets.
 2. **Dense Vector Embeddings (ONNX / DirectML)**:
-   - Chunk titles and sections pass through [`classify_markdown_chunk`](file:///c:/dev/semantic/ctxvault/crates/ctxvault-core/src/parser/markdown.rs#L66-L86).
+   - Chunk titles and sections pass through [`classify_markdown_chunk`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/markdown.rs).
    - Document summaries (chunk 0) receive `ChunkEmbedPolicy::Anchor` status; tabular and bullet-list chunks are assigned `ChunkEmbedPolicy::GraphOnly`.
 3. **Petgraph Graph Topology**:
    - Hyperlinks extracted from HTML `<a>` tags, Word document relationships, and PDF URI annotations are parsed. If a link resolves to a relative path within the corpus or a code symbol moniker, a directed `references` or `documents` edge is created in Petgraph.

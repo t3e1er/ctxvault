@@ -1500,15 +1500,50 @@ fn read_file_lossy(path: &Path) -> std::io::Result<String> {
 
 /// Read a single file for [`handle_read_file`].
 fn read_single_file(
-    corpus_root: &Path,
+    engine: &Engine,
     path: &str,
     start_line: Option<usize>,
     end_line: Option<usize>,
     max_lines: usize,
 ) -> Result<Value> {
-    let full_path = corpus_root.join(path);
-    let raw = read_file_lossy(&full_path)
-        .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?;
+    let proj_path = engine.projection_path(path);
+    let is_projected = proj_path.is_file();
+    let raw = if is_projected {
+        read_file_lossy(&proj_path)
+            .map_err(|e| Error::NotFound(format!("cannot read projection for {}: {}", path, e)))?
+    } else {
+        let corpus_root = Path::new(&engine.config().path);
+        let full_path = corpus_root.join(path);
+        read_file_lossy(&full_path)
+            .map_err(|e| Error::NotFound(format!("cannot read {}: {}", path, e)))?
+    };
+
+    if is_projected {
+        let file_lines: Vec<&str> = raw.lines().collect();
+        let total_lines = file_lines.len();
+        let start = start_line.unwrap_or(1).max(1);
+        let end = end_line.unwrap_or(total_lines).min(total_lines);
+
+        let (content, truncated) = if start > total_lines {
+            (String::new(), false)
+        } else {
+            let slice_start = start - 1;
+            let slice_end = end.max(slice_start);
+            let slice = &file_lines[slice_start..slice_end];
+            cap_lines(slice, max_lines)
+        };
+
+        return Ok(serde_json::json!({
+            "kind": "projected_doc",
+            "path": path,
+            "start_line": start,
+            "end_line": end,
+            "total_lines": total_lines,
+            "language": "markdown",
+            "content": content,
+            "truncated": truncated,
+        }));
+    }
 
     let is_markdown = matches!(language_from_path(path), "markdown");
     if is_markdown && start_line.is_none() && end_line.is_none() {
@@ -1565,8 +1600,6 @@ fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
     let params: ReadFileParams = serde_json::from_value(args)
         .map_err(|e| Error::Config(format!("invalid params: {}", e)))?;
 
-    let corpus_root = PathBuf::from(&engine.config().path);
-
     let target_paths = if let Some(paths) = params.paths {
         PathOrPaths::Multiple(paths)
     } else if let Some(p) = params.path {
@@ -1580,8 +1613,7 @@ fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
     match target_paths {
         PathOrPaths::Single(p) => {
             let max_lines = params.max_lines.unwrap_or(1000).max(1);
-            let val =
-                read_single_file(&corpus_root, &p, params.start_line, params.end_line, max_lines)?;
+            let val = read_single_file(engine, &p, params.start_line, params.end_line, max_lines)?;
             if is_lean {
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let start_line =
@@ -1590,7 +1622,8 @@ fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
                 let total_lines =
                     val.get("total_lines").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
                 let language = val.get("language").and_then(|v| v.as_str()).unwrap_or("text");
-                let is_markdown = val.get("kind").and_then(|v| v.as_str()) == Some("markdown_note");
+                let kind = val.get("kind").and_then(|v| v.as_str());
+                let is_markdown = kind == Some("markdown_note") || kind == Some("projected_doc");
                 let truncated = val.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
 
                 let lean = crate::format::lean::format_lean_read_file(
@@ -1613,7 +1646,7 @@ fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
             let results: Vec<(String, std::result::Result<Value, String>)> = paths
                 .iter()
                 .map(|p| {
-                    let res = read_single_file(&corpus_root, p, None, None, max_lines)
+                    let res = read_single_file(engine, p, None, None, max_lines)
                         .map_err(|e| e.to_string());
                     (p.clone(), res)
                 })
@@ -2757,6 +2790,13 @@ fn handle_write_note(engine: &mut Engine, args: Value) -> Result<Value> {
     let corpus_path = PathBuf::from(&engine.config().path);
     let full_path = corpus_path.join(&params.path);
 
+    let classification = engine.classifier().classify(&full_path, None);
+    if let ctxvault_core::index::classifier::FileClassification::Document(fmt) = classification {
+        return Err(Error::NotPermitted(format!(
+            "write_note cannot modify document format '{fmt}': documents are strictly read-only. Author markdown notes derived from them with 'derived_from' frontmatter."
+        )));
+    }
+
     let mode = params.mode.as_deref().unwrap_or("create");
 
     let new_content = match mode {
@@ -2925,6 +2965,16 @@ fn handle_move_note(engine: &mut Engine, args: Value) -> Result<Value> {
             format!("cannot move {} to {}: {}", params.from, params.to, e),
         ))
     })?;
+
+    // Move derived projection file if it exists.
+    let from_proj = engine.projection_path(&params.from);
+    if from_proj.is_file() {
+        let to_proj = engine.projection_path(&params.to);
+        if let Some(parent) = to_proj.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::rename(&from_proj, &to_proj);
+    }
 
     // Compute old and new note names (filename without extension) for wikilink rewriting.
     let old_name =
@@ -3303,6 +3353,9 @@ mod tests {
             },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         }
     }
 
@@ -3880,6 +3933,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
         add_test_corpus(&mut manager, config);
 
@@ -3929,6 +3985,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
         let docs_config = CorpusConfig {
             name: "docs".to_string(),
@@ -3940,6 +3999,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
 
         add_test_corpus(&mut manager, wiki_config);
@@ -4025,6 +4087,9 @@ mod tests {
                 graph: GraphConfig { edge_types: Vec::new() },
                 templates_dir: None,
                 exclude: ctxvault_common::config::ExcludeConfig::default(),
+                corpus_type: Default::default(),
+                doc_patterns: Vec::new(),
+                code_patterns: Vec::new(),
             };
             add_test_corpus(&mut manager, config);
         }
@@ -4111,6 +4176,9 @@ mod tests {
             },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         }
     }
 
@@ -4310,6 +4378,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
         add_test_corpus(&mut manager, config);
 
@@ -4341,6 +4412,9 @@ mod tests {
             graph: GraphConfig { edge_types: Vec::new() },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
         add_test_corpus(&mut manager, config);
 
@@ -5516,5 +5590,103 @@ pub fn process_payment(amount: u64) -> bool {
         let resp: ctxvault_common::types::SearchResponse =
             serde_json::from_value(json_val).unwrap();
         assert!(resp.code.unwrap().total_matches > 0);
+    }
+
+    #[test]
+    fn test_document_extractor_and_projections_mcp_flow() {
+        let tmp = TempDir::new().unwrap();
+        let corpus_dir = tmp.path().join("corpus");
+        fs::create_dir_all(&corpus_dir).unwrap();
+        let index_dir = tmp.path().join("index");
+        let mut config = test_config(&corpus_dir);
+        config.corpus_type = ctxvault_common::config::CorpusType::DocVault;
+        let mut engine = Engine::open(config, &index_dir).unwrap();
+
+        // 1. Write an HTML documentation article
+        let html_content = r#"<!DOCTYPE html>
+<html>
+<head><title>System Architecture Overview</title></head>
+<body>
+<header><nav><a href="/home">Home</a></nav></header>
+<main>
+<h1>Architecture Guide</h1>
+<p>This document details the core distributed architecture and protocols.</p>
+<h2>Subsystems</h2>
+<p>The messaging subsystem routes packets between cluster nodes.</p>
+<a href="https://example.com/spec">External Specification</a>
+</main>
+<footer>(c) 2026 Enterprise Corp</footer>
+</body>
+</html>"#;
+        fs::write(corpus_dir.join("guide.html"), html_content).unwrap();
+
+        // 2. Perform delta sync/reindex
+        engine.delta_scan().unwrap();
+
+        // 3. Verify projection file was written to .index/projections/guide.html.txt
+        let proj_path = engine.projection_path("guide.html");
+        assert!(proj_path.is_file(), "Projection file should exist at {:?}", proj_path);
+        let proj_text = fs::read_to_string(&proj_path).unwrap();
+        assert!(proj_text.contains("# Architecture Guide"));
+        assert!(proj_text.contains("messaging subsystem"));
+        assert!(!proj_text.contains("<nav>"));
+
+        let mut registry = ToolRegistry::new();
+        registry.register_all();
+
+        // 4. Test Tier 3: read_file on projected document returns kind: "projected_doc"
+        let read_val = registry
+            .execute_read("read_file", &engine, serde_json::json!({ "path": "guide.html" }))
+            .unwrap();
+        assert_eq!(read_val["kind"], "projected_doc");
+        assert!(read_val["content"].as_str().unwrap().contains("Architecture Guide"));
+
+        // 5. Test Tier 3 read_file with format: "lean"
+        let read_lean = registry
+            .execute_read(
+                "read_file",
+                &engine,
+                serde_json::json!({ "path": "guide.html", "format": "lean" }),
+            )
+            .unwrap();
+        let lean_str = read_lean.as_str().unwrap();
+        assert!(lean_str.contains("# File: `guide.html`"));
+
+        // 6. Test write_note rejects modifying document formats (Docx, Pdf, HtmlDoc)
+        let write_res = registry.execute_write(
+            "write_note",
+            &mut engine,
+            serde_json::json!({
+                "path": "spec.docx",
+                "content": "Trying to overwrite docx"
+            }),
+        );
+        assert!(write_res.is_err(), "write_note on docx must fail");
+        let err_msg = write_res.err().unwrap().to_string();
+        assert!(err_msg.contains("strictly read-only"));
+
+        let write_html_res = registry.execute_write(
+            "write_note",
+            &mut engine,
+            serde_json::json!({
+                "path": "guide.html",
+                "content": "Trying to overwrite html"
+            }),
+        );
+        assert!(write_html_res.is_err(), "write_note on doc html must fail");
+
+        // 7. Test move_note moves both the source file and its projection
+        let move_res = registry.execute_write(
+            "move_note",
+            &mut engine,
+            serde_json::json!({
+                "from": "guide.html",
+                "to": "archived_guide.html"
+            }),
+        );
+        assert!(move_res.is_ok(), "move_note should succeed: {:?}", move_res);
+        assert!(!proj_path.exists(), "Old projection must be gone");
+        let new_proj = engine.projection_path("archived_guide.html");
+        assert!(new_proj.is_file(), "New projection must exist at {:?}", new_proj);
     }
 }

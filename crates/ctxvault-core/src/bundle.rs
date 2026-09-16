@@ -243,6 +243,9 @@ mod tests {
             graph: Default::default(),
             templates_dir: None,
             exclude: Default::default(),
+            corpus_type: Default::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         };
 
         let mut engine = Engine::open(config, &index_dir).unwrap();

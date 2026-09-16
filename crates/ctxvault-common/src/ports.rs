@@ -105,9 +105,9 @@ use crate::config::{EdgeClass, EdgeTypeConfig};
 use crate::types::{
     BrokenLink, Chunk, ChunkRecord, CircularDependency, CodeSymbol, CommunityDensity,
     CommunityDetectionResult, Document, Edge, EdgeProvenance, EdgeRecord, EdgeTypeRecord,
-    ExternalRef, FileRecord, GraphAffordances, GraphStats, IndexingState, LineageAnnotation,
-    LineageNode, Modality, OrphanAdr, ResolutionConfidence, SearchDepth, SearchExplanation,
-    SearchResult, VectorSearchResult,
+    ExternalRef, FileFormat, FileRecord, GraphAffordances, GraphStats, IndexingState,
+    LineageAnnotation, LineageNode, Modality, OrphanAdr, ResolutionConfidence, SearchDepth,
+    SearchExplanation, SearchResult, VectorSearchResult,
 };
 use crate::Result;
 
@@ -140,6 +140,7 @@ pub trait MetadataCatalog {
         modified_at: i64,
         template: Option<&str>,
         title: Option<&str>,
+        format: FileFormat,
     ) -> Result<()>;
 
     /// Retrieve a single file record by its corpus-relative path.
@@ -864,4 +865,39 @@ pub trait SearchService {
         limit: usize,
         modality: Modality,
     ) -> Result<Vec<SearchResult>>;
+}
+
+/// An outbound cross-reference link extracted from a rich document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentLink {
+    /// Target path or URI referenced by the link.
+    pub target: String,
+    /// Optional anchor or label text associated with the link.
+    pub label: Option<String>,
+}
+
+/// Structured document extracted from a rich document container (.docx, .pdf, .html).
+#[derive(Debug, Clone)]
+pub struct ExtractedDocument {
+    /// Document title extracted from metadata or primary heading.
+    pub title: Option<String>,
+    /// Extracted document metadata properties (author, date, subject, etc.).
+    pub metadata: HashMap<String, String>,
+    /// Normalized UTF-8 text with Markdown formatting and synthetic lines.
+    pub normalized_text: String,
+    /// Outbound cross-reference links (hyperlinks, anchors, references).
+    pub outbound_links: Vec<DocumentLink>,
+}
+
+/// Port for deterministic document extraction.
+///
+/// Implementations of this port extract structured, normalized UTF-8 text and
+/// outbound links from binary or container document formats (.docx, .pdf, .html)
+/// in 100% pure Rust without external C runtimes.
+pub trait DocumentExtractor: Send + Sync {
+    /// Returns true if this extractor handles the given file format.
+    fn can_extract(&self, path: &Path) -> bool;
+
+    /// Extract structured text and links from raw file bytes.
+    fn extract(&self, path: &Path, bytes: &[u8]) -> Result<ExtractedDocument>;
 }

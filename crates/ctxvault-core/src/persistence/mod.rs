@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use ctxvault_common::types::{
-    ChunkRecord, EdgeRecord, EdgeTypeRecord, FileRecord, GraphAffordances, IndexingState,
-    IndexingStatus,
+    ChunkRecord, EdgeRecord, EdgeTypeRecord, FileFormat, FileRecord, GraphAffordances,
+    IndexingState, IndexingStatus,
 };
 use ctxvault_common::{Error, Result};
 
@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS files (
     modified_at INTEGER NOT NULL,
     template TEXT,
     title TEXT,
-    indexed_at INTEGER NOT NULL
+    indexed_at INTEGER NOT NULL,
+    format TEXT NOT NULL DEFAULT 'source'
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -173,6 +174,8 @@ impl Store {
         )
         .map_err(|e| Error::Database(e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL).map_err(|e| Error::Database(e.to_string()))?;
+        let _ = conn
+            .execute_batch("ALTER TABLE files ADD COLUMN format TEXT NOT NULL DEFAULT 'source';");
         Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
 
@@ -196,14 +199,15 @@ impl Store {
         modified_at: i64,
         template: Option<&str>,
         title: Option<&str>,
+        format: FileFormat,
     ) -> Result<()> {
         let indexed_at = now_unix();
         let _ = self
             .conn()
             .execute(
-                "INSERT OR REPLACE INTO files (path, content_hash, modified_at, template, title, indexed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![path, content_hash, modified_at, template, title, indexed_at],
+                "INSERT OR REPLACE INTO files (path, content_hash, modified_at, template, title, indexed_at, format)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![path, content_hash, modified_at, template, title, indexed_at, format.as_str()],
             )
             .map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
@@ -214,13 +218,14 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT path, content_hash, modified_at, template, title, indexed_at
+                "SELECT path, content_hash, modified_at, template, title, indexed_at, format
                  FROM files WHERE path = ?1",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
 
         let mut rows = stmt
             .query_map(params![path], |row| {
+                let fmt_str: String = row.get(6).unwrap_or_else(|_| "source".to_string());
                 Ok(FileRecord {
                     path: row.get(0)?,
                     content_hash: row.get(1)?,
@@ -228,6 +233,7 @@ impl Store {
                     template: row.get(3)?,
                     title: row.get(4)?,
                     indexed_at: row.get(5)?,
+                    format: FileFormat::from_str_name(&fmt_str),
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -253,12 +259,13 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT path, content_hash, modified_at, template, title, indexed_at FROM files ORDER BY path",
+                "SELECT path, content_hash, modified_at, template, title, indexed_at, format FROM files ORDER BY path",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
 
         let rows = stmt
             .query_map([], |row| {
+                let fmt_str: String = row.get(6).unwrap_or_else(|_| "source".to_string());
                 Ok(FileRecord {
                     path: row.get(0)?,
                     content_hash: row.get(1)?,
@@ -266,6 +273,7 @@ impl Store {
                     template: row.get(3)?,
                     title: row.get(4)?,
                     indexed_at: row.get(5)?,
+                    format: FileFormat::from_str_name(&fmt_str),
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -1071,8 +1079,9 @@ impl ctxvault_common::ports::MetadataCatalog for Store {
         modified_at: i64,
         template: Option<&str>,
         title: Option<&str>,
+        format: FileFormat,
     ) -> Result<()> {
-        Store::insert_file(self, path, content_hash, modified_at, template, title)
+        Store::insert_file(self, path, content_hash, modified_at, template, title, format)
     }
 
     fn get_file(&self, path: &str) -> Result<Option<FileRecord>> {
@@ -1322,7 +1331,14 @@ mod tests {
 
         // Insert
         store
-            .insert_file("notes/hello.md", "abc123", 1700000000, Some("daily"), Some("Hello"))
+            .insert_file(
+                "notes/hello.md",
+                "abc123",
+                1700000000,
+                Some("daily"),
+                Some("Hello"),
+                FileFormat::Source,
+            )
             .unwrap();
 
         // Get
@@ -1332,10 +1348,13 @@ mod tests {
         assert_eq!(record.modified_at, 1700000000);
         assert_eq!(record.template.as_deref(), Some("daily"));
         assert_eq!(record.title.as_deref(), Some("Hello"));
+        assert_eq!(record.format, FileFormat::Source);
         assert!(record.indexed_at > 0);
 
         // List
-        store.insert_file("notes/world.md", "def456", 1700000001, None, None).unwrap();
+        store
+            .insert_file("notes/world.md", "def456", 1700000001, None, None, FileFormat::Source)
+            .unwrap();
         let files = store.list_files().unwrap();
         assert_eq!(files.len(), 2);
 
@@ -1350,7 +1369,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
 
         // Must have a parent file due to foreign key constraint.
-        store.insert_file("doc.md", "hash1", 1700000000, None, None).unwrap();
+        store.insert_file("doc.md", "hash1", 1700000000, None, None, FileFormat::Source).unwrap();
 
         let chunks = vec![
             ChunkRecord {
@@ -1451,7 +1470,7 @@ mod tests {
     fn cascade_delete_removes_chunks() {
         let store = Store::open_in_memory().unwrap();
 
-        store.insert_file("cascade.md", "h1", 1700000000, None, None).unwrap();
+        store.insert_file("cascade.md", "h1", 1700000000, None, None, FileFormat::Source).unwrap();
         store
             .insert_chunks(
                 "cascade.md",
@@ -1475,8 +1494,19 @@ mod tests {
     fn insert_file_upsert_on_conflict() {
         let store = Store::open_in_memory().unwrap();
 
-        store.insert_file("upsert.md", "hash_v1", 1000, None, Some("Title v1")).unwrap();
-        store.insert_file("upsert.md", "hash_v2", 2000, Some("note"), Some("Title v2")).unwrap();
+        store
+            .insert_file("upsert.md", "hash_v1", 1000, None, Some("Title v1"), FileFormat::Source)
+            .unwrap();
+        store
+            .insert_file(
+                "upsert.md",
+                "hash_v2",
+                2000,
+                Some("note"),
+                Some("Title v2"),
+                FileFormat::Source,
+            )
+            .unwrap();
 
         let record = store.get_file("upsert.md").unwrap().unwrap();
         assert_eq!(record.content_hash, "hash_v2");
@@ -1572,9 +1602,9 @@ mod tests {
             end_line: 15,
         };
 
-        store.insert_file("binder.rs", "hash1", 1000, None, None).unwrap();
-        store.insert_file("other.rs", "hash2", 1000, None, None).unwrap();
-        store.insert_file("binder2.rs", "hash3", 1000, None, None).unwrap();
+        store.insert_file("binder.rs", "hash1", 1000, None, None, FileFormat::Source).unwrap();
+        store.insert_file("other.rs", "hash2", 1000, None, None, FileFormat::Source).unwrap();
+        store.insert_file("binder2.rs", "hash3", 1000, None, None, FileFormat::Source).unwrap();
 
         store.save_code_symbols("binder.rs", &[sym1, sym2]).unwrap();
         store.save_code_symbols("other.rs", &[sym3]).unwrap();

@@ -114,6 +114,12 @@ tree-sitter-wgsl-bevy = "0.1.4"
 scip = "0.10"
 protobuf = "3.7"
 
+# Document Extraction (Pure Rust)
+quick-xml = { workspace = true }
+zip = { workspace = true }
+lopdf = { workspace = true }
+scraper = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }

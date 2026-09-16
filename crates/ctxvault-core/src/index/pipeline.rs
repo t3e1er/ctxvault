@@ -34,7 +34,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
 
 use ctxvault_common::{
-    types::{Chunk, CodeSymbol, Document, Edge, ExternalRef},
+    types::{Chunk, CodeSymbol, Document, Edge, ExternalRef, FileFormat},
     Error, Result,
 };
 
@@ -63,6 +63,10 @@ pub struct ParsedFileRecord {
     pub external_refs: Vec<ExternalRef>,
     /// Whether the file is a source code file.
     pub is_code: bool,
+    /// Format of the file (native source or projected document).
+    pub format: FileFormat,
+    /// Optional synthesized projection text to write to `.index/projections/<path>.txt`.
+    pub projection_text: Option<String>,
 }
 
 /// A pre-tokenized and padded batch of chunks staged in contiguous host memory arrays.

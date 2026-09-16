@@ -16,7 +16,8 @@ use tracing::{debug, info, warn};
 use ctxvault_common::config::{ChunkingConfig, CorpusConfig, IndexMode};
 use ctxvault_common::ports::{GraphStore, MetadataCatalog};
 use ctxvault_common::types::{
-    ChunkEmbedPolicy, ChunkRecord, Document, EntityKind, IndexingState, IndexingStatus,
+    ChunkEmbedPolicy, ChunkRecord, Document, Edge, EntityKind, FileFormat, IndexingState,
+    IndexingStatus,
 };
 use ctxvault_common::{Error, Result};
 
@@ -86,6 +87,7 @@ pub struct Engine {
     embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
     exclude_matcher: Arc<crate::index::exclude::ExcludeMatcher>,
+    classifier: Arc<crate::index::classifier::FileClassifier>,
 }
 
 /// Result of a delta scan comparing filesystem state against the index.
@@ -133,6 +135,8 @@ impl Engine {
         let corpus_root = PathBuf::from(&config.path);
         let exclude_matcher =
             Arc::new(crate::index::exclude::ExcludeMatcher::new(&corpus_root, &config.exclude));
+        let classifier =
+            Arc::new(crate::index::classifier::FileClassifier::new(&corpus_root, &config));
         Self {
             config,
             store,
@@ -142,6 +146,7 @@ impl Engine {
             embedder: RwLock::new(None), // Lazily initialized
             index_dir,
             exclude_matcher,
+            classifier,
         }
     }
 
@@ -225,6 +230,7 @@ impl Engine {
                 modified_at,
                 None,
                 Some(&file_title),
+                FileFormat::Source,
             )?;
 
             let mut pending = Vec::new();
@@ -329,6 +335,7 @@ impl Engine {
             modified_at,
             doc.template.as_deref(),
             doc.title.as_deref(),
+            FileFormat::Source,
         )?;
 
         // 4. Delete old chunks and insert new ones.
@@ -493,6 +500,11 @@ impl Engine {
 
     /// Remove a file from all indices (persistence, BM25, vector, graph).
     pub fn remove_file(&mut self, rel_path: &str) -> Result<()> {
+        let proj_path = self.projection_path(rel_path);
+        if proj_path.is_file() {
+            let _ = fs::remove_file(proj_path);
+        }
+
         // 1. Delete from persistence (cascades chunks).
         self.store.delete_file(rel_path)?;
 
@@ -566,12 +578,29 @@ impl Engine {
         let path = &record.path;
         let modified_at = now_unix();
 
+        if let Some(ref text) = record.projection_text {
+            let proj_path = self.projection_path(path);
+            if let Some(parent) = proj_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = fs::write(&proj_path, text.as_bytes()) {
+                warn!("Failed to write projection for {path}: {e}");
+            }
+        }
+
         if record.is_code {
             let file_title =
                 Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string();
 
             // 1. SQLite Store
-            self.store.insert_file(path, &record.hash, modified_at, None, Some(&file_title))?;
+            self.store.insert_file(
+                path,
+                &record.hash,
+                modified_at,
+                None,
+                Some(&file_title),
+                record.format,
+            )?;
 
             // 2. Chunks and symbols
             self.store.delete_chunks_for_file(path)?;
@@ -610,13 +639,18 @@ impl Engine {
                 self.store.insert_external_refs(path, &record.external_refs)?;
             }
         } else if let Some(mut doc) = record.doc_metadata {
+            let file_title = doc.title.clone().unwrap_or_else(|| {
+                Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string()
+            });
+
             // 1. SQLite Store
             self.store.insert_file(
                 path,
                 &record.hash,
                 modified_at,
                 doc.template.as_deref(),
-                doc.title.as_deref(),
+                doc.title.as_deref().or(Some(&file_title)),
+                record.format,
             )?;
 
             // 2. Chunks
@@ -647,6 +681,16 @@ impl Engine {
             self.graph.remove_edges_for_node(path);
             let edge_configs = self.effective_edge_configs_for_document(&doc, None);
             self.graph.build_edges_for_document(&doc, &edge_configs, &[]);
+            for edge in &record.graph_edges {
+                self.graph.add_edge(
+                    &edge.source,
+                    &edge.target,
+                    &edge.edge_type,
+                    edge.weight,
+                    edge.provenance.clone(),
+                    ctxvault_common::config::EdgeClass::Structural,
+                );
+            }
 
             if !tag_configs.is_empty() && !doc.tags.is_empty() {
                 doc.content.clear();
@@ -679,7 +723,8 @@ impl Engine {
 
         // 2. Walk the corpus directory.
         let corpus_path = PathBuf::from(&self.config.path);
-        let disk_files = walk_markdown_files(&corpus_path, &self.exclude_matcher)?;
+        let disk_files =
+            walk_markdown_files(&corpus_path, &self.exclude_matcher, &self.classifier)?;
 
         let mut new_files = Vec::new();
         let mut modified_files = Vec::new();
@@ -688,14 +733,14 @@ impl Engine {
 
         for (rel_path, full_path) in &disk_files {
             let _ = seen_on_disk.insert(rel_path.clone(), ());
-            let content = match Self::read_file_lossy(full_path) {
-                Ok(c) => c,
+            let bytes = match fs::read(full_path) {
+                Ok(b) => b,
                 Err(e) => {
                     warn!("{}: {}", rel_path, e);
                     continue;
                 }
             };
-            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let hash = blake3::hash(&bytes).to_hex().to_string();
 
             match stored_map.get(rel_path) {
                 None => {
@@ -758,25 +803,28 @@ impl Engine {
                     let ast_tx_clone = ast_tx.clone();
                     let chunk_tx_clone = chunk_tx_opt.clone();
                     let chunking_ref = &chunking_config;
+                    let classifier_clone = self.classifier.clone();
 
                     std::thread::Builder::new()
                         .name(format!("indexer-worker-{}", i))
                         .stack_size(16 * 1024 * 1024)
                         .spawn_scoped(s, move || {
                             while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                                let content = match Self::read_file_lossy(&full_path) {
-                                    Ok(c) => c,
+                                let bytes = match fs::read(&full_path) {
+                                    Ok(b) => b,
                                     Err(e) => {
                                         warn!("Failed to read {}: {}", rel_path, e);
                                         continue;
                                     }
                                 };
-                                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                                let hash = blake3::hash(&bytes).to_hex().to_string();
 
                                 let record = match parse_file_record(
                                     &rel_path,
-                                    &content,
+                                    &full_path,
+                                    &bytes,
                                     hash,
+                                    &classifier_clone,
                                     chunking_ref,
                                     index_mode,
                                 ) {
@@ -886,6 +934,7 @@ impl Engine {
             .cloned()
             .collect();
         let mut all_docs: Vec<Document> = Vec::new();
+        let classifier = crate::index::classifier::FileClassifier::new(&corpus_path, &self.config);
 
         for path in paths {
             // Determine relative path within corpus
@@ -911,14 +960,14 @@ impl Engine {
                     continue;
                 }
                 // File exists: check if new or modified
-                let content = match Self::read_file_lossy(&full_path) {
-                    Ok(c) => c,
+                let bytes = match fs::read(&full_path) {
+                    Ok(b) => b,
                     Err(e) => {
                         warn!("Failed to read {}: {}", rel_path, e);
                         continue;
                     }
                 };
-                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                let hash = blake3::hash(&bytes).to_hex().to_string();
                 let stored_file = self.store.get_file(&rel_path)?;
 
                 let is_new = stored_file.is_none();
@@ -927,8 +976,10 @@ impl Engine {
                 if is_new || is_modified {
                     let record = match parse_file_record(
                         &rel_path,
-                        &content,
+                        &full_path,
+                        &bytes,
                         hash,
+                        &classifier,
                         &self.config.chunking,
                         self.config.index_mode,
                     ) {
@@ -1009,7 +1060,8 @@ impl Engine {
         let commit_batch_size = if batch_size == 0 || batch_size == 50 { 500 } else { batch_size };
         let corpus_id = self.config.name.clone();
         let corpus_path = PathBuf::from(&self.config.path);
-        let mut disk_files = walk_markdown_files(&corpus_path, &self.exclude_matcher)?;
+        let mut disk_files =
+            walk_markdown_files(&corpus_path, &self.exclude_matcher, &self.classifier)?;
         disk_files.sort_by(|a, b| a.0.cmp(&b.0));
         let total_files = disk_files.len();
 
@@ -1107,20 +1159,21 @@ impl Engine {
                 let chunk_tx_clone = chunk_tx_opt.clone();
                 let stored_map_ref = &stored_map;
                 let chunking_ref = &chunking_config;
+                let classifier_clone = self.classifier.clone();
 
                 std::thread::Builder::new()
                     .name(format!("indexer-worker-{}", i))
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(s, move || {
                         while let Ok((rel_path, full_path)) = work_rx_clone.recv() {
-                            let content = match Self::read_file_lossy(&full_path) {
-                                Ok(c) => c,
+                            let bytes = match fs::read(&full_path) {
+                                Ok(b) => b,
                                 Err(e) => {
                                     warn!("Failed to read {}: {}", rel_path, e);
                                     continue;
                                 }
                             };
-                            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                            let hash = blake3::hash(&bytes).to_hex().to_string();
 
                             if resume {
                                 if let Some(stored_hash) = stored_map_ref.get(&rel_path) {
@@ -1132,8 +1185,10 @@ impl Engine {
 
                             let record = match parse_file_record(
                                 &rel_path,
-                                &content,
+                                &full_path,
+                                &bytes,
                                 hash,
+                                &classifier_clone,
                                 chunking_ref,
                                 index_mode,
                             ) {
@@ -1622,6 +1677,16 @@ impl Engine {
         &self.exclude_matcher
     }
 
+    /// Get the compiled file classifier for this engine.
+    pub fn classifier(&self) -> &Arc<crate::index::classifier::FileClassifier> {
+        &self.classifier
+    }
+
+    /// Returns the path to the derived text projection file for a given relative path.
+    pub fn projection_path(&self, rel_path: &str) -> PathBuf {
+        self.index_dir.join("projections").join(format!("{}.txt", rel_path))
+    }
+
     /// Get the embedding dimensions for this engine.
     pub fn embedding_dimension(&self) -> usize {
         self.vector_index.as_ref().map(|vi| vi.dimensions()).unwrap_or_else(|| {
@@ -1721,11 +1786,17 @@ impl Engine {
         start_byte: usize,
         end_byte: usize,
     ) -> Result<String> {
-        let full_path = Path::new(&self.config.path).join(rel_path);
-        let mut file = fs::File::open(&full_path).map_err(|e| {
+        let proj_path = self.projection_path(rel_path);
+        let target_path = if proj_path.is_file() {
+            proj_path
+        } else {
+            Path::new(&self.config.path).join(rel_path)
+        };
+
+        let mut file = fs::File::open(&target_path).map_err(|e| {
             Error::Io(std::io::Error::new(
                 e.kind(),
-                format!("failed to open '{}': {e}", full_path.display()),
+                format!("failed to open '{}': {e}", target_path.display()),
             ))
         })?;
 
@@ -1907,130 +1978,223 @@ impl Engine {
 /// Parse a single file (polyglot code or markdown) in a thread-safe, lock-free manner.
 fn parse_file_record(
     rel_path: &str,
-    content: &str,
+    full_path: &Path,
+    bytes: &[u8],
     hash: String,
+    classifier: &crate::index::classifier::FileClassifier,
     chunking_config: &ChunkingConfig,
     index_mode: IndexMode,
 ) -> Result<ParsedFileRecord> {
-    let path = Path::new(rel_path);
+    let classification = classifier.classify(full_path, Some(bytes));
 
-    if crate::parser::code::is_code_file(path) {
-        let parse_res = crate::parser::code::chunker::CodeChunker::parse_and_chunk(
-            path,
-            content,
-            chunking_config,
-        );
+    match classification {
+        crate::index::classifier::FileClassification::Code(_) => {
+            let content = String::from_utf8_lossy(bytes);
+            let path = Path::new(rel_path);
+            let parse_res = crate::parser::code::chunker::CodeChunker::parse_and_chunk(
+                path,
+                &content,
+                chunking_config,
+            );
 
-        let mut pending = Vec::new();
-        let mut raw_chunks = Vec::new();
-        let mut symbols = Vec::new();
-        let mut graph_edges = Vec::new();
-        let mut external_refs = Vec::new();
+            let mut pending = Vec::new();
+            let mut raw_chunks = Vec::new();
+            let mut symbols = Vec::new();
+            let mut graph_edges = Vec::new();
+            let mut external_refs = Vec::new();
 
-        if let Some(res) = parse_res {
-            if index_mode == IndexMode::Skeleton {
-                let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
-                    rel_path,
-                    &res.chunks,
-                    chunking_config.max_tokens,
-                );
-                pending.extend(skeleton_chunks);
-            } else {
-                for c in &res.chunks {
+            if let Some(res) = parse_res {
+                if index_mode == IndexMode::Skeleton {
+                    let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
+                        rel_path,
+                        &res.chunks,
+                        chunking_config.max_tokens,
+                    );
+                    pending.extend(skeleton_chunks);
+                } else {
+                    for c in &res.chunks {
+                        let modality = c
+                            .entity_kind
+                            .as_ref()
+                            .map(EntityKind::modality_tag)
+                            .unwrap_or("docs")
+                            .to_string();
+                        let embed_policy = if index_mode == IndexMode::DocsEmbed {
+                            ChunkEmbedPolicy::GraphOnly
+                        } else {
+                            c.embed_policy
+                        };
+                        pending.push(PendingChunk {
+                            doc_path: rel_path.to_string(),
+                            chunk_index: c.chunk_index,
+                            text: c.text.clone(),
+                            embed_policy,
+                            modality,
+                        });
+                    }
+                }
+
+                let symbol_index =
+                    crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
+                let extraction =
+                    crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
+                        path,
+                        &content,
+                        &res.symbols,
+                        &symbol_index,
+                    );
+                graph_edges = extraction.edges;
+                external_refs = extraction.external_refs;
+
+                raw_chunks = res.chunks;
+                symbols = res.symbols;
+            }
+
+            Ok(ParsedFileRecord {
+                path: rel_path.to_string(),
+                hash,
+                chunks: pending,
+                raw_chunks,
+                symbols,
+                doc_metadata: None,
+                graph_edges,
+                external_refs,
+                is_code: true,
+                format: FileFormat::Source,
+                projection_text: None,
+            })
+        }
+        crate::index::classifier::FileClassification::MarkdownDoc => {
+            let content = String::from_utf8_lossy(bytes);
+            let path = Path::new(rel_path);
+            let doc = parser::parse_document(path, &content)?;
+            let chunks = chunker::chunk_document(rel_path, &doc.content, chunking_config);
+
+            let doc_title = doc.title.as_deref().unwrap_or("").trim();
+            let pending: Vec<PendingChunk> = chunks
+                .iter()
+                .map(|c| {
+                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                    let text = if !doc_title.is_empty() && !section.is_empty() {
+                        format!("{} > {}: {}", doc_title, section, c.text)
+                    } else if !doc_title.is_empty() {
+                        format!("{}: {}", doc_title, c.text)
+                    } else if !section.is_empty() {
+                        format!("{}: {}", section, c.text)
+                    } else {
+                        c.text.clone()
+                    };
                     let modality = c
                         .entity_kind
                         .as_ref()
                         .map(EntityKind::modality_tag)
                         .unwrap_or("docs")
                         .to_string();
-                    let embed_policy = if index_mode == IndexMode::DocsEmbed {
-                        ChunkEmbedPolicy::GraphOnly
-                    } else {
-                        c.embed_policy
-                    };
-                    pending.push(PendingChunk {
+                    PendingChunk {
                         doc_path: rel_path.to_string(),
                         chunk_index: c.chunk_index,
-                        text: c.text.clone(),
-                        embed_policy,
+                        text,
+                        embed_policy: c.embed_policy,
                         modality,
-                    });
-                }
+                    }
+                })
+                .collect();
+
+            Ok(ParsedFileRecord {
+                path: rel_path.to_string(),
+                hash,
+                chunks: pending,
+                raw_chunks: chunks,
+                symbols: Vec::new(),
+                doc_metadata: Some(doc),
+                graph_edges: Vec::new(),
+                external_refs: Vec::new(),
+                is_code: false,
+                format: FileFormat::Source,
+                projection_text: None,
+            })
+        }
+        crate::index::classifier::FileClassification::Document(fmt) => {
+            let registry = crate::parser::document::DocumentExtractorRegistry::new();
+            let extracted = registry.extract(full_path, fmt, bytes)?;
+            let chunks =
+                chunker::chunk_document(rel_path, &extracted.normalized_text, chunking_config);
+
+            let doc_title = extracted.title.as_deref().unwrap_or("").trim();
+            let pending: Vec<PendingChunk> = chunks
+                .iter()
+                .map(|c| {
+                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                    let text = if !doc_title.is_empty() && !section.is_empty() {
+                        format!("{} > {}: {}", doc_title, section, c.text)
+                    } else if !doc_title.is_empty() {
+                        format!("{}: {}", doc_title, c.text)
+                    } else if !section.is_empty() {
+                        format!("{}: {}", section, c.text)
+                    } else {
+                        c.text.clone()
+                    };
+                    let modality = c
+                        .entity_kind
+                        .as_ref()
+                        .map(EntityKind::modality_tag)
+                        .unwrap_or("docs")
+                        .to_string();
+                    PendingChunk {
+                        doc_path: rel_path.to_string(),
+                        chunk_index: c.chunk_index,
+                        text,
+                        embed_policy: c.embed_policy,
+                        modality,
+                    }
+                })
+                .collect();
+
+            let doc = Document {
+                path: rel_path.to_string(),
+                frontmatter: None,
+                title: extracted.title.clone(),
+                tags: Vec::new(),
+                wikilinks: Vec::new(),
+                template: None,
+                content: extracted.normalized_text.clone(),
+                content_hash: hash.clone(),
+            };
+
+            let mut graph_edges = Vec::new();
+            for link in extracted.outbound_links {
+                graph_edges.push(Edge {
+                    source: rel_path.to_string(),
+                    target: link.target,
+                    edge_type: "references".to_string(),
+                    weight: 0.8,
+                    provenance: ctxvault_common::types::EdgeProvenance::MarkdownLink,
+                    target_corpus: None,
+                    confidence: Some(ctxvault_common::types::ResolutionConfidence::High),
+                    target_path: None,
+                    target_symbol: None,
+                    target_kind: None,
+                });
             }
 
-            let symbol_index =
-                crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
-            let extraction =
-                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
-                    path,
-                    content,
-                    &res.symbols,
-                    &symbol_index,
-                );
-            graph_edges = extraction.edges;
-            external_refs = extraction.external_refs;
-
-            raw_chunks = res.chunks;
-            symbols = res.symbols;
-        }
-
-        Ok(ParsedFileRecord {
-            path: rel_path.to_string(),
-            hash,
-            chunks: pending,
-            raw_chunks,
-            symbols,
-            doc_metadata: None,
-            graph_edges,
-            external_refs,
-            is_code: true,
-        })
-    } else {
-        // Markdown note
-        let doc = parser::parse_document(path, content)?;
-        let chunks = chunker::chunk_document(rel_path, &doc.content, chunking_config);
-
-        let doc_title = doc.title.as_deref().unwrap_or("").trim();
-        let pending: Vec<PendingChunk> = chunks
-            .iter()
-            .map(|c| {
-                let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                let text = if !doc_title.is_empty() && !section.is_empty() {
-                    format!("{} > {}: {}", doc_title, section, c.text)
-                } else if !doc_title.is_empty() {
-                    format!("{}: {}", doc_title, c.text)
-                } else if !section.is_empty() {
-                    format!("{}: {}", section, c.text)
-                } else {
-                    c.text.clone()
-                };
-                let modality = c
-                    .entity_kind
-                    .as_ref()
-                    .map(EntityKind::modality_tag)
-                    .unwrap_or("docs")
-                    .to_string();
-                PendingChunk {
-                    doc_path: rel_path.to_string(),
-                    chunk_index: c.chunk_index,
-                    text,
-                    embed_policy: c.embed_policy,
-                    modality,
-                }
+            Ok(ParsedFileRecord {
+                path: rel_path.to_string(),
+                hash,
+                chunks: pending,
+                raw_chunks: chunks,
+                symbols: Vec::new(),
+                doc_metadata: Some(doc),
+                graph_edges,
+                external_refs: Vec::new(),
+                is_code: false,
+                format: fmt,
+                projection_text: Some(extracted.normalized_text),
             })
-            .collect();
-
-        Ok(ParsedFileRecord {
+        }
+        crate::index::classifier::FileClassification::Ignored => Err(Error::Parse {
             path: rel_path.to_string(),
-            hash,
-            chunks: pending,
-            raw_chunks: chunks,
-            symbols: Vec::new(),
-            doc_metadata: Some(doc),
-            graph_edges: Vec::new(),
-            external_refs: Vec::new(),
-            is_code: false,
-        })
+            message: format!("file '{rel_path}' is ignored or unsupported format"),
+        }),
     }
 }
 
@@ -2044,12 +2208,13 @@ fn now_unix() -> i64 {
 fn walk_markdown_files(
     root: &Path,
     matcher: &crate::index::exclude::ExcludeMatcher,
+    classifier: &crate::index::classifier::FileClassifier,
 ) -> Result<Vec<(String, PathBuf)>> {
     let mut results = Vec::new();
     if !root.exists() {
         return Ok(results);
     }
-    walk_dir_recursive(root, root, matcher, &mut results)?;
+    walk_dir_recursive(root, root, matcher, classifier, &mut results)?;
     Ok(results)
 }
 
@@ -2057,6 +2222,7 @@ fn walk_dir_recursive(
     root: &Path,
     current: &Path,
     matcher: &crate::index::exclude::ExcludeMatcher,
+    classifier: &crate::index::classifier::FileClassifier,
     results: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     let entries = fs::read_dir(current)?;
@@ -2068,15 +2234,14 @@ fn walk_dir_recursive(
             if matcher.is_excluded(&path, true) {
                 continue;
             }
-            walk_dir_recursive(root, &path, matcher, results)?;
+            walk_dir_recursive(root, &path, matcher, classifier, results)?;
         } else {
             // Check exclusion for individual files
             if matcher.is_excluded(&path, false) {
                 continue;
             }
-            let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
-            let is_code = crate::parser::code::is_code_file(&path);
-            if is_md || is_code {
+            let is_indexable = classifier.classify(&path, None).is_indexable();
+            if is_indexable {
                 let rel = path.strip_prefix(root).map_err(|e| {
                     Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                 })?;
@@ -2128,6 +2293,9 @@ mod tests {
             },
             templates_dir: None,
             exclude: ctxvault_common::config::ExcludeConfig::default(),
+            corpus_type: ctxvault_common::config::CorpusType::default(),
+            doc_patterns: Vec::new(),
+            code_patterns: Vec::new(),
         }
     }
 

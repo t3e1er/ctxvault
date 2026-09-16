@@ -85,6 +85,12 @@ ignore = "0.4"
 # Compression & Archiving
 tar = "0.4"
 zstd = "0.13"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+# Document Extraction (Pure Rust)
+quick-xml = "0.41"
+lopdf = "0.42"
+scraper = "0.22"
 
 # Hashing
 blake3 = "1.5"
