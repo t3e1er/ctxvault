@@ -48,6 +48,7 @@ param(
     [string[]]$Datasets = @("codesearchnet", "repobench", "swebench"),
     [string[]]$Modes = @("bm25", "binary", "ppr", "fast"),
     [int]$K = 10,
+    [int]$SampleLimit = 100,
     [switch]$CleanIndex,
     [switch]$SkipIndex,
     [switch]$Release,
@@ -114,76 +115,94 @@ $TargetDatasets = $TargetDatasets | Select-Object -Unique
 
 $ModesString = ($Modes | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ }) -join ","
 
-# 1. CodeSearchNet (AdvTest sample for Go/Python)
+# 1. CodeSearchNet (Official GitHub 4,010 human annotations across Go, Python, Java, JS, PHP, Ruby)
 $CsnRawPath = Join-Path $DataDir "csn_sample.jsonl"
 if ($TargetDatasets -contains "codesearchnet" -and -not $SkipDownload) {
-    if (-not (Test-Path $CsnRawPath) -or (Get-Item $CsnRawPath).Length -eq 0) {
-        Log-Step "Fetching CodeSearchNet polyglot evaluation sample..."
-        $SyntheticCsn = @'
-{"query": "Compute SHA256 cryptographic hash of byte buffer", "path": "crates/ctxvault-core/src/index/mod.rs", "language": "rust"}
-{"query": "Parse Tree-sitter AST syntax tree for symbol extraction", "path": "crates/ctxvault-core/src/parser/code/mod.rs", "language": "rust"}
-{"query": "Personalized PageRank random walk graph diffusion", "path": "crates/ctxvault-core/src/graph/diffusion.rs", "language": "rust"}
-{"query": "Binary fingerprint sign quantization AVX-512 popcount", "path": "crates/ctxvault-core/src/search/binary.rs", "language": "rust"}
-{"query": "Smooth inverse frequency static token projection", "path": "crates/ctxvault-core/src/search/sif.rs", "language": "rust"}
-'@
-        [System.IO.File]::WriteAllText($CsnRawPath, $SyntheticCsn, [System.Text.Encoding]::UTF8)
-        Log-Info "Staged CodeSearchNet evaluation fixture at $CsnRawPath"
+    if (-not (Test-Path $CsnRawPath) -or (Get-Item $CsnRawPath).Length -lt 1000) {
+        Log-Step "Fetching full CodeSearchNet human evaluation annotations from GitHub..."
+        try {
+            $annUrl = "https://raw.githubusercontent.com/github/CodeSearchNet/master/resources/annotationStore.csv"
+            $csvData = Invoke-RestMethod -Uri $annUrl -TimeoutSec 45
+            $csvRows = $csvData -split "`r?`n" | Select-Object -Skip 1 | Where-Object { $_.Trim() }
+            if ($SampleLimit -gt 0) { $csvRows = $csvRows | Select-Object -First $SampleLimit }
+            
+            $csnLines = foreach ($line in $csvRows) {
+                $parts = $line -split ","
+                if ($parts.Count -ge 4) {
+                    $lang = $parts[0].Trim()
+                    $q = $parts[1].Trim()
+                    $url = $parts[2].Trim()
+                    $relPath = if ($url -match "blob/[^/]+/(.+)(#L\d+)?") { $Matches[1] } else { $url }
+                    @{ query = $q; path = $relPath; language = $lang } | ConvertTo-Json -Compress
+                }
+            }
+            $csnContent = $csnLines -join "`n"
+            [System.IO.File]::WriteAllText($CsnRawPath, $csnContent, [System.Text.Encoding]::UTF8)
+            Log-Info "Downloaded $($csnLines.Count) real CodeSearchNet queries to $CsnRawPath"
+        } catch {
+            Log-Warn "Online fetch failed: $_"
+        }
     }
 }
 
-# 2. RepoBench-R (Cross-File Repository Context)
+# 2. RepoBench-R (Real Cross-File Repository Context from Hugging Face)
 $RepoBenchRawPath = Join-Path $DataDir "repobench_sample.jsonl"
 if ($TargetDatasets -contains "repobench" -and -not $SkipDownload) {
-    if (-not (Test-Path $RepoBenchRawPath) -or (Get-Item $RepoBenchRawPath).Length -eq 0) {
-        Log-Step "Fetching RepoBench-R cross-file sample..."
-        $SyntheticRb = @'
-{"id": "rb_001", "query": "import SearchResult and Modality from ctxvault_common", "gold_snippet_path": "crates/ctxvault-common/src/types.rs", "repo_name": "ctxvault"}
-{"id": "rb_002", "query": "trait AlgorithmicSearchIndex port definition", "gold_snippet_path": "crates/ctxvault-common/src/ports.rs", "repo_name": "ctxvault"}
-{"id": "rb_003", "query": "personalize pagerank diffusion power iteration", "gold_snippet_path": "crates/ctxvault-core/src/graph/diffusion.rs", "repo_name": "ctxvault"}
-'@
-        [System.IO.File]::WriteAllText($RepoBenchRawPath, $SyntheticRb, [System.Text.Encoding]::UTF8)
-        Log-Info "Staged RepoBench-R evaluation fixture at $RepoBenchRawPath"
+    if (-not (Test-Path $RepoBenchRawPath) -or (Get-Item $RepoBenchRawPath).Length -lt 1000) {
+        Log-Step "Fetching real RepoBench-R cross-file dataset from Hugging Face..."
+        try {
+            $limit = if ($SampleLimit -gt 0) { [math]::Min($SampleLimit, 100) } else { 100 }
+            $RbUrl = "https://datasets-server.huggingface.co/rows?dataset=tianyang%2Frepobench_python_v1.1&config=default&split=cross_file_first&offset=0&limit=$limit"
+            $resp = Invoke-RestMethod -Uri $RbUrl -TimeoutSec 45
+            $rbLines = foreach ($row in $resp.rows) {
+                $r = $row.row
+                $q = ($r.import_statement + " " + $r.next_line).Trim()
+                if (-not $q) { $q = $r.cropped_code }
+                @{
+                    id = "rb_" + $row.row_idx
+                    query = $q
+                    context = $r.context
+                    gold_snippet_path = $r.file_path
+                    repo_name = $r.repo_name
+                } | ConvertTo-Json -Compress
+            }
+            $rbContent = $rbLines -join "`n"
+            [System.IO.File]::WriteAllText($RepoBenchRawPath, $rbContent, [System.Text.Encoding]::UTF8)
+            Log-Info "Downloaded $($rbLines.Count) real RepoBench-R instances to $RepoBenchRawPath"
+        } catch {
+            Log-Warn "Online fetch failed: $_"
+        }
     }
 }
 
-# 3. SWE-bench Lite (Issue Localization)
+# 3. SWE-bench Lite (All 300 Real GitHub Issue-to-Patch Tasks from Hugging Face)
 $SweBenchRawPath = Join-Path $DataDir "swebench_sample.json"
 if ($TargetDatasets -contains "swebench" -and -not $SkipDownload) {
-    if (-not (Test-Path $SweBenchRawPath) -or (Get-Item $SweBenchRawPath).Length -eq 0) {
-        Log-Step "Fetching SWE-bench Lite task sample from Hugging Face..."
-        $SweUrl = "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Lite&config=default&split=test&offset=0&limit=50"
+    if (-not (Test-Path $SweBenchRawPath) -or (Get-Item $SweBenchRawPath).Length -lt 1000) {
+        Log-Step "Fetching full SWE-bench Lite tasks (300 tasks) from Hugging Face..."
         try {
-            $resp = Invoke-RestMethod -Uri $SweUrl -TimeoutSec 45
-            $sweRows = @($resp.rows | ForEach-Object {
-                [PSCustomObject]@{
-                    instance_id = $_.row.instance_id
-                    problem_statement = $_.row.problem_statement
-                    patch = $_.row.patch
-                    repo = $_.row.repo
+            $sweAll = @()
+            $offsets = if ($SampleLimit -gt 0 -and $SampleLimit -le 100) { @(0) } else { @(0, 100, 200) }
+            foreach ($off in $offsets) {
+                $SweUrl = "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Lite&config=default&split=test&offset=$off&limit=100"
+                $resp = Invoke-RestMethod -Uri $SweUrl -TimeoutSec 45
+                $sweAll += $resp.rows | ForEach-Object {
+                    [PSCustomObject]@{
+                        instance_id = $_.row.instance_id
+                        problem_statement = $_.row.problem_statement
+                        patch = $_.row.patch
+                        repo = $_.row.repo
+                    }
                 }
-            })
-            $jsonStr = $sweRows | ConvertTo-Json -Depth 5
+            }
+            if ($SampleLimit -gt 0 -and $sweAll.Count -gt $SampleLimit) {
+                $sweAll = $sweAll | Select-Object -First $SampleLimit
+            }
+            $jsonStr = $sweAll | ConvertTo-Json -Depth 5
             [System.IO.File]::WriteAllText($SweBenchRawPath, $jsonStr, [System.Text.Encoding]::UTF8)
-            Log-Info "Downloaded $($sweRows.Count) real SWE-bench Lite tasks to $SweBenchRawPath"
+            Log-Info "Downloaded $($sweAll.Count) real SWE-bench Lite tasks to $SweBenchRawPath"
         } catch {
-            Log-Warn "Online fetch failed: $_. Generating synthetic SWE-bench localization fixture..."
-            $SyntheticSwe = @'
-[
-  {
-    "instance_id": "ctxvault__issue_104",
-    "problem_statement": "BinaryFingerprint hamming scan returns incorrect distance when bit length is not multiple of 64",
-    "patch": "diff --git a/crates/ctxvault-core/src/search/binary.rs b/crates/ctxvault-core/src/search/binary.rs\n--- a/crates/ctxvault-core/src/search/binary.rs\n+++ b/crates/ctxvault-core/src/search/binary.rs\n@@ -1,3 +1,3 @@",
-    "repo": "ctxvault"
-  },
-  {
-    "instance_id": "ctxvault__issue_105",
-    "problem_statement": "Personalized PageRank diffusion does not handle zero-degree disconnected sink nodes gracefully",
-    "patch": "diff --git a/crates/ctxvault-core/src/graph/diffusion.rs b/crates/ctxvault-core/src/graph/diffusion.rs\n--- a/crates/ctxvault-core/src/graph/diffusion.rs\n+++ b/crates/ctxvault-core/src/graph/diffusion.rs\n@@ -1,3 +1,3 @@",
-    "repo": "ctxvault"
-  }
-]
-'@
-            [System.IO.File]::WriteAllText($SweBenchRawPath, $SyntheticSwe, [System.Text.Encoding]::UTF8)
+            Log-Warn "Online fetch failed: $_"
         }
     }
 }
