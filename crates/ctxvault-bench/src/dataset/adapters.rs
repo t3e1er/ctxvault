@@ -111,7 +111,7 @@ impl PublicBenchmarkAdapter {
 
         for (line_idx, line_res) in reader.lines().enumerate() {
             let line = line_res?;
-            let trimmed = line.trim();
+            let trimmed = line.trim_start_matches('\u{feff}').trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -152,7 +152,7 @@ impl PublicBenchmarkAdapter {
 
         for (line_idx, line_res) in reader.lines().enumerate() {
             let line = line_res?;
-            let trimmed = line.trim();
+            let trimmed = line.trim_start_matches('\u{feff}').trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -191,7 +191,7 @@ impl PublicBenchmarkAdapter {
         let mut content = String::new();
         reader.read_to_string(&mut content)?;
 
-        let trimmed = content.trim();
+        let trimmed = content.trim_start_matches('\u{feff}').trim();
         let records: Vec<SweBenchRecord> = if trimmed.starts_with('[') {
             serde_json::from_str(trimmed).map_err(|e| AdapterError::Json { line: 1, source: e })?
         } else {

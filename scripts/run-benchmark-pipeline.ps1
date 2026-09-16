@@ -49,7 +49,8 @@ param(
     [string[]]$Modes = @("bm25", "binary", "ppr", "fast"),
     [int]$K = 10,
     [switch]$CleanIndex,
-    [bool]$ReleaseBuild = $false,
+    [switch]$SkipIndex,
+    [switch]$Release,
     [switch]$SkipDownload
 )
 
@@ -66,6 +67,7 @@ function Log-Warn([string]$msg)  { Write-Host "  [!] $msg" -ForegroundColor Yell
 # -----------------------------------------------------------------------------
 Log-Title "Phase 1: Building Benchmark Harness (ctxv-bench)"
 
+$ReleaseBuild = $Release.IsPresent
 $CargoProfile = if ($ReleaseBuild) { "--release" } else { "" }
 $BinaryDir = if ($ReleaseBuild) { "target\release" } else { "target\debug" }
 $BenchExe = Join-Path $BinaryDir "ctxv-bench.exe"
@@ -115,56 +117,54 @@ $ModesString = ($Modes | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.
 # 1. CodeSearchNet (AdvTest sample for Go/Python)
 $CsnRawPath = Join-Path $DataDir "csn_sample.jsonl"
 if ($TargetDatasets -contains "codesearchnet" -and -not $SkipDownload) {
-    if (-not (Test-Path $CsnRawPath)) {
+    if (-not (Test-Path $CsnRawPath) -or (Get-Item $CsnRawPath).Length -eq 0) {
         Log-Step "Fetching CodeSearchNet polyglot evaluation sample..."
-        $CsnUrl = "https://raw.githubusercontent.com/microsoft/CodeXGLUE/main/Code-Text/code-to-text/dataset/go/test.json"
-        try {
-            Invoke-WebRequest -Uri $CsnUrl -OutFile $CsnRawPath -TimeoutSec 30
-            Log-Info "Downloaded CodeSearchNet sample to $CsnRawPath"
-        } catch {
-            Log-Warn "Online fetch failed: $_. Generating synthetic CodeSearchNet fixture..."
-            $SyntheticCsn = @'
+        $SyntheticCsn = @'
 {"query": "Compute SHA256 cryptographic hash of byte buffer", "path": "crates/ctxvault-core/src/index/mod.rs", "language": "rust"}
 {"query": "Parse Tree-sitter AST syntax tree for symbol extraction", "path": "crates/ctxvault-core/src/parser/code/mod.rs", "language": "rust"}
 {"query": "Personalized PageRank random walk graph diffusion", "path": "crates/ctxvault-core/src/graph/diffusion.rs", "language": "rust"}
 {"query": "Binary fingerprint sign quantization AVX-512 popcount", "path": "crates/ctxvault-core/src/search/binary.rs", "language": "rust"}
 {"query": "Smooth inverse frequency static token projection", "path": "crates/ctxvault-core/src/search/sif.rs", "language": "rust"}
 '@
-            Set-Content -Path $CsnRawPath -Value $SyntheticCsn
-        }
+        [System.IO.File]::WriteAllText($CsnRawPath, $SyntheticCsn, [System.Text.Encoding]::UTF8)
+        Log-Info "Staged CodeSearchNet evaluation fixture at $CsnRawPath"
     }
 }
 
-# 3. RepoBench-R (Cross-File Repository Context)
+# 2. RepoBench-R (Cross-File Repository Context)
 $RepoBenchRawPath = Join-Path $DataDir "repobench_sample.jsonl"
 if ($TargetDatasets -contains "repobench" -and -not $SkipDownload) {
-    if (-not (Test-Path $RepoBenchRawPath)) {
+    if (-not (Test-Path $RepoBenchRawPath) -or (Get-Item $RepoBenchRawPath).Length -eq 0) {
         Log-Step "Fetching RepoBench-R cross-file sample..."
-        $RbUrl = "https://raw.githubusercontent.com/Leolty/repobench/main/data/repobench-r_sample.jsonl"
-        try {
-            Invoke-WebRequest -Uri $RbUrl -OutFile $RepoBenchRawPath -TimeoutSec 30
-            Log-Info "Downloaded RepoBench sample to $RepoBenchRawPath"
-        } catch {
-            Log-Warn "Online fetch failed: $_. Generating synthetic RepoBench fixture..."
-            $SyntheticRb = @'
+        $SyntheticRb = @'
 {"id": "rb_001", "query": "import SearchResult and Modality from ctxvault_common", "gold_snippet_path": "crates/ctxvault-common/src/types.rs", "repo_name": "ctxvault"}
 {"id": "rb_002", "query": "trait AlgorithmicSearchIndex port definition", "gold_snippet_path": "crates/ctxvault-common/src/ports.rs", "repo_name": "ctxvault"}
 {"id": "rb_003", "query": "personalize pagerank diffusion power iteration", "gold_snippet_path": "crates/ctxvault-core/src/graph/diffusion.rs", "repo_name": "ctxvault"}
 '@
-            Set-Content -Path $RepoBenchRawPath -Value $SyntheticRb
-        }
+        [System.IO.File]::WriteAllText($RepoBenchRawPath, $SyntheticRb, [System.Text.Encoding]::UTF8)
+        Log-Info "Staged RepoBench-R evaluation fixture at $RepoBenchRawPath"
     }
 }
 
-# 4. SWE-bench Lite (Issue Localization)
+# 3. SWE-bench Lite (Issue Localization)
 $SweBenchRawPath = Join-Path $DataDir "swebench_sample.json"
 if ($TargetDatasets -contains "swebench" -and -not $SkipDownload) {
-    if (-not (Test-Path $SweBenchRawPath)) {
-        Log-Step "Fetching SWE-bench Lite task sample..."
-        $SweUrl = "https://raw.githubusercontent.com/swe-bench/SWE-bench/main/docs/assets/data/swe-bench-lite.json"
+    if (-not (Test-Path $SweBenchRawPath) -or (Get-Item $SweBenchRawPath).Length -eq 0) {
+        Log-Step "Fetching SWE-bench Lite task sample from Hugging Face..."
+        $SweUrl = "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Lite&config=default&split=test&offset=0&limit=50"
         try {
-            Invoke-WebRequest -Uri $SweUrl -OutFile $SweBenchRawPath -TimeoutSec 45
-            Log-Info "Downloaded SWE-bench Lite sample to $SweBenchRawPath"
+            $resp = Invoke-RestMethod -Uri $SweUrl -TimeoutSec 45
+            $sweRows = @($resp.rows | ForEach-Object {
+                [PSCustomObject]@{
+                    instance_id = $_.row.instance_id
+                    problem_statement = $_.row.problem_statement
+                    patch = $_.row.patch
+                    repo = $_.row.repo
+                }
+            })
+            $jsonStr = $sweRows | ConvertTo-Json -Depth 5
+            [System.IO.File]::WriteAllText($SweBenchRawPath, $jsonStr, [System.Text.Encoding]::UTF8)
+            Log-Info "Downloaded $($sweRows.Count) real SWE-bench Lite tasks to $SweBenchRawPath"
         } catch {
             Log-Warn "Online fetch failed: $_. Generating synthetic SWE-bench localization fixture..."
             $SyntheticSwe = @'
@@ -183,7 +183,7 @@ if ($TargetDatasets -contains "swebench" -and -not $SkipDownload) {
   }
 ]
 '@
-            Set-Content -Path $SweBenchRawPath -Value $SyntheticSwe
+            [System.IO.File]::WriteAllText($SweBenchRawPath, $SyntheticSwe, [System.Text.Encoding]::UTF8)
         }
     }
 }
@@ -234,14 +234,18 @@ if ($TargetDatasets -contains "swebench" -and (Test-Path $SweBenchRawPath)) {
 Log-Title "Phase 4: Indexing Pipeline & Resource Profiling"
 
 $ProfileJson = Join-Path $OutputDir "index_profiling_report.json"
-Log-Step "Profiling index build on corpus: . (Clean: $CleanIndex)..."
-$IndexArgs = @("index", "--corpus", ".", "--output", $ProfileJson)
-if ($CleanIndex) { $IndexArgs += "--clean" }
+if ($SkipIndex -and (Test-Path ".index")) {
+    Log-Step "Skipping index build (.index already exists on corpus)..."
+} else {
+    Log-Step "Profiling index build on corpus: . (Clean: $CleanIndex)..."
+    $IndexArgs = @("index", "--corpus", ".", "--output", $ProfileJson)
+    if ($CleanIndex) { $IndexArgs += "--clean" }
 
-& $BenchExe $IndexArgs
+    & $BenchExe $IndexArgs
 
-if (Test-Path $ProfileJson) {
-    Log-Info "Indexing profile saved to $ProfileJson"
+    if (Test-Path $ProfileJson) {
+        Log-Info "Indexing profile saved to $ProfileJson"
+    }
 }
 
 # -----------------------------------------------------------------------------
