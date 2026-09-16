@@ -45,11 +45,11 @@
 param(
     [string]$WorkDir = ".\benchmarks\workspace",
     [string]$OutputDir = ".\benchmarks\publication_results",
-    [string]$Datasets = "all",
-    [string]$Modes = "bm25,binary,ppr,fast,semantic",
+    [string[]]$Datasets = @("codesearchnet", "repobench", "swebench"),
+    [string[]]$Modes = @("bm25", "binary", "ppr", "fast"),
     [int]$K = 10,
     [switch]$CleanIndex,
-    [switch]$ReleaseBuild = $true,
+    [bool]$ReleaseBuild = $false,
     [switch]$SkipDownload
 )
 
@@ -97,11 +97,20 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 # -----------------------------------------------------------------------------
 Log-Title "Phase 2: Benchmark Dataset Acquisition"
 
-$TargetDatasets = if ($Datasets -eq "all") {
-    @("codesearchnet", "repobench", "swebench")
-} else {
-    $Datasets.Split(",") | ForEach-Object { $_.Trim().ToLower() }
+$TargetDatasets = @()
+foreach ($d in $Datasets) {
+    if ($d -eq "all") {
+        $TargetDatasets += @("codesearchnet", "repobench", "swebench")
+    } else {
+        foreach ($sub in $d.Split(",")) {
+            $trimmed = $sub.Trim().ToLower()
+            if ($trimmed) { $TargetDatasets += $trimmed }
+        }
+    }
 }
+$TargetDatasets = $TargetDatasets | Select-Object -Unique
+
+$ModesString = ($Modes | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ }) -join ","
 
 # 1. CodeSearchNet (AdvTest sample for Go/Python)
 $CsnRawPath = Join-Path $DataDir "csn_sample.jsonl"
@@ -259,7 +268,7 @@ foreach ($key in $ConvertedDatasets.Keys) {
     & $BenchExe eval `
         --corpus $corpusPath `
         --queries $dsFile `
-        --modes $Modes `
+        --modes $ModesString `
         --k $K `
         --output $ReportMd
 
@@ -267,7 +276,7 @@ foreach ($key in $ConvertedDatasets.Keys) {
     & $BenchExe eval `
         --corpus $corpusPath `
         --queries $dsFile `
-        --modes $Modes `
+        --modes $ModesString `
         --k $K `
         --output $ReportJson
 
@@ -275,7 +284,7 @@ foreach ($key in $ConvertedDatasets.Keys) {
     & $BenchExe eval `
         --corpus $corpusPath `
         --queries $dsFile `
-        --modes $Modes `
+        --modes $ModesString `
         --k $K `
         --output $ReportCsv
 
@@ -283,7 +292,7 @@ foreach ($key in $ConvertedDatasets.Keys) {
     & $BenchExe eval `
         --corpus $corpusPath `
         --queries $dsFile `
-        --modes $Modes `
+        --modes $ModesString `
         --k $K `
         --output $ReportTex
 
