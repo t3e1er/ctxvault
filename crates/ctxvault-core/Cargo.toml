@@ -61,7 +61,7 @@ zstd = { workspace = true }
 blake3 = { workspace = true }
 
 # AST Code Parsing (Polyglot)
-tree-sitter = "0.25"
+tree-sitter = "0.27"
 tree-sitter-rust = "0.23"
 tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.23"
