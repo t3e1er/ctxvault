@@ -1,5 +1,7 @@
 //! Retrieval algorithm execution runners.
 
+pub mod sanitizer;
+
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -9,6 +11,7 @@ use ctxvault_core::engine::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::dataset::schema::BenchmarkQuery;
+use sanitizer::sanitize_lucene_query;
 
 /// Individual retrieval modes supported for benchmarking and ablation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -95,10 +98,13 @@ impl QueryRunner {
     ) -> ctxvault_common::Result<(Vec<SearchResult>, f64)> {
         let t_start = Instant::now();
 
+        let sanitized = sanitize_lucene_query(&query.query);
+        let search_text = if sanitized.is_empty() { query.query.clone() } else { sanitized };
+
         let results = match mode {
             RetrievalMode::Bm25 => {
                 let sq = SearchQuery {
-                    query: query.query.clone(),
+                    query: search_text,
                     mode: Some("bm25".to_string()),
                     limit: Some(options.limit),
                     modality: options.modality,
@@ -110,7 +116,7 @@ impl QueryRunner {
             RetrievalMode::Binary => {
                 // Isolated binary index search: project query and run Hamming scan
                 let binary = engine.binary_index();
-                let q_fp = binary.project_query(&query.query)?;
+                let q_fp = binary.project_query(&search_text)?;
                 let hits = binary.search_hamming(&q_fp, options.limit, options.modality)?;
                 hits.into_iter()
                     .map(|(path, dist)| {
@@ -122,7 +128,7 @@ impl QueryRunner {
             RetrievalMode::Ppr => {
                 // Isolated PPR diffusion: seed with BM25 then diffuse on Petgraph
                 let sq = SearchQuery {
-                    query: query.query.clone(),
+                    query: search_text,
                     mode: Some("bm25".to_string()),
                     limit: Some(options.limit * 2),
                     modality: options.modality,
@@ -146,7 +152,7 @@ impl QueryRunner {
             }
             RetrievalMode::Fast => {
                 let sq = SearchQuery {
-                    query: query.query.clone(),
+                    query: search_text,
                     mode: Some("fast".to_string()),
                     limit: Some(options.limit),
                     modality: options.modality,
@@ -157,7 +163,7 @@ impl QueryRunner {
             }
             RetrievalMode::Semantic => {
                 let sq = SearchQuery {
-                    query: query.query.clone(),
+                    query: search_text,
                     mode: Some("semantic".to_string()),
                     limit: Some(options.limit),
                     modality: options.modality,
@@ -168,7 +174,7 @@ impl QueryRunner {
             }
             RetrievalMode::Full => {
                 let sq = SearchQuery {
-                    query: query.query.clone(),
+                    query: search_text,
                     mode: Some("hybrid".to_string()),
                     limit: Some(options.limit),
                     modality: options.modality,

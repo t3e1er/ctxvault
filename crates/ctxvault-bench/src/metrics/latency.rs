@@ -42,6 +42,11 @@ impl LatencyTracker {
         self.samples_ms.push(ms);
     }
 
+    /// Merge another latency tracker's samples into this one.
+    pub fn merge(&mut self, other: LatencyTracker) {
+        self.samples_ms.extend(other.samples_ms);
+    }
+
     /// Calculate latency percentiles and summary statistics.
     pub fn compute(&self) -> LatencyStats {
         if self.samples_ms.is_empty() {

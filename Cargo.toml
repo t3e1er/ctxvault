@@ -37,6 +37,7 @@ async-trait = "0.1"
 futures-util = "0.3"
 crossbeam-channel = "0.5"
 sysinfo = "0.39"
+rayon = "1.12"
 
 
 # MCP protocol

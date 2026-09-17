@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\repobench\\DLYuanGod__TinyGPT-V",
+  "total_elapsed_ms": 4537.3223,
+  "reindex_stage_ms": 4270.9403,
+  "commit_stage_ms": 192.1939,
+  "reembed_stage_ms": null,
+  "documents_indexed": 248,
+  "chunks_embedded": null,
+  "graph_node_count": 1751,
+  "graph_edge_count": 5716,
+  "docs_per_second": 54.657787920421704,
+  "memory": {
+    "start_rss_bytes": 10813440,
+    "peak_rss_bytes": 41766912,
+    "end_rss_bytes": 41766912,
+    "delta_rss_bytes": 30953472
+  },
+  "disk": {
+    "source_file_count": 281,
+    "source_bytes": 11201751,
+    "meta_db_bytes": 6201344,
+    "tantivy_bytes": 707475,
+    "fingerprints_bytes": 419171,
+    "graph_bytes": 203308,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 7572338,
+    "expansion_ratio": 0.6759959224231997
+  }
+}

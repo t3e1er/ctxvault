@@ -77,7 +77,7 @@ impl IndexProfiler {
         let _ = fs::remove_file(tantivy_dir.join(".tantivy-meta.lock"));
         let _ = fs::remove_file(tantivy_dir.join(".tantivy-writer.lock"));
 
-        let config: CorpusConfig = if config_path.exists() {
+        let mut config: CorpusConfig = if config_path.exists() {
             let config_str = fs::read_to_string(&config_path).map_err(|e| {
                 ctxvault_common::Error::Config(format!("Failed to read corpus.toml: {e}"))
             })?;
@@ -87,6 +87,10 @@ impl IndexProfiler {
         } else {
             CorpusConfig { path: corpus_dir.to_string_lossy().to_string(), ..Default::default() }
         };
+
+        if !options.include_dense_embedding {
+            config.index_mode = ctxvault_common::config::IndexMode::Fast;
+        }
 
         let mut mem_tracker = MemoryTracker::start();
         let start_total = Instant::now();

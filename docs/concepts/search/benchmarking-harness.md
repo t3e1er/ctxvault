@@ -80,19 +80,57 @@ cargo run -p ctxvault-bench -- eval \
   --corpus /path/to/corpus \
   --queries ./benchmarks/queries.json \
   --modes bm25,binary,ppr,fast,full \
-  --k 5 \
-  --output ./benchmarks/retrieval_report.md
+  --k 10 \
+  --output-dir ./benchmarks/output \
+  --output-prefix my_repo
 ```
 
-### 3. Run Full Pipeline (Index Profiling + Retrieval Ablation)
+### 3. Check Corpus Index Health & Status
 ```bash
-cargo run -p ctxvault-bench -- all \
-  --corpus /path/to/corpus \
-  --queries ./benchmarks/queries.json \
-  --clean \
-  --output-dir ./benchmarks/output
+cargo run -p ctxvault-bench -- status --corpus /path/to/corpus
 ```
-Generates three reports:
-- `report.md`: GitHub-formatted comparison tables for humans and PR summaries.
-- `report.json`: Machine-readable JSON for automated CI regression tracking.
-- `report.csv`: Tabular CSV for data analysis in Python / Pandas / Jupyter.
+
+### 4. Aggregate Multi-Repo Sub-Reports into Master Leaderboard
+```bash
+cargo run -p ctxvault-bench -- aggregate \
+  --results-dir ./benchmarks/results \
+  --output-dir ./benchmarks/results
+```
+
+---
+
+## 5. Automated Multi-Repo & Multi-Dataset Pipeline
+
+The benchmark pipeline ([`benchmarks/run-benchmark-pipeline.ps1`](file:///c:/dev/ctx/ctxvault/benchmarks/run-benchmark-pipeline.ps1) and [`benchmarks/run-benchmark-pipeline.sh`](file:///c:/dev/ctx/ctxvault/benchmarks/run-benchmark-pipeline.sh)) automates end-to-end evaluation across external reference benchmarks (**SWE-bench Lite**, **CodeSearchNet**, **RepoBench-R**):
+
+```mermaid
+flowchart TD
+    subgraph PIPELINE["Automated Evaluation Pipeline"]
+        STAGE["Stage & Clone Repos\n(benchmarks/workspace/)"] --> CONVERT["Convert to ctxvault format\n(ctxv-bench import)"]
+        CONVERT --> REUSE{"Smart Index Check\n(ctxv-bench status)"}
+        REUSE -- "Healthy .index" --> EVAL["Parallel Retrieval Eval\n(Rayon Query Runner)"]
+        REUSE -- "Missing / -Force" --> INDEX["Stage A/C Indexing\n(Fast / Full Mode)"]
+        INDEX --> EVAL
+        EVAL --> SUB["Write Sub-Reports\n(*_report.csv & .md)"]
+        SUB --> AGG["Master Roll-Up\n(summary_report.md & .csv)"]
+    end
+```
+
+### Methodology & Execution Discipline
+1. **Workspace & Staging Isolation**:
+   - Cloned reference repositories and downloaded raw datasets live under `benchmarks/workspace/` (`.gitignore` excluded to preserve a lean repository).
+   - Results, publication artifacts, and profiles are committed to `benchmarks/results/`.
+2. **Deterministic Seeded Sampling**:
+   - Supports fast ablation runs via `-FastSample -SamplePerRepo 10 -Seed 42` ([`DeterministicSampler`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/dataset/sampler.rs)).
+3. **Smart Index Reuse**:
+   - Inspects `.index/meta.db` document counts via `ctxv-bench status`. Re-indexing is skipped if an index already exists and is healthy, unless `-CleanIndex` or `-Force` is supplied.
+4. **Fast Mode Auto-Decoupling**:
+   - When running pure algorithmic evaluation (`bm25,binary,ppr,fast`), `IndexMode::Fast` is automatically selected.
+   - Bypasses ONNX embedder allocation, DirectML tensor inference, and HNSW graph reconstruction from `vectors.bin` (reducing large repository evaluation times from 9+ minutes down to 1.28 seconds on `astropy`).
+5. **Stage A Parallelization & SQLite Batching**:
+   - Static SIF binary fingerprint projections ([`SifEngine`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/sif.rs)) execute in parallel across worker threads in Stage A ([`parse_file_record`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/engine.rs)).
+   - Ingestion writes are batched in memory and wrapped in explicit SQLite transactions ([`Store::begin_batch`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/persistence/mod.rs) / [`Store::commit_batch`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/persistence/mod.rs)), eliminating per-file disk sync bottlenecks.
+6. **2-Tier Reporting Hierarchy**:
+   - **Low-Level Sub-Reports**: Retained per dataset and repository under `benchmarks/results/{swe_bench,codesearchnet,repobench}/<repo>_report.{md,csv}` and `index_profile_<repo>.json`.
+   - **Top-Level Master Roll-Up**: Aggregated by [`ReportAggregator`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/report/aggregate.rs) into `benchmarks/results/summary_report.md` (Master Leaderboard + Mode Macro-Averages) and `benchmarks/results/summary_report.csv`.
+

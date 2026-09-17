@@ -180,6 +180,8 @@ fn test_end_to_end_indexing_and_retrieval_bench() {
         k: 5,
         modes: summaries,
         indexing: Some(idx_report),
+        benchmark: Some("unit_test".to_string()),
+        repository: Some("test_repo".to_string()),
     };
 
     // 3. Verify formatters
@@ -192,7 +194,8 @@ fn test_end_to_end_indexing_and_retrieval_bench() {
     assert!(json_str.contains("\"query_count\": 2"));
 
     let csv_str = CsvReporter::render_retrieval_csv(&suite_report);
-    assert!(csv_str.contains("mode,k,mean_recall"));
+    assert!(csv_str.contains("benchmark,repository,mode,k,mean_recall"));
+    assert!(csv_str.contains("unit_test,test_repo,bm25,5"));
     assert!(csv_str.contains("bm25,5"));
     assert!(csv_str.contains("binary,5"));
     assert!(csv_str.contains("fast,5"));

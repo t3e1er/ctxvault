@@ -140,6 +140,8 @@ mod tests {
             query_count: 100,
             indexing: None,
             modes: vec![summary],
+            benchmark: None,
+            repository: None,
         };
 
         let latex = LatexReporter::render(&report);

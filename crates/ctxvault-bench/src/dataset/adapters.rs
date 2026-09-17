@@ -52,6 +52,10 @@ struct CsnRecord {
     path: Option<String>,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    repo_name: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
 }
 
 /// Raw record for RepoBench-R.
@@ -62,7 +66,7 @@ struct RepoBenchRecord {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
-    context: Option<String>,
+    context: Option<serde_json::Value>,
     #[serde(default)]
     gold_snippet_path: Option<String>,
     #[serde(default)]
@@ -139,7 +143,11 @@ impl PublicBenchmarkAdapter {
                 id,
                 query: query_text,
                 expected: vec![judgment],
-                category: rec.language.or_else(|| Some("codesearchnet".to_string())),
+                category: rec
+                    .repo_name
+                    .or(rec.repo)
+                    .or(rec.language)
+                    .or_else(|| Some("codesearchnet".to_string())),
             });
         }
 
@@ -160,7 +168,16 @@ impl PublicBenchmarkAdapter {
             let rec: RepoBenchRecord = serde_json::from_str(trimmed)
                 .map_err(|e| AdapterError::Json { line: line_idx + 1, source: e })?;
 
-            let query_text = rec.query.or(rec.context).unwrap_or_default().trim().to_string();
+            let query_text = if let Some(q) = rec.query {
+                let trimmed_q = q.trim();
+                if !trimmed_q.is_empty() {
+                    trimmed_q.to_string()
+                } else {
+                    extract_repobench_context(rec.context)
+                }
+            } else {
+                extract_repobench_context(rec.context)
+            };
 
             if query_text.is_empty() {
                 continue;
@@ -251,6 +268,29 @@ impl PublicBenchmarkAdapter {
     }
 }
 
+fn extract_repobench_context(val: Option<serde_json::Value>) -> String {
+    match val {
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(serde_json::Value::Array(arr)) => arr
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                serde_json::Value::Object(obj) => obj
+                    .get("snippet")
+                    .and_then(|s| s.as_str())
+                    .or_else(|| obj.get("identifier").and_then(|i| i.as_str()))
+                    .map(ToString::to_string),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string(),
+        Some(other) => other.to_string().trim().to_string(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +319,19 @@ mod tests {
         assert_eq!(dataset.queries.len(), 1);
         assert_eq!(dataset.queries[0].id, "rb_01");
         assert_eq!(dataset.queries[0].expected[0].path, "src/utils/logger.ts");
+    }
+
+    #[test]
+    fn test_repobench_sequence_context() {
+        let jsonl = r#"
+{"id": "rb_02", "query": "import re", "context": [{"identifier": "registry", "path": "reg.py", "snippet": "class Registry:\n pass"}], "gold_snippet_path": "blip.py", "repo_name": "repo"}
+"#;
+        let dataset =
+            PublicBenchmarkAdapter::convert_repobench(jsonl.as_bytes()).expect("Conversion failed");
+        assert_eq!(dataset.queries.len(), 1);
+        assert_eq!(dataset.queries[0].id, "rb_02");
+        assert_eq!(dataset.queries[0].query, "import re");
+        assert_eq!(dataset.queries[0].expected[0].path, "blip.py");
     }
 
     #[test]

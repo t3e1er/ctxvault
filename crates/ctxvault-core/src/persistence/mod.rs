@@ -187,6 +187,33 @@ impl Store {
         Ok(())
     }
 
+    /// Begin an intermediate batch transaction boundary if not already within a transaction.
+    pub fn begin_batch(&self) -> Result<()> {
+        let conn = self.conn();
+        if conn.is_autocommit() {
+            conn.execute_batch("BEGIN IMMEDIATE;").map_err(|e| Error::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Commit the active intermediate batch transaction boundary if open.
+    pub fn commit_batch(&self) -> Result<()> {
+        let conn = self.conn();
+        if !conn.is_autocommit() {
+            conn.execute_batch("COMMIT;").map_err(|e| Error::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Roll back the active intermediate batch transaction boundary if open.
+    pub fn rollback_batch(&self) -> Result<()> {
+        let conn = self.conn();
+        if !conn.is_autocommit() {
+            conn.execute_batch("ROLLBACK;").map_err(|e| Error::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // File tracking
     // ------------------------------------------------------------------
@@ -288,10 +315,32 @@ impl Store {
     /// Insert chunks for a file within a transaction.
     pub fn insert_chunks(&self, file_path: &str, chunks: &[ChunkRecord]) -> Result<()> {
         let conn = self.conn();
-        let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
+        if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, start_line, end_line)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .map_err(|e| Error::Database(e.to_string()))?;
 
-        {
-            let mut stmt = tx
+                for chunk in chunks {
+                    let _ = stmt
+                        .execute(params![
+                            file_path,
+                            chunk.chunk_index as i64,
+                            chunk.start_byte as i64,
+                            chunk.end_byte as i64,
+                            chunk.start_line as i64,
+                            chunk.end_line as i64,
+                        ])
+                        .map_err(|e| Error::Database(e.to_string()))?;
+                }
+            }
+            tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        } else {
+            let mut stmt = conn
                 .prepare(
                     "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, start_line, end_line)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -311,8 +360,6 @@ impl Store {
                     .map_err(|e| Error::Database(e.to_string()))?;
             }
         }
-
-        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -683,15 +730,48 @@ impl Store {
         file_path: &str,
         symbols: &[ctxvault_common::types::CodeSymbol],
     ) -> Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(|e| Error::Database(e.to_string()))?;
+        let conn = self.conn();
+        if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
 
-        // Delete existing symbols for this file
-        tx.execute("DELETE FROM code_symbols WHERE file_path = ?1", params![file_path])
-            .map_err(|e| Error::Database(e.to_string()))?;
+            // Delete existing symbols for this file
+            tx.execute("DELETE FROM code_symbols WHERE file_path = ?1", params![file_path])
+                .map_err(|e| Error::Database(e.to_string()))?;
 
-        {
-            let mut stmt = tx
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    )
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                for sym in symbols {
+                    let type_str = serde_json::to_string(&sym.symbol_type)
+                        .unwrap_or_default()
+                        .trim_matches('"')
+                        .to_string();
+                    stmt.execute(params![
+                        sym.file_path,
+                        sym.name,
+                        sym.scope_path,
+                        type_str,
+                        sym.language,
+                        sym.signature,
+                        sym.docstring,
+                        sym.start_line as i64,
+                        sym.end_line as i64,
+                    ])
+                    .map_err(|e| Error::Database(e.to_string()))?;
+                }
+            }
+
+            tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        } else {
+            conn.execute("DELETE FROM code_symbols WHERE file_path = ?1", params![file_path])
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            let mut stmt = conn
                 .prepare(
                     "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, signature, docstring, start_line, end_line)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -717,8 +797,6 @@ impl Store {
                 .map_err(|e| Error::Database(e.to_string()))?;
             }
         }
-
-        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -1005,10 +1083,31 @@ impl Store {
         file_path: &str,
         refs: &[ctxvault_common::types::ExternalRef],
     ) -> Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(|e| Error::Database(e.to_string()))?;
-        {
-            let mut stmt = tx
+        let conn = self.conn();
+        if conn.is_autocommit() {
+            let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO external_refs (file_path, caller_scope_path, raw_target, kind, confidence)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                for r in refs {
+                    stmt.execute(params![
+                        file_path,
+                        r.caller_scope_path,
+                        r.raw_target,
+                        external_ref_kind_to_str(r.kind),
+                        resolution_confidence_to_str(r.confidence),
+                    ])
+                    .map_err(|e| Error::Database(e.to_string()))?;
+                }
+            }
+            tx.commit().map_err(|e| Error::Database(e.to_string()))?;
+        } else {
+            let mut stmt = conn
                 .prepare(
                     "INSERT INTO external_refs (file_path, caller_scope_path, raw_target, kind, confidence)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1026,7 +1125,6 @@ impl Store {
                 .map_err(|e| Error::Database(e.to_string()))?;
             }
         }
-        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
     }
 

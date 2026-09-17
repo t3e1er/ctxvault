@@ -5,9 +5,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
-use ctxvault_bench::dataset::{DatasetLoader, PublicBenchmarkAdapter, PublicBenchmarkFormat};
+use ctxvault_bench::dataset::{
+    DatasetLoader, DeterministicSampler, PublicBenchmarkAdapter, PublicBenchmarkFormat,
+};
 use ctxvault_bench::profile::{IndexProfiler, IndexProfilerOptions};
-use ctxvault_bench::report::{CsvReporter, JsonReporter, LatexReporter, MarkdownReporter};
+use ctxvault_bench::report::{
+    CsvReporter, JsonReporter, LatexReporter, MarkdownReporter, ReportAggregator,
+};
 use ctxvault_bench::runners::RetrievalMode;
 use ctxvault_bench::sweep::{BenchmarkSuite, BenchmarkSuiteReport};
 use ctxvault_common::config::CorpusConfig;
@@ -71,6 +75,42 @@ enum Commands {
         /// Optional output file path (.md, .json, or .csv)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Optional directory to write publication reports (.md and .csv by default)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Optional file prefix when used with --output-dir (e.g. "codesearchnet")
+        #[arg(long)]
+        output_prefix: Option<String>,
+
+        /// Optional category/repository filter to only evaluate queries for a specific repo
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Optional sample count to deterministically subsample queries
+        #[arg(long)]
+        sample: Option<usize>,
+
+        /// Seed for deterministic query sampling
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+
+        /// Optional benchmark name (e.g. "swe_bench", "codesearchnet", "repobench")
+        #[arg(long)]
+        benchmark_name: Option<String>,
+
+        /// Optional target repository name (e.g. "pallets__flask")
+        #[arg(long)]
+        repository: Option<String>,
+
+        /// Whether to also export raw JSON report in addition to .md and .csv
+        #[arg(long, default_value_t = false)]
+        include_json: bool,
+
+        /// Whether to also export LaTeX table in addition to .md and .csv
+        #[arg(long, default_value_t = false)]
+        include_tex: bool,
     },
 
     /// Run full benchmark: clean reindex with resource profiling followed by retrieval evaluation
@@ -117,6 +157,24 @@ enum Commands {
         /// Output path for the converted benchmark dataset JSON
         #[arg(short, long)]
         output: PathBuf,
+    },
+
+    /// Aggregate all sub-report CSVs into a unified master leaderboard (summary_report.md & summary_report.csv)
+    Aggregate {
+        /// Results directory containing sub-reports
+        #[arg(short, long)]
+        results_dir: PathBuf,
+
+        /// Optional output directory for summary reports (defaults to results_dir)
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
+    },
+
+    /// Check index health, document count, and validity of a corpus
+    Status {
+        /// Path to the corpus directory
+        #[arg(short, long)]
+        corpus: PathBuf,
     },
 }
 
@@ -165,26 +223,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        Commands::Eval { corpus, queries, modes, k, modality, output } => {
+        Commands::Eval {
+            corpus,
+            queries,
+            modes,
+            k,
+            modality,
+            output,
+            output_dir,
+            output_prefix,
+            category,
+            sample,
+            seed,
+            benchmark_name,
+            repository,
+            include_json,
+            include_tex,
+        } => {
             let modes_list = parse_modes(&modes)?;
             let mod_enum = parse_modality(&modality);
-            let dataset = DatasetLoader::load_from_file(&queries)?;
+            let mut dataset = DatasetLoader::load_from_file(&queries)?;
+
+            if let Some(ref cat) = category {
+                let cat_lower = cat.to_lowercase();
+                dataset.queries.retain(|q| {
+                    q.category
+                        .as_deref()
+                        .map(|c| {
+                            let c_lower = c.to_lowercase();
+                            c_lower.contains(&cat_lower) || cat_lower.contains(&c_lower)
+                        })
+                        .unwrap_or(false)
+                });
+                println!(
+                    "Filtered to {} queries matching category '{}'",
+                    dataset.queries.len(),
+                    cat
+                );
+            }
+
+            if let Some(n) = sample {
+                if n < dataset.queries.len() {
+                    let mut sampler = DeterministicSampler::new(seed);
+                    let sampled_indices = sampler.sample_indices(dataset.queries.len(), n);
+                    let mut sampled_queries = Vec::with_capacity(n);
+                    for idx in sampled_indices {
+                        sampled_queries.push(dataset.queries[idx].clone());
+                    }
+                    println!(
+                        "Deterministically sampled {} / {} queries using seed {}",
+                        sampled_queries.len(),
+                        dataset.queries.len(),
+                        seed
+                    );
+                    dataset.queries = sampled_queries;
+                }
+            }
 
             println!(
-                "Loaded {} queries. Evaluating modes: {:?} at K={}",
+                "Evaluating {} queries on corpus '{}'. Modes: {:?} at K={}",
                 dataset.queries.len(),
+                corpus.display(),
                 modes_list,
                 k
             );
 
             let index_dir = corpus.join(".index");
             let config_path = corpus.join("corpus.toml");
-            let config: CorpusConfig = if config_path.exists() {
+            let mut config: CorpusConfig = if config_path.exists() {
                 let s = fs::read_to_string(&config_path)?;
                 toml::from_str(&s)?
             } else {
                 CorpusConfig { path: corpus.to_string_lossy().to_string(), ..Default::default() }
             };
+
+            let needs_dense = modes_list
+                .iter()
+                .any(|m| matches!(m, RetrievalMode::Semantic | RetrievalMode::Full));
+            if !needs_dense {
+                config.index_mode = ctxvault_common::config::IndexMode::Fast;
+            }
 
             let engine = Engine::open(config, &index_dir)?;
             let summaries =
@@ -199,9 +317,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 k,
                 modes: summaries,
                 indexing: None,
+                benchmark: benchmark_name,
+                repository: repository.or(category),
             };
 
-            output_report(&report, output.as_deref())?;
+            if let Some(dir) = output_dir {
+                fs::create_dir_all(&dir)?;
+                let prefix = output_prefix.unwrap_or_else(|| "report".to_string());
+                let md_str = MarkdownReporter::render(&report);
+                let csv_str = CsvReporter::render_retrieval_csv(&report);
+
+                let md_path = dir.join(format!("{prefix}_report.md"));
+                let csv_path = dir.join(format!("{prefix}_report.csv"));
+
+                fs::write(&md_path, md_str)?;
+                fs::write(&csv_path, csv_str)?;
+
+                if include_json {
+                    let json_str = JsonReporter::to_string(&report)?;
+                    let json_path = dir.join(format!("{prefix}_report.json"));
+                    fs::write(&json_path, json_str)?;
+                }
+
+                if include_tex {
+                    let tex_str = LatexReporter::render(&report);
+                    let tex_path = dir.join(format!("{prefix}_table.tex"));
+                    fs::write(&tex_path, tex_str)?;
+                }
+
+                println!(
+                    "Generated publication reports (.md, .csv) for [{prefix}] in: {}",
+                    dir.display()
+                );
+            } else {
+                output_report(&report, output.as_deref())?;
+            }
         }
 
         Commands::All { corpus, queries, modes, k, clean, reembed, output_dir } => {
@@ -243,6 +393,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 k,
                 modes: summaries,
                 indexing: Some(idx_report),
+                benchmark: None,
+                repository: None,
             };
 
             if let Some(dir) = output_dir {
@@ -290,6 +442,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dataset.queries.len(),
                 output.display()
             );
+        }
+
+        Commands::Aggregate { results_dir, output_dir } => {
+            let out_dir = output_dir.unwrap_or_else(|| results_dir.clone());
+            fs::create_dir_all(&out_dir)?;
+
+            println!("Aggregating sub-reports from: {}", results_dir.display());
+            let (md_str, csv_str) = ReportAggregator::aggregate(&results_dir);
+
+            let md_path = out_dir.join("summary_report.md");
+            let csv_path = out_dir.join("summary_report.csv");
+
+            fs::write(&md_path, &md_str)?;
+            fs::write(&csv_path, &csv_str)?;
+
+            println!("Master aggregate reports successfully written to:");
+            println!("  - {}", md_path.display());
+            println!("  - {}", csv_path.display());
+        }
+        Commands::Status { corpus } => {
+            let index_dir = corpus.join(".index");
+            let db_path = index_dir.join("meta.db");
+            if !db_path.exists() {
+                eprintln!("Index database does not exist: {}", db_path.display());
+                std::process::exit(1);
+            }
+            let store = match ctxvault_core::persistence::Store::open(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to open meta.db: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let files = match store.list_files() {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to read files from meta.db: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if files.is_empty() {
+                eprintln!("Index contains 0 documents");
+                std::process::exit(1);
+            }
+            println!("Index healthy: {} documents indexed in {}", files.len(), corpus.display());
         }
     }
 

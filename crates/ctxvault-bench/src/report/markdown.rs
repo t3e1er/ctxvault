@@ -11,6 +11,12 @@ impl MarkdownReporter {
         let mut md = String::new();
 
         md.push_str("# ctxvault Retrieval & Indexing Benchmark Report\n\n");
+        if let Some(ref b) = report.benchmark {
+            md.push_str(&format!("- **Benchmark**: `{b}`\n"));
+        }
+        if let Some(ref r) = report.repository {
+            md.push_str(&format!("- **Repository**: `{r}`\n"));
+        }
         md.push_str(&format!(
             "- **Evaluated Queries**: {}\n- **Evaluation Cutoff**: K = {}\n\n",
             report.query_count, report.k

@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use ctxvault_common::ports::AlgorithmicSearchIndex;
 use ctxvault_common::types::{BinaryFingerprint, FingerprintRecord, Modality};
@@ -26,7 +27,7 @@ struct FingerprintsData {
 #[derive(Debug, Clone)]
 pub struct BinarySearchIndex {
     records: Vec<FingerprintRecord>,
-    sif: SifEngine,
+    sif: Arc<SifEngine>,
 }
 
 impl Default for BinarySearchIndex {
@@ -38,7 +39,7 @@ impl Default for BinarySearchIndex {
 impl BinarySearchIndex {
     /// Create an empty binary search index.
     pub fn new() -> Self {
-        Self { records: Vec::new(), sif: SifEngine::default() }
+        Self { records: Vec::new(), sif: Arc::new(SifEngine::default()) }
     }
 
     /// Load the binary index from a disk file.
@@ -54,7 +55,7 @@ impl BinarySearchIndex {
             )));
         }
 
-        Ok(Self { records: data.records, sif: SifEngine::default() })
+        Ok(Self { records: data.records, sif: Arc::new(SifEngine::default()) })
     }
 
     /// Persist the binary index to disk via postcard.
@@ -72,9 +73,19 @@ impl BinarySearchIndex {
         Ok(())
     }
 
+    /// Access the underlying shared SIF engine handle.
+    pub fn sif(&self) -> Arc<SifEngine> {
+        Arc::clone(&self.sif)
+    }
+
+    /// Access the underlying SIF engine reference for observation or direct projection.
+    pub fn sif_engine(&self) -> &SifEngine {
+        &self.sif
+    }
+
     /// Access the underlying SIF engine for observation or fine-tuning.
     pub fn sif_mut(&mut self) -> &mut SifEngine {
-        &mut self.sif
+        Arc::make_mut(&mut self.sif)
     }
 
     /// Get all indexed fingerprint records.

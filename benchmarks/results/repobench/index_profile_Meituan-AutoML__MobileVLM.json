@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\repobench\\Meituan-AutoML__MobileVLM",
+  "total_elapsed_ms": 904.9539,
+  "reindex_stage_ms": 794.9040000000001,
+  "commit_stage_ms": 22.3379,
+  "reembed_stage_ms": null,
+  "documents_indexed": 33,
+  "chunks_embedded": null,
+  "graph_node_count": 362,
+  "graph_edge_count": 625,
+  "docs_per_second": 36.46594594487078,
+  "memory": {
+    "start_rss_bytes": 10797056,
+    "peak_rss_bytes": 28880896,
+    "end_rss_bytes": 28880896,
+    "delta_rss_bytes": 18083840
+  },
+  "disk": {
+    "source_file_count": 39,
+    "source_bytes": 535628,
+    "meta_db_bytes": 692224,
+    "tantivy_bytes": 100518,
+    "fingerprints_bytes": 30029,
+    "graph_bytes": 28349,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 892160,
+    "expansion_ratio": 1.6656336113870074
+  }
+}

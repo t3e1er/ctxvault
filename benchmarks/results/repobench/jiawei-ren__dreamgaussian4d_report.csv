@@ -1,0 +1,5 @@
+benchmark,repository,mode,k,mean_recall,mean_precision,mean_mrr,mean_ndcg,mean_score_separation,latency_p50_ms,latency_p90_ms,latency_p95_ms,latency_p99_ms,latency_mean_ms,qps
+repobench,jiawei-ren/dreamgaussian4d,bm25,10,0.0000,0.0000,0.0000,0.0000,1.2838,53.342,53.342,53.342,53.342,53.342,18.7
+repobench,jiawei-ren/dreamgaussian4d,binary,10,0.0000,0.0000,0.0000,0.0000,1.0435,1.012,1.012,1.012,1.012,1.012,987.9
+repobench,jiawei-ren/dreamgaussian4d,ppr,10,0.0000,0.0000,0.0000,0.0000,4.4705,88.004,88.004,88.004,88.004,88.004,11.4
+repobench,jiawei-ren/dreamgaussian4d,fast,10,0.0000,0.0000,0.0000,0.0000,1.1947,90.141,90.141,90.141,90.141,90.141,11.1

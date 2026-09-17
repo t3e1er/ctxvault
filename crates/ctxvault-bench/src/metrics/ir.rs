@@ -56,25 +56,31 @@ impl IrEvaluator {
             };
         }
 
-        let grade_map: HashMap<&str, u8> =
-            judgments.iter().map(|j| (j.path.as_str(), j.grade)).collect();
+        let norm_judgments: Vec<(String, u8)> =
+            judgments.iter().map(|j| (normalize_path(&j.path), j.grade)).collect();
 
         let top_k: Vec<&SearchResult> = results.iter().take(k).collect();
         let mut hits = 0;
         let mut first_hit_rank: Option<usize> = None;
         let mut dcg = 0.0;
+        let mut matched_judgments = std::collections::HashSet::new();
 
         for (idx, res) in top_k.iter().enumerate() {
             let rank = idx + 1;
-            if let Some(&grade) = grade_map.get(res.path.as_str()) {
-                if grade > 0 {
-                    hits += 1;
-                    if first_hit_rank.is_none() {
-                        first_hit_rank = Some(rank);
+            let norm_res = normalize_path(&res.path);
+
+            for (j_idx, (expected_path, grade)) in norm_judgments.iter().enumerate() {
+                if path_matches(&norm_res, expected_path) && *grade > 0 {
+                    if matched_judgments.insert(j_idx) {
+                        hits += 1;
+                        if first_hit_rank.is_none() {
+                            first_hit_rank = Some(rank);
+                        }
+                        // Graded DCG: (2^rel - 1) / log2(rank + 1)
+                        let gain = 2.0f64.powi(*grade as i32) - 1.0;
+                        dcg += gain / (rank as f64 + 1.0).log2();
                     }
-                    // Graded DCG: (2^rel - 1) / log2(rank + 1)
-                    let gain = 2.0f64.powi(grade as i32) - 1.0;
-                    dcg += gain / (rank as f64 + 1.0).log2();
+                    break;
                 }
             }
         }
@@ -157,4 +163,29 @@ impl IrEvaluator {
 
         metrics
     }
+}
+
+/// Normalize path string by converting backslashes to forward slashes and trimming `./` / `/`.
+pub fn normalize_path(p: &str) -> String {
+    p.replace('\\', "/").trim_start_matches("./").trim_start_matches('/').to_string()
+}
+
+/// Check if a candidate path matches an expected path (exact match or directory-boundary suffix match).
+pub fn path_matches(candidate: &str, expected: &str) -> bool {
+    if candidate == expected {
+        return true;
+    }
+    if candidate.ends_with(expected) {
+        let prefix_len = candidate.len() - expected.len();
+        if prefix_len == 0 || candidate.as_bytes()[prefix_len - 1] == b'/' {
+            return true;
+        }
+    }
+    if expected.ends_with(candidate) {
+        let prefix_len = expected.len() - candidate.len();
+        if prefix_len == 0 || expected.as_bytes()[prefix_len - 1] == b'/' {
+            return true;
+        }
+    }
+    false
 }

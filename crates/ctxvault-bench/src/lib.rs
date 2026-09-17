@@ -13,8 +13,8 @@ pub mod runners;
 pub mod sweep;
 
 pub use dataset::{
-    AdapterError, BenchmarkDataset, BenchmarkQuery, DatasetLoader, PublicBenchmarkAdapter,
-    PublicBenchmarkFormat, RelevanceJudgment,
+    AdapterError, BenchmarkDataset, BenchmarkQuery, DatasetLoader, DeterministicSampler,
+    PublicBenchmarkAdapter, PublicBenchmarkFormat, RelevanceJudgment,
 };
 pub use metrics::{
     IrEvaluator, LatencyStats, LatencyTracker, QueryEvaluationMetrics, SignificanceEvaluator,
@@ -24,6 +24,9 @@ pub use profile::{
     DiskBreakdown, DiskProfiler, IndexProfiler, IndexProfilerOptions, IndexingProfileReport,
     MemoryMetrics, MemoryTracker,
 };
-pub use report::{CsvReporter, JsonReporter, LatexReporter, MarkdownReporter};
+pub use report::{
+    AggregateRow, CsvReporter, JsonReporter, LatexReporter, MarkdownReporter, ReportAggregator,
+};
+pub use runners::sanitizer;
 pub use runners::{QueryRunner, QueryRunnerOptions, RetrievalMode};
 pub use sweep::{BenchmarkSuite, BenchmarkSuiteReport, ModeEvaluationSummary};

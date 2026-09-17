@@ -10,6 +10,7 @@ use crate::metrics::ir::{IrEvaluator, QueryEvaluationMetrics};
 use crate::metrics::latency::{LatencyStats, LatencyTracker};
 use crate::profile::index_profiler::IndexingProfileReport;
 use crate::runners::{QueryRunner, QueryRunnerOptions, RetrievalMode};
+use rayon::prelude::*;
 
 /// Aggregated performance and retrieval metrics for an individual mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +61,12 @@ pub struct BenchmarkSuiteReport {
     pub modes: Vec<ModeEvaluationSummary>,
     /// Optional indexing profiling report if indexing was run.
     pub indexing: Option<IndexingProfileReport>,
+    /// Optional benchmark name (e.g. "swe_bench", "codesearchnet", "repobench").
+    #[serde(default)]
+    pub benchmark: Option<String>,
+    /// Optional target repository name (e.g. "pallets__flask").
+    #[serde(default)]
+    pub repository: Option<String>,
 }
 
 /// Benchmark suite evaluator.
@@ -79,21 +86,43 @@ impl BenchmarkSuite {
         let runner_opts = QueryRunnerOptions { limit: k.max(10), modality, decompose: false };
 
         for &mode in modes {
-            let mut latencies = LatencyTracker::new();
-            let mut query_metrics: Vec<(Option<String>, QueryEvaluationMetrics)> = Vec::new();
-
-            for query in &dataset.queries {
-                match QueryRunner::execute(engine, query, mode, &runner_opts) {
-                    Ok((results, ms)) => {
-                        latencies.record(ms);
-                        let m = IrEvaluator::evaluate(&results, &query.expected, k);
-                        query_metrics.push((query.category.clone(), m));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Query '{}' failed for mode {:?}: {}", query.query, mode, e);
-                    }
-                }
-            }
+            let (latencies, query_metrics) = dataset
+                .queries
+                .par_iter()
+                .fold(
+                    || {
+                        (
+                            LatencyTracker::new(),
+                            Vec::<(Option<String>, QueryEvaluationMetrics)>::new(),
+                        )
+                    },
+                    |(mut lat_acc, mut met_acc), query| {
+                        match QueryRunner::execute(engine, query, mode, &runner_opts) {
+                            Ok((results, ms)) => {
+                                lat_acc.record(ms);
+                                let m = IrEvaluator::evaluate(&results, &query.expected, k);
+                                met_acc.push((query.category.clone(), m));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Query '{}' failed for mode {:?}: {}",
+                                    query.query,
+                                    mode,
+                                    e
+                                );
+                            }
+                        }
+                        (lat_acc, met_acc)
+                    },
+                )
+                .reduce(
+                    || (LatencyTracker::new(), Vec::new()),
+                    |(mut lat1, mut met1), (lat2, met2)| {
+                        lat1.merge(lat2);
+                        met1.extend(met2);
+                        (lat1, met1)
+                    },
+                );
 
             let summary = Self::aggregate_mode_metrics(mode, k, query_metrics, latencies.compute());
             summaries.push(summary);
