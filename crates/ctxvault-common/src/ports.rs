@@ -781,10 +781,11 @@ pub trait EmbeddingProvider {
 pub struct SearchQuery {
     /// The raw query text.
     pub query: String,
-    /// Retrieval mode: `bm25`, `semantic`, `hybrid`, `graph`, or `explain`.
+    /// Retrieval mode: `bm25`, `semantic`, `hybrid`, `graph`, `explain`, or `fast`.
     ///
-    /// `None` selects the default (`hybrid`). Any unrecognized value is an error,
-    /// reproduced by the service.
+    /// `None` selects the default (`hybrid`). `fast` executes sub-minute CPU SIF +
+    /// 256-bit MRL binary Hamming scan + Query-Time PPR with zero ONNX neural inference.
+    /// Any unrecognized value is an error, reproduced by the service.
     pub mode: Option<String>,
     /// Maximum number of results to return. `None` defaults to 10.
     pub limit: Option<usize>,
@@ -806,10 +807,55 @@ pub struct SearchQuery {
     pub snippets: Option<usize>,
 }
 
+impl Default for SearchQuery {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            mode: None,
+            limit: None,
+            modality: Modality::Both,
+            depth: SearchDepth::default(),
+            graph_depth: None,
+            edge_types: None,
+            edge_class: None,
+            decompose: None,
+            snippets: None,
+        }
+    }
+}
+
+/// Port for high-throughput algorithmic semantic search and fingerprinting.
+pub trait AlgorithmicSearchIndex: Send + Sync {
+    /// Add or update binary fingerprints for extracted code symbols or doc chunks.
+    fn index_fingerprints(&mut self, records: &[crate::types::FingerprintRecord]) -> Result<()>;
+
+    /// Perform a high-speed linear SIMD Hamming scan across all registered fingerprints.
+    fn search_hamming(
+        &self,
+        query_bits: &crate::types::BinaryFingerprint,
+        limit: usize,
+        modality: crate::types::Modality,
+    ) -> Result<Vec<(String, u32)>>;
+
+    /// Project a text query into a 256-bit binary fingerprint via SIF.
+    fn project_query(&self, query: &str) -> Result<crate::types::BinaryFingerprint>;
+
+    /// Clear all registered fingerprints.
+    fn clear(&mut self);
+
+    /// Total number of indexed fingerprints.
+    fn len(&self) -> usize;
+
+    /// Whether the index is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Search service port: the search-mode dispatch + RRF fusion contract.
 ///
 /// This is the domain-facing contract for the retrieval dispatch that selects a
-/// mode (`bm25` | `semantic` | `hybrid` | `graph` | `explain`) and fuses signals
+/// mode (`bm25` | `semantic` | `hybrid` | `graph` | `explain` | `fast`) and fuses signals
 /// via RRF. Every signature speaks only [`SearchQuery`] and [`crate::types`]
 /// domain results ([`SearchResult`], [`SearchExplanation`]) — no backend type
 /// (`tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`) crosses this boundary,
@@ -822,7 +868,7 @@ pub struct SearchQuery {
 /// modes ([`SearchResult`]). Rather than fold the two into one type, the port
 /// exposes them as separate methods:
 ///
-/// - [`SearchService::search`] handles `bm25`, `semantic`, `hybrid`, and `graph`,
+/// - [`SearchService::search`] handles `bm25`, `semantic`, `hybrid`, `graph`, and `fast`,
 ///   returning `Vec<SearchResult>`.
 /// - [`SearchService::explain`] handles `explain`, returning
 ///   `Vec<SearchExplanation>`.
@@ -841,7 +887,7 @@ pub struct SearchQuery {
 /// keep consumers (the MCP layer) depending on the contract rather than on the
 /// core implementation's internals.
 pub trait SearchService {
-    /// Dispatch a `bm25` / `semantic` / `hybrid` / `graph` search, returning
+    /// Dispatch a `bm25` / `semantic` / `hybrid` / `graph` / `fast` search, returning
     /// ranked [`SearchResult`]s (before any detail/verbosity shaping).
     ///
     /// Returns an error if `query.mode` is `explain` (use

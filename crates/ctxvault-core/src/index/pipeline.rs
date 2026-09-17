@@ -34,7 +34,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
 
 use ctxvault_common::{
-    types::{Chunk, CodeSymbol, Document, Edge, ExternalRef, FileFormat},
+    types::{Chunk, CodeSymbol, Document, Edge, ExternalRef, FileFormat, FingerprintRecord},
     Error, Result,
 };
 
@@ -61,6 +61,8 @@ pub struct ParsedFileRecord {
     /// Unresolved call/import targets captured for later cross-corpus resolution
     /// (empty for markdown notes).
     pub external_refs: Vec<ExternalRef>,
+    /// Pre-projected 256-bit binary fingerprints for symbols and chunks.
+    pub fingerprints: Vec<FingerprintRecord>,
     /// Whether the file is a source code file.
     pub is_code: bool,
     /// Format of the file (native source or projected document).

@@ -2,7 +2,7 @@
 title: "RFC: State-of-the-Art Code Retrieval & High-Throughput Semantic Bridging"
 description: "Sub-second CPU semantic bridging and hybrid code search for 100K+ files via Static SIF projections, 256-bit MRL binary embeddings, AST pattern token injection, and Query-Time Personalized PageRank."
 category: "roadmap"
-status: "proposed"
+status: "implemented"
 tags: ["rfc", "search", "sota", "semantic", "sif", "binary-embeddings", "mrl", "pagerank", "graph-diffusion", "tantivy"]
 related:
   - "[[docs/index]]"
@@ -16,10 +16,18 @@ related:
 
 # RFC: State-of-the-Art Code Retrieval & High-Throughput Semantic Bridging
 
-**Status**: Proposed (Next Up / Active Milestone)  
+**Status**: Implemented / Delivered  
 **Scope**: `ctxvault-common`, `ctxvault-core`, `ctxvault-mcp`, `ctxvault-cli`  
 **Date**: September 2026  
 **Target Version**: `0.2.0`+  
+**Implementation**:
+- Port & Types: [`BinaryFingerprint`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/types.rs), [`FingerprintRecord`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/types.rs), [`AlgorithmicSearchIndex`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-common/src/ports.rs)
+- Syntactic Patterns: [`extract_semantic_tokens`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/code/patterns.rs)
+- SIF Projection & PCA: [`SifEngine`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/sif.rs)
+- Binary Index & SIMD Hamming: [`BinarySearchIndex`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/binary.rs)
+- HippoRAG Diffusion: [`personalized_pagerank`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/graph/diffusion.rs)
+- Fast Hybrid Engine: [`search_fast`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/mod.rs) & [`search_explain_fast`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/mod.rs)
+- MCP Interface: [`crates/ctxvault-mcp/src/tools/mod.rs`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs) (`mode="fast"`)
 **Related Documents**: [[docs/roadmap/coderoadmap]], [[docs/roadmap/RFC-algorithmic-semantic-bridging]], [[docs/roadmap/RFC-zero-copy-file-offsets-and-binary-vectors]], [[docs/concepts/search/hybrid-retrieval-theory]]
 
 ---

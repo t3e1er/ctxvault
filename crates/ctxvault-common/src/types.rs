@@ -199,6 +199,83 @@ pub struct CodeSymbol {
     pub end_line: usize,
 }
 
+/// A 256-bit Matryoshka binary fingerprint packed into four 64-bit words (32 bytes).
+///
+/// Quantized from the leading 256 dimensions of a continuous embedding or SIF projection
+/// using 1-bit sign thresholding (`bit_i = 1` if `v_i > 0.0` else `0`). Evaluated via
+/// single-cycle bitwise XOR and native CPU POPCOUNT (`count_ones()`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct BinaryFingerprint(pub [u64; 4]);
+
+impl BinaryFingerprint {
+    /// Quantize a 256-dimensional float vector into 256 bits using 1-bit sign thresholding.
+    #[inline]
+    pub fn from_f32_slice(v: &[f32; 256]) -> Self {
+        let mut bits = [0u64; 4];
+        for i in 0..256 {
+            if v[i] > 0.0 {
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        BinaryFingerprint(bits)
+    }
+
+    /// Exact Hamming distance using native CPU POPCOUNT.
+    ///
+    /// Evaluates bitwise XOR across four 64-bit words. LLVM automatically emits
+    /// hardware POPCNT instructions with zero unsafe code.
+    #[inline]
+    pub fn hamming_distance(&self, other: &Self) -> u32 {
+        let d0 = (self.0[0] ^ other.0[0]).count_ones();
+        let d1 = (self.0[1] ^ other.0[1]).count_ones();
+        let d2 = (self.0[2] ^ other.0[2]).count_ones();
+        let d3 = (self.0[3] ^ other.0[3]).count_ones();
+        d0 + d1 + d2 + d3
+    }
+
+    /// Normalized similarity score in `[0.0, 1.0]`.
+    #[inline]
+    pub fn similarity(&self, other: &Self) -> f32 {
+        1.0 - (self.hamming_distance(other) as f32 / 256.0)
+    }
+
+    /// Serialize fingerprint to 32 raw bytes (little-endian).
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for (i, word) in self.0.iter().enumerate() {
+            bytes[i * 8..(i + 1) * 8].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Deserialize fingerprint from 32 raw bytes (little-endian).
+    #[inline]
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        let mut bits = [0u64; 4];
+        for i in 0..4 {
+            let mut word_bytes = [0u8; 8];
+            word_bytes.copy_from_slice(&bytes[i * 8..(i + 1) * 8]);
+            bits[i] = u64::from_le_bytes(word_bytes);
+        }
+        BinaryFingerprint(bits)
+    }
+}
+
+/// An indexed 256-bit binary fingerprint record with entity identifier and modality.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FingerprintRecord {
+    /// Identifier (relative doc/code path or scoped symbol handle).
+    pub id: String,
+    /// 256-bit binary fingerprint.
+    pub fingerprint: BinaryFingerprint,
+    /// Entity modality (docs or code).
+    pub modality: Modality,
+}
+
+/// Alias for code symbol and document node identifiers.
+pub type SymbolId = String;
+
 /// Status of an indexing operation for a corpus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

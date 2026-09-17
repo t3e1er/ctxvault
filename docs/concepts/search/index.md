@@ -1,4 +1,4 @@
-﻿---
+---
 title: "Search & Multimodal Retrieval Hub"
 description: "Theory, mathematics, and implementation of ctxvault 4-modality hybrid retrieval and Reciprocal Rank Fusion."
 category: "search"
@@ -12,6 +12,8 @@ related:
   - "[[docs/concepts/search/embeddings-vector]]"
   - "[[docs/concepts/search/graph-traversal]]"
   - "[[docs/concepts/search/search-modes-modalities]]"
+  - "[[docs/concepts/search/benchmarking-harness]]"
+  - "[[docs/concepts/search/evaluation-methodology]]"
 ---
 
 # Search & Multimodal Retrieval Hub
@@ -49,3 +51,5 @@ Code and technical documentation are fundamentally heterogeneous. A pure dense v
 * **[[docs/concepts/search/embeddings-vector]]**: 768-dimensional Jina Code v2 ONNX embeddings with DirectML acceleration.
 * **[[docs/concepts/search/graph-traversal]]**: Petgraph and recursive SQLite CTEs for typed AST dependency paths.
 * **[[docs/concepts/search/search-modes-modalities]]**: Parameterizing `mode="hybrid"|"bm25"|"semantic"|"graph"|"explain"` and `modality="code"|"docs"|"both"`.
+* **[[docs/concepts/search/benchmarking-harness]]**: Architecture and usage of the dedicated `ctxvault-bench` workspace crate and CLI (`ctxv-bench`).
+* **[[docs/concepts/search/evaluation-methodology]]**: ArXiv-grade IR evaluation standards, public benchmarks (CodeSearchNet, RepoBench, SWE-bench), significance testing, and Turn-1 orientation metrics.

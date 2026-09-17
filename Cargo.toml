@@ -6,10 +6,11 @@ members = [
     "crates/ctxvault-cli",
     "crates/ctxvault-common",
     "crates/ctxvault-graphview",
+    "crates/ctxvault-bench",
 ]
 
 [workspace.package]
-version = "0.0.61"
+version = "0.0.70"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -36,6 +37,7 @@ async-trait = "0.1"
 futures-util = "0.3"
 crossbeam-channel = "0.5"
 sysinfo = "0.39"
+rayon = "1.12"
 
 
 # MCP protocol

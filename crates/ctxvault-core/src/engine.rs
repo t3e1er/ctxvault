@@ -17,7 +17,7 @@ use ctxvault_common::config::{ChunkingConfig, CorpusConfig, IndexMode};
 use ctxvault_common::ports::{GraphStore, MetadataCatalog};
 use ctxvault_common::types::{
     ChunkEmbedPolicy, ChunkRecord, Document, Edge, EntityKind, FileFormat, IndexingState,
-    IndexingStatus,
+    IndexingStatus, Modality,
 };
 use ctxvault_common::{Error, Result};
 
@@ -84,6 +84,7 @@ pub struct Engine {
     bm25: BM25Index,
     graph: KnowledgeGraph,
     vector_index: Option<VectorIndex>,
+    binary_index: crate::search::binary::BinarySearchIndex,
     embedder: RwLock<Option<Arc<Embedder>>>,
     index_dir: PathBuf,
     exclude_matcher: Arc<crate::index::exclude::ExcludeMatcher>,
@@ -124,6 +125,7 @@ impl Engine {
     /// - `bm25`: Opened Tantivy BM25 index.
     /// - `graph`: Loaded or fresh knowledge graph.
     /// - `vector_index`: Loaded or fresh vector index, or `None` in Fast Mode.
+    /// - `binary_index`: Loaded or fresh 256-bit binary fingerprints index.
     pub fn from_parts(
         config: CorpusConfig,
         index_dir: PathBuf,
@@ -131,6 +133,7 @@ impl Engine {
         bm25: BM25Index,
         graph: KnowledgeGraph,
         vector_index: Option<VectorIndex>,
+        binary_index: crate::search::binary::BinarySearchIndex,
     ) -> Self {
         let corpus_root = PathBuf::from(&config.path);
         let exclude_matcher =
@@ -143,6 +146,7 @@ impl Engine {
             bm25,
             graph,
             vector_index,
+            binary_index,
             embedder: RwLock::new(None), // Lazily initialized
             index_dir,
             exclude_matcher,
@@ -256,6 +260,37 @@ impl Engine {
                 self.bm25.remove_document(rel_path)?;
                 self.bm25.add_document(rel_path, Some(&file_title), &[], &res.chunks)?;
 
+                // 3b. Binary Fingerprints (Pillars 2 & 3)
+                {
+                    use ctxvault_common::types::FingerprintRecord;
+                    let mut fps = Vec::new();
+                    for sym in &res.symbols {
+                        let fp_text = format!(
+                            "{} {} {}",
+                            sym.name,
+                            sym.signature,
+                            sym.docstring.as_deref().unwrap_or("")
+                        );
+                        let fp = self.binary_index.project_query(&fp_text).unwrap_or_default();
+                        fps.push(FingerprintRecord {
+                            id: sym.scope_path.clone(),
+                            fingerprint: fp,
+                            modality: Modality::Code,
+                        });
+                    }
+                    for chunk in &res.chunks {
+                        let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                        fps.push(FingerprintRecord {
+                            id: format!("{rel_path}:chunk:{}", chunk.chunk_index),
+                            fingerprint: fp,
+                            modality: Modality::Code,
+                        });
+                    }
+                    if !fps.is_empty() {
+                        let _ = self.binary_index.index_fingerprints(&fps);
+                    }
+                }
+
                 // 4. Vector index: clear existing vectors for this doc
                 if let Some(ref mut vi) = self.vector_index {
                     vi.remove_document(rel_path);
@@ -355,6 +390,27 @@ impl Engine {
         // 5. Remove old document from BM25, add new.
         self.bm25.remove_document(rel_path)?;
         self.bm25.add_document(rel_path, doc.title.as_deref(), &doc.tags, &chunks)?;
+
+        // 5b. Binary Fingerprints (Pillars 2 & 3)
+        {
+            use ctxvault_common::types::FingerprintRecord;
+            let mut fps = Vec::new();
+            for chunk in &chunks {
+                let fp = self.binary_index.project_query(&chunk.text).unwrap_or_default();
+                fps.push(FingerprintRecord {
+                    id: if chunk.chunk_index == 0 {
+                        rel_path.to_string()
+                    } else {
+                        format!("{rel_path}:chunk:{}", chunk.chunk_index)
+                    },
+                    fingerprint: fp,
+                    modality: Modality::Docs,
+                });
+            }
+            if !fps.is_empty() {
+                let _ = self.binary_index.index_fingerprints(&fps);
+            }
+        }
 
         // 6. Vector index: clear existing vectors for this doc
         if let Some(ref mut vi) = self.vector_index {
@@ -622,6 +678,11 @@ impl Engine {
             self.bm25.remove_document(path)?;
             self.bm25.add_document(path, Some(&file_title), &[], &record.raw_chunks)?;
 
+            // 3b. Binary Fingerprints (Pillars 2 & 3)
+            if !record.fingerprints.is_empty() {
+                let _ = self.binary_index.index_fingerprints(&record.fingerprints);
+            }
+
             // 4. Vector index: clear existing vectors for this doc
             if let Some(ref mut vi) = self.vector_index {
                 vi.remove_document(path);
@@ -672,6 +733,11 @@ impl Engine {
             self.bm25.remove_document(path)?;
             self.bm25.add_document(path, doc.title.as_deref(), &doc.tags, &record.raw_chunks)?;
 
+            // 3b. Binary Fingerprints (Pillars 2 & 3)
+            if !record.fingerprints.is_empty() {
+                let _ = self.binary_index.index_fingerprints(&record.fingerprints);
+            }
+
             // 4. Vector index: clear existing vectors for this doc
             if let Some(ref mut vi) = self.vector_index {
                 vi.remove_document(path);
@@ -714,7 +780,9 @@ impl Engine {
     /// Returns a summary of what changed.
     pub fn delta_scan_paginated(&mut self, batch_size: usize) -> Result<DeltaScanResult> {
         let commit_batch_size = if batch_size == 0 || batch_size == 50 { 500 } else { batch_size };
-        let _ = self.ensure_embedder();
+        if self.config.index_mode != ctxvault_common::config::IndexMode::Fast {
+            let _ = self.ensure_embedder();
+        }
 
         // 1. List all files currently in persistence.
         let stored_files = self.store.list_files()?;
@@ -767,7 +835,12 @@ impl Engine {
         }
 
         self.ensure_vector_index();
-        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+        let embedding_pipeline =
+            if self.config.index_mode == ctxvault_common::config::IndexMode::Fast {
+                None
+            } else {
+                self.embedder_arc().map(AsyncEmbeddingPipeline::new)
+            };
 
         let tag_configs: Vec<_> = self
             .config
@@ -787,6 +860,7 @@ impl Engine {
             let chunk_tx_opt = embedding_pipeline.as_ref().and_then(|p| p.chunk_sender());
             let chunking_config = self.config.chunking.clone();
             let index_mode = self.config.index_mode;
+            let sif_engine = self.binary_index.sif();
 
             for file_entry in files_to_index {
                 let _ = work_tx.send(file_entry);
@@ -804,6 +878,7 @@ impl Engine {
                     let chunk_tx_clone = chunk_tx_opt.clone();
                     let chunking_ref = &chunking_config;
                     let classifier_clone = self.classifier.clone();
+                    let sif_clone = sif_engine.clone();
 
                     std::thread::Builder::new()
                         .name(format!("indexer-worker-{}", i))
@@ -827,6 +902,7 @@ impl Engine {
                                     &classifier_clone,
                                     chunking_ref,
                                     index_mode,
+                                    &sif_clone,
                                 ) {
                                     Ok(r) => r,
                                     Err(e) => {
@@ -857,6 +933,8 @@ impl Engine {
                 drop(chunk_tx_opt);
                 drop(ast_tx);
 
+                let _ = self.store.begin_batch();
+
                 while let Ok(record) = ast_rx.recv() {
                     let path = record.path.clone();
                     if let Err(e) = self.ingest_parsed_record(record, &tag_configs, &mut all_docs) {
@@ -879,13 +957,17 @@ impl Engine {
                                 let _ = pipeline.try_recv_completed(vi);
                             }
                         }
+                        let _ = self.store.commit_batch();
                         if let Err(e) = self.commit_intermediate() {
                             warn!("Intermediate commit failed: {}", e);
                         }
+                        let _ = self.store.begin_batch();
                         uncommitted_count = 0;
                         last_commit_time = Instant::now();
                     }
                 }
+
+                let _ = self.store.commit_batch();
             });
         }
 
@@ -922,8 +1004,16 @@ impl Engine {
         let mut deleted_files = Vec::new();
 
         self.ensure_vector_index();
-        let _ = self.ensure_embedder();
-        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+        if self.config.index_mode != ctxvault_common::config::IndexMode::Fast {
+            let _ = self.ensure_embedder();
+        }
+        let embedding_pipeline =
+            if self.config.index_mode == ctxvault_common::config::IndexMode::Fast {
+                None
+            } else {
+                self.embedder_arc().map(AsyncEmbeddingPipeline::new)
+            };
+        let sif_engine = self.binary_index.sif();
 
         let tag_configs: Vec<_> = self
             .config
@@ -982,6 +1072,7 @@ impl Engine {
                         &classifier,
                         &self.config.chunking,
                         self.config.index_mode,
+                        &sif_engine,
                     ) {
                         Ok(r) => r,
                         Err(e) => {
@@ -1067,7 +1158,9 @@ impl Engine {
 
         // Ensure embedder and vector index are available for indexing.
         self.ensure_vector_index();
-        let _ = self.ensure_embedder();
+        if self.config.index_mode != ctxvault_common::config::IndexMode::Fast {
+            let _ = self.ensure_embedder();
+        }
 
         let mut stored_map: HashMap<String, String> = HashMap::new();
 
@@ -1130,7 +1223,13 @@ impl Engine {
             .cloned()
             .collect();
         let mut all_docs: Vec<Document> = Vec::new();
-        let embedding_pipeline = self.embedder_arc().map(AsyncEmbeddingPipeline::new);
+        let embedding_pipeline =
+            if self.config.index_mode == ctxvault_common::config::IndexMode::Fast {
+                None
+            } else {
+                self.embedder_arc().map(AsyncEmbeddingPipeline::new)
+            };
+        let sif_engine = self.binary_index.sif();
 
         // Stage A: Setup parallel parsing channels and worker pool
         let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
@@ -1160,6 +1259,7 @@ impl Engine {
                 let stored_map_ref = &stored_map;
                 let chunking_ref = &chunking_config;
                 let classifier_clone = self.classifier.clone();
+                let sif_clone = sif_engine.clone();
 
                 std::thread::Builder::new()
                     .name(format!("indexer-worker-{}", i))
@@ -1191,6 +1291,7 @@ impl Engine {
                                 &classifier_clone,
                                 chunking_ref,
                                 index_mode,
+                                &sif_clone,
                             ) {
                                 Ok(r) => r,
                                 Err(e) => {
@@ -1223,6 +1324,8 @@ impl Engine {
             drop(chunk_tx_opt);
             drop(ast_tx);
 
+            let _ = self.store.begin_batch();
+
             // 2. Main Thread acts as Dedicated Stage C Storage & Persistence Sink
             while let Ok(record) = ast_rx.recv() {
                 let path = record.path.clone();
@@ -1249,9 +1352,11 @@ impl Engine {
                             let _ = pipeline.try_recv_completed(vi);
                         }
                     }
+                    let _ = self.store.commit_batch();
                     if let Err(e) = self.commit_intermediate() {
                         warn!("Intermediate commit failed: {}", e);
                     }
+                    let _ = self.store.begin_batch();
                     state.updated_at = now_unix();
                     let _ = self.store.update_indexing_state(&state);
                     debug!(
@@ -1265,6 +1370,8 @@ impl Engine {
                     last_commit_time = Instant::now();
                 }
             }
+
+            let _ = self.store.commit_batch();
         });
 
         // 3. Stage B Completion: drain remaining in-flight batches and join GPU threads
@@ -1303,6 +1410,7 @@ impl Engine {
     /// Commit pending lexical updates and checkpoints metadata without
     /// incurring quadratic graph re-serialization and edge table rewrites.
     pub fn commit_intermediate(&mut self) -> Result<()> {
+        let _ = self.store.commit_batch();
         self.bm25.commit()?;
         let _ = self.store.checkpoint();
         Ok(())
@@ -1310,6 +1418,7 @@ impl Engine {
 
     /// Commit all pending changes (Tantivy commit, SQLite edges sync, graph save, vector index save).
     pub fn commit(&mut self) -> Result<()> {
+        let _ = self.store.commit_batch();
         self.bm25.commit()?;
         let edge_records = self.graph.get_all_edge_records();
         self.store.clear_all_edges()?;
@@ -1322,6 +1431,10 @@ impl Engine {
                     warn!("Failed to save vector index: {}", e);
                 });
             }
+        }
+        // Save binary fingerprints index.
+        if !self.binary_index.is_empty() {
+            let _ = self.binary_index.save_to_path(&self.index_dir.join("fingerprints.bin"));
         }
         Ok(())
     }
@@ -1428,6 +1541,7 @@ impl Engine {
         crate::search_service::CoreSearchService::new(
             &self.bm25,
             self.vector_index.as_ref(),
+            Some(&self.binary_index),
             &self.graph,
             self.embedder_arc(),
             self.code_paths_set(),
@@ -1447,6 +1561,16 @@ impl Engine {
     /// Check whether the engine is running in Skeleton Mode.
     pub fn is_skeleton_mode(&self) -> bool {
         self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton
+    }
+
+    /// Access the in-memory binary search index.
+    pub fn binary_index(&self) -> &crate::search::binary::BinarySearchIndex {
+        &self.binary_index
+    }
+
+    /// Access the mutable in-memory binary search index.
+    pub fn binary_index_mut(&mut self) -> &mut crate::search::binary::BinarySearchIndex {
+        &mut self.binary_index
     }
 
     /// Update the index mode dynamically, allocating or dropping the vector index as appropriate.
@@ -1587,6 +1711,11 @@ impl Engine {
 
     /// Get a port-typed reference to the graph for traversal/queries.
     pub fn graph(&self) -> &impl GraphStore {
+        &self.graph
+    }
+
+    /// Get a concrete reference to the underlying KnowledgeGraph.
+    pub fn knowledge_graph(&self) -> &crate::graph::KnowledgeGraph {
         &self.graph
     }
 
@@ -1984,6 +2113,7 @@ fn parse_file_record(
     classifier: &crate::index::classifier::FileClassifier,
     chunking_config: &ChunkingConfig,
     index_mode: IndexMode,
+    sif: &crate::search::sif::SifEngine,
 ) -> Result<ParsedFileRecord> {
     let classification = classifier.classify(full_path, Some(bytes));
 
@@ -2050,6 +2180,32 @@ fn parse_file_record(
                 symbols = res.symbols;
             }
 
+            // Project 256-bit binary fingerprints in Stage A worker thread (Pillars 2 & 3)
+            use ctxvault_common::types::{FingerprintRecord, Modality};
+            let mut fingerprints = Vec::with_capacity(symbols.len() + raw_chunks.len());
+            for sym in &symbols {
+                let fp_text = format!(
+                    "{} {} {}",
+                    sym.name,
+                    sym.signature,
+                    sym.docstring.as_deref().unwrap_or("")
+                );
+                let fp = sif.project_to_fingerprint(&fp_text);
+                fingerprints.push(FingerprintRecord {
+                    id: sym.scope_path.clone(),
+                    fingerprint: fp,
+                    modality: Modality::Code,
+                });
+            }
+            for chunk in &raw_chunks {
+                let fp = sif.project_to_fingerprint(&chunk.text);
+                fingerprints.push(FingerprintRecord {
+                    id: format!("{rel_path}:chunk:{}", chunk.chunk_index),
+                    fingerprint: fp,
+                    modality: Modality::Code,
+                });
+            }
+
             Ok(ParsedFileRecord {
                 path: rel_path.to_string(),
                 hash,
@@ -2059,6 +2215,7 @@ fn parse_file_record(
                 doc_metadata: None,
                 graph_edges,
                 external_refs,
+                fingerprints,
                 is_code: true,
                 format: FileFormat::Source,
                 projection_text: None,
@@ -2100,6 +2257,22 @@ fn parse_file_record(
                 })
                 .collect();
 
+            // Project 256-bit binary fingerprints in Stage A worker thread (Pillars 2 & 3)
+            use ctxvault_common::types::{FingerprintRecord, Modality};
+            let mut fingerprints = Vec::with_capacity(chunks.len());
+            for chunk in &chunks {
+                let fp = sif.project_to_fingerprint(&chunk.text);
+                fingerprints.push(FingerprintRecord {
+                    id: if chunk.chunk_index == 0 {
+                        rel_path.to_string()
+                    } else {
+                        format!("{rel_path}:chunk:{}", chunk.chunk_index)
+                    },
+                    fingerprint: fp,
+                    modality: Modality::Docs,
+                });
+            }
+
             Ok(ParsedFileRecord {
                 path: rel_path.to_string(),
                 hash,
@@ -2109,6 +2282,7 @@ fn parse_file_record(
                 doc_metadata: Some(doc),
                 graph_edges: Vec::new(),
                 external_refs: Vec::new(),
+                fingerprints,
                 is_code: false,
                 format: FileFormat::Source,
                 projection_text: None,
@@ -2177,6 +2351,22 @@ fn parse_file_record(
                 });
             }
 
+            // Project 256-bit binary fingerprints in Stage A worker thread (Pillars 2 & 3)
+            use ctxvault_common::types::{FingerprintRecord, Modality};
+            let mut fingerprints = Vec::with_capacity(chunks.len());
+            for chunk in &chunks {
+                let fp = sif.project_to_fingerprint(&chunk.text);
+                fingerprints.push(FingerprintRecord {
+                    id: if chunk.chunk_index == 0 {
+                        rel_path.to_string()
+                    } else {
+                        format!("{rel_path}:chunk:{}", chunk.chunk_index)
+                    },
+                    fingerprint: fp,
+                    modality: Modality::Docs,
+                });
+            }
+
             Ok(ParsedFileRecord {
                 path: rel_path.to_string(),
                 hash,
@@ -2186,6 +2376,7 @@ fn parse_file_record(
                 doc_metadata: Some(doc),
                 graph_edges,
                 external_refs: Vec::new(),
+                fingerprints,
                 is_code: false,
                 format: fmt,
                 projection_text: Some(extracted.normalized_text),

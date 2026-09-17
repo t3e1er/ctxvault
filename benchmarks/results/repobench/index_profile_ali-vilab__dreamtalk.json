@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\repobench\\ali-vilab__dreamtalk",
+  "total_elapsed_ms": 669.5674,
+  "reindex_stage_ms": 583.6017,
+  "commit_stage_ms": 19.212500000000002,
+  "reembed_stage_ms": null,
+  "documents_indexed": 20,
+  "chunks_embedded": null,
+  "graph_node_count": 270,
+  "graph_edge_count": 479,
+  "docs_per_second": 29.870032501582365,
+  "memory": {
+    "start_rss_bytes": 10821632,
+    "peak_rss_bytes": 28045312,
+    "end_rss_bytes": 28045312,
+    "delta_rss_bytes": 17223680
+  },
+  "disk": {
+    "source_file_count": 128,
+    "source_bytes": 36134961,
+    "meta_db_bytes": 548864,
+    "tantivy_bytes": 78481,
+    "fingerprints_bytes": 26389,
+    "graph_bytes": 18726,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 713500,
+    "expansion_ratio": 0.019745420508410123
+  }
+}

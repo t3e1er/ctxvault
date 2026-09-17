@@ -45,4 +45,8 @@ scratch/
 
 # Local client credentials & profiles (generate via 'ctxvault client init')
 clients.json
-ctxv-clients.json
+ctxv-clients.json
+
+# Benchmark workspaces & cloned reference repos/datasets
+benchmarks/workspace/
+
