@@ -1,5 +1,5 @@
 benchmark,repository,mode,k,mean_recall,mean_precision,mean_mrr,mean_ndcg,mean_score_separation,latency_p50_ms,latency_p90_ms,latency_p95_ms,latency_p99_ms,latency_mean_ms,qps
-repobench,DLYuanGod/TinyGPT-V,bm25,10,1.0000,0.1000,0.1111,0.3010,1.1323,105.602,105.602,105.602,105.602,105.602,9.5
-repobench,DLYuanGod/TinyGPT-V,binary,10,0.0000,0.0000,0.0000,0.0000,1.0400,3.989,3.989,3.989,3.989,3.989,250.7
-repobench,DLYuanGod/TinyGPT-V,ppr,10,1.0000,0.1000,0.2000,0.3869,17.9076,97.820,97.820,97.820,97.820,97.820,10.2
-repobench,DLYuanGod/TinyGPT-V,fast,10,1.0000,0.1000,0.2500,0.4307,2.0489,123.826,123.826,123.826,123.826,123.826,8.1
+repobench,DLYuanGod/TinyGPT-V,bm25,10,1.0000,0.1000,0.1111,0.3010,1.1323,29.175,29.175,29.175,29.175,29.175,34.3
+repobench,DLYuanGod/TinyGPT-V,binary,10,0.0000,0.0000,0.0000,0.0000,1.0400,0.317,0.317,0.317,0.317,0.317,3153.6
+repobench,DLYuanGod/TinyGPT-V,ppr,10,1.0000,0.1000,0.2000,0.3869,17.9076,33.372,33.372,33.372,33.372,33.372,30.0
+repobench,DLYuanGod/TinyGPT-V,fast,10,1.0000,0.1000,0.2500,0.4307,2.0489,34.297,34.297,34.297,34.297,34.297,29.2

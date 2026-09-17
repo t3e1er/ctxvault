@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\codesearchnet\\tylertreat__BoomFilters",
+  "total_elapsed_ms": 615.9484,
+  "reindex_stage_ms": 513.8204,
+  "commit_stage_ms": 19.9284,
+  "reembed_stage_ms": null,
+  "documents_indexed": 17,
+  "chunks_embedded": null,
+  "graph_node_count": 172,
+  "graph_edge_count": 417,
+  "docs_per_second": 27.599714521541088,
+  "memory": {
+    "start_rss_bytes": 9121792,
+    "peak_rss_bytes": 19685376,
+    "end_rss_bytes": 19685376,
+    "delta_rss_bytes": 10563584
+  },
+  "disk": {
+    "source_file_count": 34,
+    "source_bytes": 187517,
+    "meta_db_bytes": 421888,
+    "tantivy_bytes": 69693,
+    "fingerprints_bytes": 23883,
+    "graph_bytes": 12279,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 568783,
+    "expansion_ratio": 3.033234320088312
+  }
+}

@@ -244,21 +244,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mod_enum = parse_modality(&modality);
             let mut dataset = DatasetLoader::load_from_file(&queries)?;
 
-            if let Some(ref cat) = category {
-                let cat_lower = cat.to_lowercase();
+            let target_repo = repository.as_ref().or(category.as_ref());
+            if let Some(repo_filter) = target_repo {
+                let rf_lower = repo_filter.to_lowercase();
                 dataset.queries.retain(|q| {
-                    q.category
+                    let matches_repo = q
+                        .repository
+                        .as_deref()
+                        .map(|r| {
+                            let r_lower = r.to_lowercase();
+                            r_lower.contains(&rf_lower) || rf_lower.contains(&r_lower)
+                        })
+                        .unwrap_or(false);
+
+                    let matches_cat = q
+                        .category
                         .as_deref()
                         .map(|c| {
                             let c_lower = c.to_lowercase();
-                            c_lower.contains(&cat_lower) || cat_lower.contains(&c_lower)
+                            c_lower.contains(&rf_lower) || rf_lower.contains(&c_lower)
                         })
-                        .unwrap_or(false)
+                        .unwrap_or(false);
+
+                    matches_repo || matches_cat
                 });
                 println!(
-                    "Filtered to {} queries matching category '{}'",
+                    "Filtered to {} queries matching repository/category '{}'",
                     dataset.queries.len(),
-                    cat
+                    repo_filter
                 );
             }
 

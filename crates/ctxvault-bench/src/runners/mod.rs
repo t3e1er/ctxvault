@@ -117,13 +117,26 @@ impl QueryRunner {
                 // Isolated binary index search: project query and run Hamming scan
                 let binary = engine.binary_index();
                 let q_fp = binary.project_query(&search_text)?;
-                let hits = binary.search_hamming(&q_fp, options.limit, options.modality)?;
-                hits.into_iter()
-                    .map(|(path, dist)| {
+                let hits = binary.search_hamming(&q_fp, options.limit * 5, options.modality)?;
+                let mut seen_paths = std::collections::HashSet::new();
+                let mut results = Vec::new();
+                for (id, dist) in hits {
+                    let mut clean_path = id.as_str();
+                    if let Some(idx) = clean_path.find(":chunk:") {
+                        clean_path = &clean_path[..idx];
+                    }
+                    if let Some(idx) = clean_path.find('#') {
+                        clean_path = &clean_path[..idx];
+                    }
+                    if seen_paths.insert(clean_path.to_string()) {
                         let sim = 1.0 - (dist as f32 / 256.0);
-                        SearchResult::new(path, sim as f64)
-                    })
-                    .collect()
+                        results.push(SearchResult::new(clean_path, sim as f64));
+                        if results.len() >= options.limit {
+                            break;
+                        }
+                    }
+                }
+                results
             }
             RetrievalMode::Ppr => {
                 // Isolated PPR diffusion: seed with BM25 then diffuse on Petgraph

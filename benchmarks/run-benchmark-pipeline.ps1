@@ -188,104 +188,130 @@ $TargetDatasets = $TargetDatasets | Select-Object -Unique
 $ModesString = ($Modes | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ }) -join ","
 $NeedsReembed = ($ModesString.Contains("semantic") -or $ModesString.Contains("full"))
 
+# Reference committed datasets in benchmarks/data/
+$CommittedSwe = Join-Path $BenchDir "data\swe_bench.json"
+$CommittedCsn = Join-Path $BenchDir "data\codesearchnet.json"
+$CommittedRb  = Join-Path $BenchDir "data\repobench.json"
+
 # 1. SWE-bench Lite (GitHub issue-to-patch localization tasks)
 $SweBenchRawPath = Join-Path $DataDirSwe "swebench_sample.json"
-if ($TargetDatasets -contains "swe_bench" -and -not $SkipDownload) {
-    if ($ForceDownload -or (-not (Test-Path $SweBenchRawPath)) -or (Get-Item $SweBenchRawPath).Length -lt 1000) {
-        Log-Step "Fetching full SWE-bench Lite tasks (300 tasks) from Hugging Face..."
-        try {
-            $sweAll = @()
-            $offsets = if ($SampleLimit -gt 0 -and $SampleLimit -le 100) { @(0) } else { @(0, 100, 200) }
-            foreach ($off in $offsets) {
-                $SweUrl = "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Lite&config=default&split=test&offset=$off&limit=100"
-                $resp = Invoke-RestMethod -Uri $SweUrl -TimeoutSec 45
-                $sweAll += $resp.rows | ForEach-Object {
-                    [PSCustomObject]@{
-                        instance_id = $_.row.instance_id
-                        problem_statement = $_.row.problem_statement
-                        patch = $_.row.patch
-                        repo = $_.row.repo
+$OutSwe = Join-Path $ConvDirSwe "swebench_converted.json"
+
+if ($TargetDatasets -contains "swe_bench") {
+    if ((Test-Path $CommittedSwe) -and (-not $ForceDownload)) {
+        Log-Info "Using committed SWE-bench reference queries from $CommittedSwe"
+        Copy-Item $CommittedSwe $OutSwe -Force
+    } elseif (-not $SkipDownload) {
+        if ($ForceDownload -or (-not (Test-Path $SweBenchRawPath)) -or (Get-Item $SweBenchRawPath).Length -lt 1000) {
+            Log-Step "Fetching full SWE-bench Lite tasks (300 tasks) from Hugging Face..."
+            try {
+                $sweAll = @()
+                $offsets = if ($SampleLimit -gt 0 -and $SampleLimit -le 100) { @(0) } else { @(0, 100, 200) }
+                foreach ($off in $offsets) {
+                    $SweUrl = "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Lite&config=default&split=test&offset=$off&limit=100"
+                    $resp = Invoke-RestMethod -Uri $SweUrl -TimeoutSec 45
+                    $sweAll += $resp.rows | ForEach-Object {
+                        [PSCustomObject]@{
+                            instance_id = $_.row.instance_id
+                            problem_statement = $_.row.problem_statement
+                            patch = $_.row.patch
+                            repo = $_.row.repo
+                        }
                     }
                 }
+                if ($SampleLimit -gt 0 -and $sweAll.Count -gt $SampleLimit) {
+                    $sweAll = $sweAll | Select-Object -First $SampleLimit
+                }
+                $jsonStr = $sweAll | ConvertTo-Json -Depth 5
+                [System.IO.File]::WriteAllText($SweBenchRawPath, $jsonStr, [System.Text.Encoding]::UTF8)
+                Log-Info "Downloaded $($sweAll.Count) real SWE-bench Lite tasks to $SweBenchRawPath"
+            } catch {
+                Log-Warn "SWE-bench online fetch failed: $_"
             }
-            if ($SampleLimit -gt 0 -and $sweAll.Count -gt $SampleLimit) {
-                $sweAll = $sweAll | Select-Object -First $SampleLimit
-            }
-            $jsonStr = $sweAll | ConvertTo-Json -Depth 5
-            [System.IO.File]::WriteAllText($SweBenchRawPath, $jsonStr, [System.Text.Encoding]::UTF8)
-            Log-Info "Downloaded $($sweAll.Count) real SWE-bench Lite tasks to $SweBenchRawPath"
-        } catch {
-            Log-Warn "SWE-bench online fetch failed: $_"
         }
     }
 }
 
 # 2. CodeSearchNet-AdvTest (Official GitHub 4,010 human annotations across Go, Python, Java, JS, etc.)
 $CsnRawPath = Join-Path $DataDirCsn "csn_sample.jsonl"
-if ($TargetDatasets -contains "codesearchnet" -and -not $SkipDownload) {
-    if ($ForceDownload -or (-not (Test-Path $CsnRawPath)) -or (Get-Item $CsnRawPath).Length -lt 1000) {
-        Log-Step "Fetching full CodeSearchNet human evaluation annotations from GitHub..."
-        try {
-            $annUrl = "https://raw.githubusercontent.com/github/CodeSearchNet/master/resources/annotationStore.csv"
-            $csvData = Invoke-RestMethod -Uri $annUrl -TimeoutSec 45
-            $csvRows = $csvData -split "`r?`n" | Select-Object -Skip 1 | Where-Object { $_.Trim() }
-            if ($SampleLimit -gt 0) { $csvRows = $csvRows | Select-Object -First $SampleLimit }
+$OutCsn = Join-Path $ConvDirCsn "csn_converted.json"
 
-            $csnLines = foreach ($line in $csvRows) {
-                $parts = $line -split ","
-                if ($parts.Count -ge 3) {
-                    $lang = $parts[0].Trim()
-                    $q = $parts[1].Trim()
-                    $url = $parts[2].Trim()
-                    $relPath = if ($url -match "blob/[^/]+/(.+)(#L\d+)?") { $Matches[1] } else { $url }
-                    $repoName = if ($url -match "github\.com/([^/]+/[^/]+)") { $Matches[1] } else { "" }
-                    @{ query = $q; path = $relPath; language = $lang; repo_name = $repoName } | ConvertTo-Json -Compress
+if ($TargetDatasets -contains "codesearchnet") {
+    if ((Test-Path $CommittedCsn) -and (-not $ForceDownload)) {
+        Log-Info "Using committed CodeSearchNet reference queries from $CommittedCsn"
+        Copy-Item $CommittedCsn $OutCsn -Force
+    } elseif (-not $SkipDownload) {
+        if ($ForceDownload -or (-not (Test-Path $CsnRawPath)) -or (Get-Item $CsnRawPath).Length -lt 1000) {
+            Log-Step "Fetching full CodeSearchNet human evaluation annotations from GitHub..."
+            try {
+                $annUrl = "https://raw.githubusercontent.com/github/CodeSearchNet/master/resources/annotationStore.csv"
+                $csvData = Invoke-RestMethod -Uri $annUrl -TimeoutSec 45
+                $csvRows = $csvData -split "`r?`n" | Select-Object -Skip 1 | Where-Object { $_.Trim() }
+                if ($SampleLimit -gt 0) { $csvRows = $csvRows | Select-Object -First $SampleLimit }
+
+                $csnLines = foreach ($line in $csvRows) {
+                    $parts = $line -split ","
+                    if ($parts.Count -ge 3) {
+                        $lang = $parts[0].Trim()
+                        $q = $parts[1].Trim()
+                        $url = $parts[2].Trim()
+                        $relPath = if ($url -match "blob/[^/]+/(.+)(#L\d+)?") { $Matches[1] } else { $url }
+                        $repoName = if ($url -match "github\.com/([^/]+/[^/]+)") { $Matches[1] } else { "" }
+                        @{ query = $q; path = $relPath; language = $lang; repo_name = $repoName } | ConvertTo-Json -Compress
+                    }
                 }
+                $csnContent = $csnLines -join "`n"
+                [System.IO.File]::WriteAllText($CsnRawPath, $csnContent, [System.Text.Encoding]::UTF8)
+                Log-Info "Downloaded $($csnLines.Count) real CodeSearchNet queries to $CsnRawPath"
+            } catch {
+                Log-Warn "CodeSearchNet online fetch failed: $_"
             }
-            $csnContent = $csnLines -join "`n"
-            [System.IO.File]::WriteAllText($CsnRawPath, $csnContent, [System.Text.Encoding]::UTF8)
-            Log-Info "Downloaded $($csnLines.Count) real CodeSearchNet queries to $CsnRawPath"
-        } catch {
-            Log-Warn "CodeSearchNet online fetch failed: $_"
         }
     }
 }
 
 # 3. RepoBench-R (Real Cross-File Repository Context from Hugging Face)
 $RepoBenchRawPath = Join-Path $DataDirRb "repobench_sample.jsonl"
-if ($TargetDatasets -contains "repobench" -and -not $SkipDownload) {
-    if ($ForceDownload -or (-not (Test-Path $RepoBenchRawPath)) -or (Get-Item $RepoBenchRawPath).Length -lt 1000) {
-        Log-Step "Fetching real RepoBench-R cross-file dataset from Hugging Face..."
-        try {
-            $targetCount = if ($SampleLimit -gt 0) { $SampleLimit } else { 300 }
-            $numPages = [math]::Max(1, [math]::Ceiling($targetCount / 100))
-            $offsets = 0..($numPages - 1) | ForEach-Object { $_ * 100 }
-            $rbLines = @()
-            foreach ($off in $offsets) {
-                $pageLimit = [math]::Min(100, $targetCount - $rbLines.Count)
-                if ($pageLimit -le 0) { break }
-                $RbUrl = "https://datasets-server.huggingface.co/rows?dataset=tianyang%2Frepobench_python_v1.1&config=default&split=cross_file_first&offset=$off&limit=$pageLimit"
-                $resp = Invoke-RestMethod -Uri $RbUrl -TimeoutSec 45
-                foreach ($row in $resp.rows) {
-                    $r = $row.row
-                    $q = ($r.import_statement + " " + $r.next_line).Trim()
-                    if (-not $q) { $q = $r.cropped_code }
-                    $rbLines += (@{
-                        id = "rb_" + $row.row_idx
-                        query = $q
-                        context = $r.context
-                        gold_snippet_path = $r.file_path
-                        repo_name = $r.repo_name
-                    } | ConvertTo-Json -Compress)
+$OutRb = Join-Path $ConvDirRb "repobench_converted.json"
+
+if ($TargetDatasets -contains "repobench") {
+    if ((Test-Path $CommittedRb) -and (-not $ForceDownload)) {
+        Log-Info "Using committed RepoBench reference queries from $CommittedRb"
+        Copy-Item $CommittedRb $OutRb -Force
+    } elseif (-not $SkipDownload) {
+        if ($ForceDownload -or (-not (Test-Path $RepoBenchRawPath)) -or (Get-Item $RepoBenchRawPath).Length -lt 1000) {
+            Log-Step "Fetching real RepoBench-R cross-file dataset from Hugging Face..."
+            try {
+                $targetCount = if ($SampleLimit -gt 0) { $SampleLimit } else { 300 }
+                $numPages = [math]::Max(1, [math]::Ceiling($targetCount / 100))
+                $offsets = 0..($numPages - 1) | ForEach-Object { $_ * 100 }
+                $rbLines = @()
+                foreach ($off in $offsets) {
+                    $pageLimit = [math]::Min(100, $targetCount - $rbLines.Count)
+                    if ($pageLimit -le 0) { break }
+                    $RbUrl = "https://datasets-server.huggingface.co/rows?dataset=tianyang%2Frepobench_python_v1.1&config=default&split=cross_file_first&offset=$off&limit=$pageLimit"
+                    $resp = Invoke-RestMethod -Uri $RbUrl -TimeoutSec 45
+                    foreach ($row in $resp.rows) {
+                        $r = $row.row
+                        $q = ($r.import_statement + " " + $r.next_line).Trim()
+                        if (-not $q) { $q = $r.cropped_code }
+                        $rbLines += (@{
+                            id = "rb_" + $row.row_idx
+                            query = $q
+                            context = $r.context
+                            gold_snippet_path = $r.file_path
+                            repo_name = $r.repo_name
+                        } | ConvertTo-Json -Compress)
+                        if ($SampleLimit -gt 0 -and $rbLines.Count -ge $SampleLimit) { break }
+                    }
                     if ($SampleLimit -gt 0 -and $rbLines.Count -ge $SampleLimit) { break }
                 }
-                if ($SampleLimit -gt 0 -and $rbLines.Count -ge $SampleLimit) { break }
+                $rbContent = $rbLines -join "`n"
+                [System.IO.File]::WriteAllText($RepoBenchRawPath, $rbContent, [System.Text.Encoding]::UTF8)
+                Log-Info "Downloaded $($rbLines.Count) real RepoBench-R instances to $RepoBenchRawPath"
+            } catch {
+                Log-Warn "RepoBench online fetch failed: $_"
             }
-            $rbContent = $rbLines -join "`n"
-            [System.IO.File]::WriteAllText($RepoBenchRawPath, $rbContent, [System.Text.Encoding]::UTF8)
-            Log-Info "Downloaded $($rbLines.Count) real RepoBench-R instances to $RepoBenchRawPath"
-        } catch {
-            Log-Warn "RepoBench online fetch failed: $_"
         }
     }
 }
@@ -298,35 +324,44 @@ Log-Title "Phase 3: Dataset Ingestion & Format Normalization"
 $ConvertedDatasets = @{}
 
 # 1. SWE-bench Lite
-$OutSwe = Join-Path $ConvDirSwe "swebench_converted.json"
-if ($TargetDatasets -contains "swe_bench" -and (Test-Path $SweBenchRawPath)) {
-    Log-Step "Importing SWE-bench Lite dataset -> $OutSwe..."
-    & $BenchExe import --input $SweBenchRawPath --format swebench --output $OutSwe
-    $ConvertedDatasets["swe_bench"] = @{
-        Path = (Resolve-Path $OutSwe).Path
-        Name = "SWE-bench Lite"
+if ($TargetDatasets -contains "swe_bench") {
+    if (-not (Test-Path $OutSwe) -and (Test-Path $SweBenchRawPath)) {
+        Log-Step "Importing SWE-bench Lite dataset -> $OutSwe..."
+        & $BenchExe import --input $SweBenchRawPath --format swebench --output $OutSwe
+    }
+    if (Test-Path $OutSwe) {
+        $ConvertedDatasets["swe_bench"] = @{
+            Path = (Resolve-Path $OutSwe).Path
+            Name = "SWE-bench Lite"
+        }
     }
 }
 
 # 2. CodeSearchNet
-$OutCsn = Join-Path $ConvDirCsn "csn_converted.json"
-if ($TargetDatasets -contains "codesearchnet" -and (Test-Path $CsnRawPath)) {
-    Log-Step "Importing CodeSearchNet dataset -> $OutCsn..."
-    & $BenchExe import --input $CsnRawPath --format codesearchnet --output $OutCsn
-    $ConvertedDatasets["codesearchnet"] = @{
-        Path = (Resolve-Path $OutCsn).Path
-        Name = "CodeSearchNet-AdvTest"
+if ($TargetDatasets -contains "codesearchnet") {
+    if (-not (Test-Path $OutCsn) -and (Test-Path $CsnRawPath)) {
+        Log-Step "Importing CodeSearchNet dataset -> $OutCsn..."
+        & $BenchExe import --input $CsnRawPath --format codesearchnet --output $OutCsn
+    }
+    if (Test-Path $OutCsn) {
+        $ConvertedDatasets["codesearchnet"] = @{
+            Path = (Resolve-Path $OutCsn).Path
+            Name = "CodeSearchNet-AdvTest"
+        }
     }
 }
 
 # 3. RepoBench-R
-$OutRb = Join-Path $ConvDirRb "repobench_converted.json"
-if ($TargetDatasets -contains "repobench" -and (Test-Path $RepoBenchRawPath)) {
-    Log-Step "Importing RepoBench-R dataset -> $OutRb..."
-    & $BenchExe import --input $RepoBenchRawPath --format repobench --output $OutRb
-    $ConvertedDatasets["repobench"] = @{
-        Path = (Resolve-Path $OutRb).Path
-        Name = "RepoBench-R Cross-File"
+if ($TargetDatasets -contains "repobench") {
+    if (-not (Test-Path $OutRb) -and (Test-Path $RepoBenchRawPath)) {
+        Log-Step "Importing RepoBench-R dataset -> $OutRb..."
+        & $BenchExe import --input $RepoBenchRawPath --format repobench --output $OutRb
+    }
+    if (Test-Path $OutRb) {
+        $ConvertedDatasets["repobench"] = @{
+            Path = (Resolve-Path $OutRb).Path
+            Name = "RepoBench-R Cross-File"
+        }
     }
 }
 
@@ -376,12 +411,11 @@ if ($TargetDatasets -contains "swe_bench") {
 }
 
 # 2. RepoBench-R Repositories
-if ($TargetDatasets -contains "repobench" -and (Test-Path $OutRb)) {
+if ($TargetDatasets -contains "repobench") {
     $rbReposToClone = @(
         "DLYuanGod/TinyGPT-V",
         "jianchang512/vocal-separate",
         "ali-vilab/dreamtalk",
-        "jiawei-ren/dreamgaussian4d",
         "Meituan-AutoML/MobileVLM"
     )
     foreach ($repo in $rbReposToClone) {
@@ -405,7 +439,12 @@ if ($TargetDatasets -contains "repobench" -and (Test-Path $OutRb)) {
 
 # 3. CodeSearchNet Repositories
 if ($TargetDatasets -contains "codesearchnet") {
-    $csnReposToClone = @("gin-gonic/gin", "pallets/flask")
+    $csnReposToClone = @(
+        "coreos/go-omaha",
+        "wcharczuk/go-chart",
+        "tylertreat/BoomFilters",
+        "grokify/gotilla"
+    )
     foreach ($repo in $csnReposToClone) {
         $repoFolder = $repo.Replace("/", "__")
         $localPath = Join-Path $RepoDirCsn $repoFolder

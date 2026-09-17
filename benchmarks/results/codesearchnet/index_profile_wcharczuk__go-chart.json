@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\codesearchnet\\wcharczuk__go-chart",
+  "total_elapsed_ms": 8948.821199999998,
+  "reindex_stage_ms": 8731.9274,
+  "commit_stage_ms": 67.2248,
+  "reembed_stage_ms": null,
+  "documents_indexed": 132,
+  "chunks_embedded": null,
+  "graph_node_count": 946,
+  "graph_edge_count": 2747,
+  "docs_per_second": 14.750546138970797,
+  "memory": {
+    "start_rss_bytes": 9076736,
+    "peak_rss_bytes": 24047616,
+    "end_rss_bytes": 24047616,
+    "delta_rss_bytes": 14970880
+  },
+  "disk": {
+    "source_file_count": 220,
+    "source_bytes": 4214588,
+    "meta_db_bytes": 1544192,
+    "tantivy_bytes": 194880,
+    "fingerprints_bytes": 123215,
+    "graph_bytes": 81025,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 1984352,
+    "expansion_ratio": 0.47082941440539383
+  }
+}
