@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\swe_bench\\astropy__astropy",
+  "total_elapsed_ms": 20595.089600000003,
+  "reindex_stage_ms": 18929.566000000003,
+  "commit_stage_ms": 1574.6019,
+  "reembed_stage_ms": null,
+  "documents_indexed": 682,
+  "chunks_embedded": null,
+  "graph_node_count": 12763,
+  "graph_edge_count": 34254,
+  "docs_per_second": 33.11468962970668,
+  "memory": {
+    "start_rss_bytes": 9121792,
+    "peak_rss_bytes": 194301952,
+    "end_rss_bytes": 194301952,
+    "delta_rss_bytes": 185180160
+  },
+  "disk": {
+    "source_file_count": 1997,
+    "source_bytes": 30245306,
+    "meta_db_bytes": 25436160,
+    "tantivy_bytes": 3268945,
+    "fingerprints_bytes": 1512247,
+    "graph_bytes": 1208364,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 45767276,
+    "expansion_ratio": 1.5132026106794885
+  }
+}

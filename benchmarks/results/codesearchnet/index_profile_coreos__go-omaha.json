@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\codesearchnet\\coreos__go-omaha",
+  "total_elapsed_ms": 573.5984,
+  "reindex_stage_ms": 464.0984,
+  "commit_stage_ms": 20.5864,
+  "reembed_stage_ms": null,
+  "documents_indexed": 23,
+  "chunks_embedded": null,
+  "graph_node_count": 198,
+  "graph_edge_count": 306,
+  "docs_per_second": 40.097740858412436,
+  "memory": {
+    "start_rss_bytes": 9125888,
+    "peak_rss_bytes": 19390464,
+    "end_rss_bytes": 19390464,
+    "delta_rss_bytes": 10264576
+  },
+  "disk": {
+    "source_file_count": 61,
+    "source_bytes": 196281,
+    "meta_db_bytes": 331776,
+    "tantivy_bytes": 51570,
+    "fingerprints_bytes": 19736,
+    "graph_bytes": 10108,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 454230,
+    "expansion_ratio": 2.3141822183502225
+  }
+}

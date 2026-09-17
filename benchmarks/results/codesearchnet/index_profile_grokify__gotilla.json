@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\codesearchnet\\grokify__gotilla",
+  "total_elapsed_ms": 4455.2786,
+  "reindex_stage_ms": 4140.7246000000005,
+  "commit_stage_ms": 240.84539999999998,
+  "reembed_stage_ms": null,
+  "documents_indexed": 390,
+  "chunks_embedded": null,
+  "graph_node_count": 3080,
+  "graph_edge_count": 6781,
+  "docs_per_second": 87.5366133107815,
+  "memory": {
+    "start_rss_bytes": 9113600,
+    "peak_rss_bytes": 37302272,
+    "end_rss_bytes": 37302272,
+    "delta_rss_bytes": 28188672
+  },
+  "disk": {
+    "source_file_count": 531,
+    "source_bytes": 3589749,
+    "meta_db_bytes": 7671808,
+    "tantivy_bytes": 1163298,
+    "fingerprints_bytes": 901601,
+    "graph_bytes": 233021,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 10010768,
+    "expansion_ratio": 2.7887097398731777
+  }
+}

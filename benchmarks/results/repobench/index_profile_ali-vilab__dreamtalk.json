@@ -1,30 +1,30 @@
 {
   "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\repobench\\ali-vilab__dreamtalk",
-  "total_elapsed_ms": 669.5674,
-  "reindex_stage_ms": 583.6017,
-  "commit_stage_ms": 19.212500000000002,
+  "total_elapsed_ms": 1061.5256,
+  "reindex_stage_ms": 948.5222,
+  "commit_stage_ms": 35.636599999999994,
   "reembed_stage_ms": null,
   "documents_indexed": 20,
   "chunks_embedded": null,
   "graph_node_count": 270,
   "graph_edge_count": 479,
-  "docs_per_second": 29.870032501582365,
+  "docs_per_second": 18.840807984282247,
   "memory": {
-    "start_rss_bytes": 10821632,
-    "peak_rss_bytes": 28045312,
-    "end_rss_bytes": 28045312,
-    "delta_rss_bytes": 17223680
+    "start_rss_bytes": 9101312,
+    "peak_rss_bytes": 20135936,
+    "end_rss_bytes": 20135936,
+    "delta_rss_bytes": 11034624
   },
   "disk": {
     "source_file_count": 128,
     "source_bytes": 36134961,
-    "meta_db_bytes": 548864,
-    "tantivy_bytes": 78481,
+    "meta_db_bytes": 552960,
+    "tantivy_bytes": 70679,
     "fingerprints_bytes": 26389,
-    "graph_bytes": 18726,
+    "graph_bytes": 18724,
     "vectors_bytes": 0,
     "projections_bytes": 0,
-    "total_index_bytes": 713500,
-    "expansion_ratio": 0.019745420508410123
+    "total_index_bytes": 701552,
+    "expansion_ratio": 0.019414771196238457
   }
 }

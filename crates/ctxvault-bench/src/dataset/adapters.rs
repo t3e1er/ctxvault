@@ -129,9 +129,14 @@ impl PublicBenchmarkAdapter {
                 continue;
             }
 
-            let path = rec.path.unwrap_or_else(|| "unknown".to_string());
+            let raw_path = rec.path.unwrap_or_else(|| "unknown".to_string());
+            let clean_path = if let Some(hash_pos) = raw_path.find('#') {
+                raw_path[..hash_pos].to_string()
+            } else {
+                raw_path
+            };
             let grade = 3; // exact symbol/file ground truth
-            let judgment = RelevanceJudgment::new(path, grade);
+            let judgment = RelevanceJudgment::new(clean_path, grade);
 
             let id = format!(
                 "csn_{}_{:05}",
@@ -139,15 +144,13 @@ impl PublicBenchmarkAdapter {
                 line_idx + 1
             );
 
+            let repo = rec.repo_name.or(rec.repo);
             queries.push(BenchmarkQuery {
                 id,
                 query: query_text,
                 expected: vec![judgment],
-                category: rec
-                    .repo_name
-                    .or(rec.repo)
-                    .or(rec.language)
-                    .or_else(|| Some("codesearchnet".to_string())),
+                repository: repo.clone(),
+                category: repo.or(rec.language).or_else(|| Some("codesearchnet".to_string())),
             });
         }
 
@@ -191,11 +194,13 @@ impl PublicBenchmarkAdapter {
 
             let id = rec.id.unwrap_or_else(|| format!("repobench_{:05}", line_idx + 1));
 
+            let repo = rec.repo_name;
             queries.push(BenchmarkQuery {
                 id,
                 query: query_text,
                 expected: vec![RelevanceJudgment::new(gold_path, 3)],
-                category: rec.repo_name.or_else(|| Some("repobench".to_string())),
+                repository: repo.clone(),
+                category: repo.or_else(|| Some("repobench".to_string())),
             });
         }
 
@@ -256,11 +261,13 @@ impl PublicBenchmarkAdapter {
 
             let id = rec.instance_id.unwrap_or_else(|| format!("swe_{:05}", idx + 1));
 
+            let repo = rec.repo;
             queries.push(BenchmarkQuery {
                 id,
                 query: query_text,
                 expected: judgments,
-                category: rec.repo.or_else(|| Some("swe-bench".to_string())),
+                repository: repo.clone(),
+                category: repo.or_else(|| Some("swe-bench".to_string())),
             });
         }
 

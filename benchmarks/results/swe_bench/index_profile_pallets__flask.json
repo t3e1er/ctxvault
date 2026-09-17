@@ -1,0 +1,30 @@
+{
+  "corpus_path": "C:\\dev\\ctx\\ctxvault\\benchmarks\\workspace\\repos\\swe_bench\\pallets__flask",
+  "total_elapsed_ms": 1825.128,
+  "reindex_stage_ms": 1546.9735999999998,
+  "commit_stage_ms": 54.7029,
+  "reembed_stage_ms": null,
+  "documents_indexed": 69,
+  "chunks_embedded": null,
+  "graph_node_count": 948,
+  "graph_edge_count": 1633,
+  "docs_per_second": 37.805567609504656,
+  "memory": {
+    "start_rss_bytes": 9125888,
+    "peak_rss_bytes": 23474176,
+    "end_rss_bytes": 23474176,
+    "delta_rss_bytes": 14348288
+  },
+  "disk": {
+    "source_file_count": 236,
+    "source_bytes": 1907329,
+    "meta_db_bytes": 1449984,
+    "tantivy_bytes": 220831,
+    "fingerprints_bytes": 88487,
+    "graph_bytes": 66461,
+    "vectors_bytes": 0,
+    "projections_bytes": 0,
+    "total_index_bytes": 1866803,
+    "expansion_ratio": 0.978752485806067
+  }
+}

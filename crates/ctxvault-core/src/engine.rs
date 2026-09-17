@@ -264,6 +264,13 @@ impl Engine {
                 {
                     use ctxvault_common::types::FingerprintRecord;
                     let mut fps = Vec::new();
+                    // File-level fingerprint for code
+                    let file_fp = self.binary_index.project_query(content).unwrap_or_default();
+                    fps.push(FingerprintRecord {
+                        id: rel_path.to_string(),
+                        fingerprint: file_fp,
+                        modality: Modality::Code,
+                    });
                     for sym in &res.symbols {
                         let fp_text = format!(
                             "{} {} {}",
@@ -273,7 +280,7 @@ impl Engine {
                         );
                         let fp = self.binary_index.project_query(&fp_text).unwrap_or_default();
                         fps.push(FingerprintRecord {
-                            id: sym.scope_path.clone(),
+                            id: format!("{}#{}", rel_path, sym.scope_path),
                             fingerprint: fp,
                             modality: Modality::Code,
                         });

@@ -15,6 +15,7 @@ struct RawQueryItem {
     query: String,
     expected: Option<Vec<Value>>,
     expected_relevant: Option<Vec<String>>,
+    repository: Option<String>,
     category: Option<String>,
 }
 
@@ -69,10 +70,12 @@ impl DatasetLoader {
                 }
             }
 
+            let repo = item.repository.clone().or_else(|| item.category.clone());
             queries.push(BenchmarkQuery {
                 id,
                 query: item.query,
                 expected: judgments,
+                repository: repo,
                 category: item.category,
             });
         }

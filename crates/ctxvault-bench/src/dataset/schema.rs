@@ -32,7 +32,11 @@ pub struct BenchmarkQuery {
     pub query: String,
     /// Expected relevant document/symbol paths or graded judgments.
     pub expected: Vec<RelevanceJudgment>,
+    /// Target repository identifier or slug (e.g. "pallets/flask", "astropy/astropy").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     /// Optional category (e.g. "exact_symbol", "error_handling", "concept_synonym", "cross_modal").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
 }
 
@@ -45,7 +49,19 @@ impl BenchmarkQuery {
         category: Option<String>,
     ) -> Self {
         let expected = paths.into_iter().map(|p| RelevanceJudgment::new(p, 1)).collect();
-        Self { id: id.into(), query: query.into(), expected, category }
+        let cat = category;
+        Self {
+            id: id.into(),
+            query: query.into(),
+            expected,
+            repository: cat.clone(),
+            category: cat,
+        }
+    }
+
+    /// Return the target repository, falling back to category if repository is unset.
+    pub fn target_repository(&self) -> Option<&str> {
+        self.repository.as_deref().or(self.category.as_deref())
     }
 
     /// Map expected paths to their grades for O(1) lookup.

@@ -165,9 +165,17 @@ impl IrEvaluator {
     }
 }
 
-/// Normalize path string by converting backslashes to forward slashes and trimming `./` / `/`.
+/// Normalize path string by converting backslashes to forward slashes, stripping chunk suffixes (`:chunk:N`),
+/// line anchors (`#L...`), and trimming `./` / `/`.
 pub fn normalize_path(p: &str) -> String {
-    p.replace('\\', "/").trim_start_matches("./").trim_start_matches('/').to_string()
+    let mut s = p.replace('\\', "/");
+    if let Some(hash_pos) = s.find('#') {
+        s.truncate(hash_pos);
+    }
+    if let Some(chunk_pos) = s.find(":chunk:") {
+        s.truncate(chunk_pos);
+    }
+    s.trim_start_matches("./").trim_start_matches('/').to_string()
 }
 
 /// Check if a candidate path matches an expected path (exact match or directory-boundary suffix match).

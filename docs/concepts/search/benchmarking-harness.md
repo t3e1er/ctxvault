@@ -130,7 +130,11 @@ flowchart TD
 5. **Stage A Parallelization & SQLite Batching**:
    - Static SIF binary fingerprint projections ([`SifEngine`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/search/sif.rs)) execute in parallel across worker threads in Stage A ([`parse_file_record`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/engine.rs)).
    - Ingestion writes are batched in memory and wrapped in explicit SQLite transactions ([`Store::begin_batch`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/persistence/mod.rs) / [`Store::commit_batch`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/persistence/mod.rs)), eliminating per-file disk sync bottlenecks.
-6. **2-Tier Reporting Hierarchy**:
+6. **Standard Manifest & Committed Fixtures**:
+   - The declarative benchmark manifest ([`benchmarks/manifest.toml`](file:///c:/dev/ctx/ctxvault/benchmarks/manifest.toml)) maps each benchmark suite to target repositories and curated, version-controlled reference fixtures under `benchmarks/data/` (`swe_bench.json`, `codesearchnet.json`, `repobench.json`).
+   - Standardized query schema ([`BenchmarkQuery`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/dataset/schema.rs)) incorporates an explicit `repository` attribute for unambiguous per-repository partitioning and eliminates volatile runtime web dependencies.
+7. **2-Tier Reporting Hierarchy**:
    - **Low-Level Sub-Reports**: Retained per dataset and repository under `benchmarks/results/{swe_bench,codesearchnet,repobench}/<repo>_report.{md,csv}` and `index_profile_<repo>.json`.
    - **Top-Level Master Roll-Up**: Aggregated by [`ReportAggregator`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-bench/src/report/aggregate.rs) into `benchmarks/results/summary_report.md` (Master Leaderboard + Mode Macro-Averages) and `benchmarks/results/summary_report.csv`.
+
 
