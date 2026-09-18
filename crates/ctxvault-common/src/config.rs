@@ -125,6 +125,8 @@ pub fn default_exclude_patterns() -> Vec<String> {
         ".hg".to_string(),
         ".index/".to_string(),
         ".fastembed_cache/".to_string(),
+        ".github/".to_string(),
+        ".circleci/".to_string(),
         // Dependencies
         "node_modules/".to_string(),
         "vendor/".to_string(),

@@ -192,6 +192,22 @@ impl SifEngine {
                 sum[d] += weight * vec[d];
             }
             total_weight += weight;
+
+            // Incorporate sub-tokens from camelCase and snake_case identifiers
+            let sub_tokens = crate::parser::code::patterns::split_identifier(word);
+            if sub_tokens.len() > 1 {
+                for sub in sub_tokens {
+                    let sub_lower = sub.to_lowercase();
+                    if sub_lower != lower {
+                        let sub_weight = self.token_sif_weight(&sub_lower);
+                        let sub_vec = self.token_vector(&sub_lower);
+                        for d in 0..SIF_DIMENSIONS {
+                            sum[d] += sub_weight * sub_vec[d];
+                        }
+                        total_weight += sub_weight;
+                    }
+                }
+            }
         }
 
         if total_weight > 0.0 {

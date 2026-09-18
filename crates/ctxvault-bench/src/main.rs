@@ -241,7 +241,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             include_tex,
         } => {
             let modes_list = parse_modes(&modes)?;
-            let mod_enum = parse_modality(&modality);
+            let mut mod_enum = parse_modality(&modality);
+            if modality == "both" {
+                if let Some(ref bname) = benchmark_name {
+                    let b_lower = bname.to_lowercase();
+                    if b_lower.contains("code")
+                        || b_lower.contains("repo")
+                        || b_lower.contains("swe")
+                    {
+                        mod_enum = Modality::Code;
+                    }
+                }
+            }
             let mut dataset = DatasetLoader::load_from_file(&queries)?;
 
             let target_repo = repository.as_ref().or(category.as_ref());

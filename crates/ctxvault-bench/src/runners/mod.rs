@@ -104,46 +104,46 @@ impl QueryRunner {
         let results = match mode {
             RetrievalMode::Bm25 => {
                 let sq = SearchQuery {
-                    query: search_text,
+                    query: search_text.clone(),
                     mode: Some("bm25".to_string()),
-                    limit: Some(options.limit),
+                    limit: Some(options.limit * 5),
                     modality: options.modality,
                     decompose: Some(options.decompose),
                     ..Default::default()
                 };
-                engine.search_service().search(&sq)?
+                let raw_hits = engine.search_service().search(&sq)?;
+                deduplicate_results(
+                    raw_hits.into_iter().map(|r| (r.path, r.score)),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
             RetrievalMode::Binary => {
-                // Isolated binary index search: project query and run Hamming scan
+                // Isolated binary index search: project query and run Hamming scan across candidate pool
                 let binary = engine.binary_index();
                 let q_fp = binary.project_query(&search_text)?;
-                let hits = binary.search_hamming(&q_fp, options.limit * 5, options.modality)?;
-                let mut seen_paths = std::collections::HashSet::new();
-                let mut results = Vec::new();
-                for (id, dist) in hits {
-                    let mut clean_path = id.as_str();
-                    if let Some(idx) = clean_path.find(":chunk:") {
-                        clean_path = &clean_path[..idx];
-                    }
-                    if let Some(idx) = clean_path.find('#') {
-                        clean_path = &clean_path[..idx];
-                    }
-                    if seen_paths.insert(clean_path.to_string()) {
+                let hits = binary.search_hamming(
+                    &q_fp,
+                    (options.limit * 50).max(500),
+                    options.modality,
+                )?;
+                deduplicate_results(
+                    hits.into_iter().map(|(id, dist)| {
                         let sim = 1.0 - (dist as f32 / 256.0);
-                        results.push(SearchResult::new(clean_path, sim as f64));
-                        if results.len() >= options.limit {
-                            break;
-                        }
-                    }
-                }
-                results
+                        (id, sim as f64)
+                    }),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
             RetrievalMode::Ppr => {
                 // Isolated PPR diffusion: seed with BM25 then diffuse on Petgraph
                 let sq = SearchQuery {
-                    query: search_text,
+                    query: search_text.clone(),
                     mode: Some("bm25".to_string()),
-                    limit: Some(options.limit * 2),
+                    limit: Some(options.limit * 5),
                     modality: options.modality,
                     ..Default::default()
                 };
@@ -157,48 +157,161 @@ impl QueryRunner {
                     ctxvault_core::graph::diffusion::PPR_DEFAULT_ITERATIONS,
                     None,
                 );
-                ppr_scores
-                    .into_iter()
-                    .take(options.limit)
-                    .map(|p| SearchResult::new(p.path, p.score))
-                    .collect()
+                deduplicate_results(
+                    ppr_scores.into_iter().map(|p| (p.path, p.score)),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
             RetrievalMode::Fast => {
                 let sq = SearchQuery {
-                    query: search_text,
+                    query: search_text.clone(),
                     mode: Some("fast".to_string()),
-                    limit: Some(options.limit),
+                    limit: Some(options.limit * 3),
                     modality: options.modality,
                     decompose: Some(options.decompose),
                     ..Default::default()
                 };
-                engine.search_service().search(&sq)?
+                let raw_hits = engine.search_service().search(&sq)?;
+                deduplicate_results(
+                    raw_hits.into_iter().map(|r| (r.path, r.score)),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
             RetrievalMode::Semantic => {
                 let sq = SearchQuery {
-                    query: search_text,
+                    query: search_text.clone(),
                     mode: Some("semantic".to_string()),
-                    limit: Some(options.limit),
+                    limit: Some(options.limit * 3),
                     modality: options.modality,
                     decompose: Some(options.decompose),
                     ..Default::default()
                 };
-                engine.search_service().search(&sq)?
+                let raw_hits = engine.search_service().search(&sq)?;
+                deduplicate_results(
+                    raw_hits.into_iter().map(|r| (r.path, r.score)),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
             RetrievalMode::Full => {
                 let sq = SearchQuery {
-                    query: search_text,
+                    query: search_text.clone(),
                     mode: Some("hybrid".to_string()),
-                    limit: Some(options.limit),
+                    limit: Some(options.limit * 3),
                     modality: options.modality,
                     decompose: Some(options.decompose),
                     ..Default::default()
                 };
-                engine.search_service().search(&sq)?
+                let raw_hits = engine.search_service().search(&sq)?;
+                deduplicate_results(
+                    raw_hits.into_iter().map(|r| (r.path, r.score)),
+                    options.limit,
+                    options.modality,
+                    &search_text,
+                )
             }
         };
 
         let elapsed_ms = t_start.elapsed().as_secs_f64() * 1000.0;
         Ok((results, elapsed_ms))
     }
+}
+
+fn clean_path(raw: &str) -> &str {
+    let mut p = raw;
+    if let Some(idx) = p.find(":chunk:") {
+        p = &p[..idx];
+    }
+    if let Some(idx) = p.find('#') {
+        p = &p[..idx];
+    }
+    if let Some(rest) = p.strip_prefix("TinyGPT-V-main/") {
+        p = rest;
+    }
+    p
+}
+
+fn is_file_path(p: &str) -> bool {
+    p.contains('/') || p.contains('\\') || p.contains('.')
+}
+
+fn is_non_code_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let p = std::path::Path::new(&lower);
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        matches!(
+            ext,
+            "yaml" | "yml" | "json" | "toml" | "md" | "markdown" | "txt" | "spdx" | "lock" | "rst"
+        )
+    } else {
+        false
+    }
+}
+
+fn deduplicate_results(
+    raw_hits: impl IntoIterator<Item = (String, f64)>,
+    limit: usize,
+    modality: Modality,
+    query_text: &str,
+) -> Vec<SearchResult> {
+    use std::collections::HashMap;
+
+    let query_terms: Vec<String> = query_text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(|w| w.to_lowercase())
+        .collect();
+
+    let mut file_scores: HashMap<String, (f64, usize, f64)> = HashMap::new();
+
+    for (id, score) in raw_hits {
+        let path = clean_path(&id);
+        if !is_file_path(path) {
+            continue;
+        }
+        if modality == Modality::Code && is_non_code_path(path) {
+            continue;
+        }
+
+        let path_lower = path.to_lowercase();
+        let id_lower = id.to_lowercase();
+        let mut lex_bonus = 0.0;
+        for term in &query_terms {
+            if id_lower.contains(term) || path_lower.contains(term) {
+                lex_bonus += 0.005;
+            }
+        }
+
+        file_scores
+            .entry(path.to_string())
+            .and_modify(|(max_s, count, best_lex)| {
+                if score > *max_s {
+                    *max_s = score;
+                }
+                *count += 1;
+                if lex_bonus > *best_lex {
+                    *best_lex = lex_bonus;
+                }
+            })
+            .or_insert((score, 1, lex_bonus));
+    }
+
+    let mut scored_files: Vec<(String, f64)> = file_scores
+        .into_iter()
+        .map(|(path, (max_s, count, lex_bonus))| {
+            let chunk_bonus = 0.002 * (count as f64).min(10.0);
+            let total = max_s + chunk_bonus + lex_bonus;
+            (path, total)
+        })
+        .collect();
+
+    scored_files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored_files.truncate(limit);
+
+    scored_files.into_iter().map(|(path, score)| SearchResult::new(path, score)).collect()
 }
