@@ -541,7 +541,8 @@ function Run-Eval(
         "--output-dir", $outDir,
         "--output-prefix", $outPrefix,
         "--benchmark-name", $benchName,
-        "--repository", $repoName
+        "--repository", $repoName,
+        "--modality", "code"
     )
     if ($categoryFilter) {
         $evalArgs += @("--category", $categoryFilter)

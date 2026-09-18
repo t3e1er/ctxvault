@@ -200,3 +200,78 @@ fn test_end_to_end_indexing_and_retrieval_bench() {
     assert!(csv_str.contains("binary,5"));
     assert!(csv_str.contains("fast,5"));
 }
+
+#[test]
+fn test_retrieval_benchmark_no_zero_recalls() {
+    use ctxvault_bench::runners::QueryRunner;
+    use ctxvault_bench::runners::QueryRunnerOptions;
+    use std::path::PathBuf;
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root_dir = manifest_dir.parent().unwrap().parent().unwrap();
+    let gotilla_dir = root_dir.join("benchmarks/workspace/repos/codesearchnet/grokify__gotilla");
+    if gotilla_dir.join(".index").exists() {
+        let config =
+            CorpusConfig { path: gotilla_dir.to_string_lossy().to_string(), ..Default::default() };
+        let engine = Engine::open(config, &gotilla_dir.join(".index")).unwrap();
+        let queries = vec![
+            BenchmarkQuery::simple(
+                "csn_Go_00044",
+                "convert a date string into yyyymmdd",
+                vec!["time/timeutil/timeutil.go".into(), "time/timeutil/dt8.go".into()],
+                None,
+            ),
+            BenchmarkQuery::simple(
+                "csn_Go_00126",
+                "how to randomly pick a number",
+                vec!["strconv/phonenumber/fictitiousgenerator.go".into()],
+                None,
+            ),
+        ];
+
+        let opts = QueryRunnerOptions { limit: 10, modality: Modality::Code, decompose: false };
+        for mode in
+            &[RetrievalMode::Bm25, RetrievalMode::Binary, RetrievalMode::Ppr, RetrievalMode::Fast]
+        {
+            let mut total_recall = 0.0;
+            for q in &queries {
+                let (res, _) = QueryRunner::execute(&engine, q, *mode, &opts).unwrap();
+                let ir = IrEvaluator::evaluate(&res, &q.expected, 10);
+                total_recall += ir.recall_at_k;
+            }
+            let avg_recall = total_recall / queries.len() as f64;
+            assert!(
+                avg_recall > 0.0,
+                "Gotilla average recall for {:?} must be > 0.000, got {}",
+                mode,
+                avg_recall
+            );
+        }
+    }
+
+    let tiny_dir = root_dir.join("benchmarks/workspace/repos/repobench/DLYuanGod__TinyGPT-V");
+    if tiny_dir.join(".index").exists() {
+        let config =
+            CorpusConfig { path: tiny_dir.to_string_lossy().to_string(), ..Default::default() };
+        let engine = Engine::open(config, &tiny_dir.join(".index")).unwrap();
+        let q = BenchmarkQuery::simple(
+            "rb_0",
+            "import re\nfrom minigpt4.common.registry import registry\nfrom minigpt4.processors.base_processor import BaseProcessor\nfrom minigpt4.processors.randaugment import RandomAugment\nfrom omegaconf import OmegaConf\nfrom torchvision import transforms\nfrom torchvision.transforms.functional import InterpolationMode class BlipImageBaseProcessor(BaseProcessor):",
+            vec!["minigpt4/processors/blip_processors.py".into()],
+            None,
+        );
+        let opts = QueryRunnerOptions { limit: 10, modality: Modality::Code, decompose: false };
+        for mode in
+            &[RetrievalMode::Bm25, RetrievalMode::Binary, RetrievalMode::Ppr, RetrievalMode::Fast]
+        {
+            let (res, _) = QueryRunner::execute(&engine, &q, *mode, &opts).unwrap();
+            let ir = IrEvaluator::evaluate(&res, &q.expected, 10);
+            assert!(
+                ir.recall_at_k > 0.0,
+                "TinyGPT-V recall for {:?} must be > 0.000, got {}",
+                mode,
+                ir.recall_at_k
+            );
+        }
+    }
+}

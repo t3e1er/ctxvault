@@ -1,5 +1,5 @@
 benchmark,repository,mode,k,mean_recall,mean_precision,mean_mrr,mean_ndcg,mean_score_separation,latency_p50_ms,latency_p90_ms,latency_p95_ms,latency_p99_ms,latency_mean_ms,qps
-swe_bench,psf/requests,bm25,10,0.8000,0.0800,0.5400,0.6036,1.4048,12.790,22.840,24.300,25.468,15.961,62.7
-swe_bench,psf/requests,binary,10,0.8333,0.0833,0.3208,0.4371,1.1108,0.429,1.262,1.592,1.857,0.661,1513.9
-swe_bench,psf/requests,ppr,10,1.0000,0.1000,0.5067,0.6297,83.3817,28.701,36.997,38.429,39.575,28.972,34.5
-swe_bench,psf/requests,fast,10,1.0000,0.1000,0.5000,0.6236,1.1962,25.816,49.542,53.696,57.020,32.423,30.8
+swe_bench,psf/requests,bm25,10,0.8000,0.0800,0.5400,0.6036,1.4621,23.000,27.385,28.382,29.179,24.068,41.5
+swe_bench,psf/requests,binary,10,0.8333,0.0833,0.2750,0.3993,1.1616,2.853,5.296,6.070,6.689,3.480,287.3
+swe_bench,psf/requests,ppr,10,0.8000,0.0800,0.3333,0.4524,133.9136,19.034,28.421,29.654,30.640,20.836,48.0
+swe_bench,psf/requests,fast,10,1.0000,0.1000,0.3833,0.5385,1.7400,34.779,41.114,42.696,43.962,34.379,29.1

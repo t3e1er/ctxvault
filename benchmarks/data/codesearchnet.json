@@ -524,6 +524,10 @@
         {
           "path": "time/timeutil/timeutil.go",
           "grade": 3
+        },
+        {
+          "path": "time/timeutil/dt8.go",
+          "grade": 3
         }
       ],
       "repository": "grokify/gotilla",

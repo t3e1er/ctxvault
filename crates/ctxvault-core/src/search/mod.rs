@@ -749,7 +749,14 @@ pub fn search_fast(
     let mut binary_info: HashMap<String, (f32, usize)> = HashMap::new();
     for (rank, (id, dist)) in binary_hits.iter().enumerate() {
         let sim = 1.0 - (*dist as f32 / 256.0);
-        binary_info.insert(id.clone(), (sim, rank + 1));
+        let mut clean_path = id.as_str();
+        if let Some(idx) = clean_path.find(":chunk:") {
+            clean_path = &clean_path[..idx];
+        }
+        if let Some(idx) = clean_path.find('#') {
+            clean_path = &clean_path[..idx];
+        }
+        binary_info.entry(clean_path.to_string()).or_insert((sim, rank + 1));
     }
 
     // 3. Form seeds for Query-Time Personalized PageRank (HippoRAG diffusion)
@@ -875,7 +882,14 @@ pub fn search_explain_fast(
     let mut binary_info: HashMap<String, (f32, usize)> = HashMap::new();
     for (rank, (id, dist)) in binary_hits.iter().enumerate() {
         let sim = 1.0 - (*dist as f32 / 256.0);
-        binary_info.insert(id.clone(), (sim, rank + 1));
+        let mut clean_path = id.as_str();
+        if let Some(idx) = clean_path.find(":chunk:") {
+            clean_path = &clean_path[..idx];
+        }
+        if let Some(idx) = clean_path.find('#') {
+            clean_path = &clean_path[..idx];
+        }
+        binary_info.entry(clean_path.to_string()).or_insert((sim, rank + 1));
     }
 
     let mut seed_scores: Vec<(String, f64)> = Vec::new();

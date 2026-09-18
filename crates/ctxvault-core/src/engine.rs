@@ -2189,7 +2189,14 @@ fn parse_file_record(
 
             // Project 256-bit binary fingerprints in Stage A worker thread (Pillars 2 & 3)
             use ctxvault_common::types::{FingerprintRecord, Modality};
-            let mut fingerprints = Vec::with_capacity(symbols.len() + raw_chunks.len());
+            let mut fingerprints = Vec::with_capacity(1 + symbols.len() + raw_chunks.len());
+            // File-level fingerprint for code
+            let file_fp = sif.project_to_fingerprint(&content);
+            fingerprints.push(FingerprintRecord {
+                id: rel_path.to_string(),
+                fingerprint: file_fp,
+                modality: Modality::Code,
+            });
             for sym in &symbols {
                 let fp_text = format!(
                     "{} {} {}",
@@ -2199,7 +2206,7 @@ fn parse_file_record(
                 );
                 let fp = sif.project_to_fingerprint(&fp_text);
                 fingerprints.push(FingerprintRecord {
-                    id: sym.scope_path.clone(),
+                    id: format!("{}#{}", rel_path, sym.scope_path),
                     fingerprint: fp,
                     modality: Modality::Code,
                 });
