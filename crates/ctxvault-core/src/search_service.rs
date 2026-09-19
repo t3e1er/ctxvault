@@ -179,31 +179,78 @@ impl SearchService for CoreSearchService<'_> {
                             code_paths,
                         )?
                     } else {
-                        search::search_hybrid_full(
-                            self.bm25,
-                            vector_index,
-                            self.graph,
-                            &query.query,
-                            query_embedding.as_deref(),
-                            limit,
-                            graph_depth,
-                            edge_type_filter,
-                            edge_class_filter,
-                            modality,
-                            code_paths,
-                        )?
+                        match modality {
+                            Modality::Docs => search::search_hybrid_full(
+                                self.bm25,
+                                vector_index,
+                                self.graph,
+                                &query.query,
+                                query_embedding.as_deref(),
+                                limit,
+                                graph_depth,
+                                edge_type_filter,
+                                edge_class_filter,
+                                Modality::Docs,
+                                code_paths,
+                            )?,
+                            Modality::Code => {
+                                let empty_binary = BinarySearchIndex::new();
+                                let binary = self.binary_index.unwrap_or(&empty_binary);
+                                search::search_fast(
+                                    self.bm25,
+                                    binary,
+                                    self.graph,
+                                    &query.query,
+                                    limit,
+                                    Modality::Code,
+                                    edge_class_filter,
+                                    code_paths,
+                                )?
+                            }
+                            Modality::Both => {
+                                let doc_results = search::search_hybrid_full(
+                                    self.bm25,
+                                    vector_index,
+                                    self.graph,
+                                    &query.query,
+                                    query_embedding.as_deref(),
+                                    limit,
+                                    graph_depth,
+                                    edge_type_filter,
+                                    Some(EdgeClass::Semantic),
+                                    Modality::Docs,
+                                    code_paths,
+                                )?;
+                                let empty_binary = BinarySearchIndex::new();
+                                let binary = self.binary_index.unwrap_or(&empty_binary);
+                                let code_results = search::search_fast(
+                                    self.bm25,
+                                    binary,
+                                    self.graph,
+                                    &query.query,
+                                    limit,
+                                    Modality::Code,
+                                    Some(EdgeClass::Code),
+                                    code_paths,
+                                )?;
+                                let mut combined = doc_results;
+                                combined.extend(code_results);
+                                combined
+                            }
+                        }
                     }
                 } else {
-                    // Fast Mode fallback: BM25 + Graph.
-                    search::search_hybrid(
+                    // Fast Mode: Binary Hamming + BM25 + Graph.
+                    let empty_binary = BinarySearchIndex::new();
+                    let binary = self.binary_index.unwrap_or(&empty_binary);
+                    search::search_fast(
                         self.bm25,
+                        binary,
                         self.graph,
                         &query.query,
                         limit,
-                        graph_depth,
-                        edge_type_filter,
-                        edge_class_filter,
                         modality,
+                        edge_class_filter,
                         code_paths,
                     )?
                 };

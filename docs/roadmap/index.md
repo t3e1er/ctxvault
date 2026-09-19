@@ -37,4 +37,5 @@ This section tracks the technical roadmap and Request for Comments (RFC) enginee
 | **[[docs/roadmap/RFC-algorithmic-semantic-bridging]]** | Algorithmic Semantic Bridging & Code Graph Synthesis | Proposed | Sub-minute CPU-only semantic graph bridging (11 signals, RoTSQ 4-bit, RRI) for 100K+ file codebases. |
 | **[[docs/roadmap/RFC-sota-code-retrieval-and-semantic-bridging]]** | SOTA Code Retrieval & High-Throughput Semantic Bridging | Proposed (Next Up) | Sub-second CPU semantic bridging (SIF, 256-bit MRL binary embeddings, AST pattern injection, Query-Time PPR) for 100K+ files. |
 | **[[docs/roadmap/RFC-document-extractors-and-projections]]** | Pluggable Document Extractors & Derived Projections | Proposed | Pure-Rust ingestion for Word (.docx), PDF (.pdf), and HTML (.html) via disposable Derived Text Projections and modality disambiguation. |
+| **[[docs/roadmap/RFC-cast-signal-boosting-and-partitioned-hyperplanes]]** | cAST Structural Signal Boosting & Partitioned Hyperplanes | Proposed | Eliminating Bag-of-Words loss via AST role tagging, tree-depth attenuation, def-use flow synthesis, and 3-channel hyperplanes. |
 

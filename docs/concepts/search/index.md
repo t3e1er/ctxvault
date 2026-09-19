@@ -45,6 +45,7 @@ Code and technical documentation are fundamentally heterogeneous. A pure dense v
                        Partitioned Docs & Code Hits
 ```
 
+* **[[docs/concepts/search/binary-hamming-embedding]]**: Sub-millisecond algorithmic retrieval using FWHT rotation, 64-bit random hyperplane quantization, and LSH candidate indexing.
 * **[[docs/concepts/search/hybrid-retrieval-theory]]**: Why single-modality retrieval fails in polyglot codebases.
 * **[[docs/concepts/search/rrf-mathematics]]**: Formal mathematics and proofs of Reciprocal Rank Fusion ($k=60$).
 * **[[docs/concepts/search/bm25-lexical]]**: High-performance Tantivy Okapi BM25 for exact tokens and identifiers.

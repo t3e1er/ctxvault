@@ -13,9 +13,8 @@ Written in 100% pure Rust (`unsafe_code = "forbid"`) for memory safety, zero C-r
 ### Non-Negotiable Invariants
 1. **Markdown/source is authoritative ground truth**: Files on disk are king. All indices (Tantivy BM25, HNSW vectors, SQLite catalog, Petgraph) are derived, disposable, and 100% rebuildable. Never treat an index as canonical.
 2. **Explicit graph topology, not LLM extraction**: Edges are generated deterministically from typed frontmatter fields, `#tags`, `[[wikilinks]]`, and AST code relations (`calls`, `defines`, `imports`, `implements`) — never from stochastic extraction pipelines.
-3. **Continuous knowledge crystallization (Principle 3)**: Ephemeral agent exhaust (debug traces, design consensus, bug resolutions) must be distilled into permanent, schema-validated notes with full lineage/provenance via `write_note` (using templates with `derived_from` frontmatter) and ancestor tracing via `graph_match`.
-4. **Pure Rust sub-millisecond speed**: Multi-hop graph traversal and hybrid ranking operate in real time (lexical p50 ~2.2ms, graph BFS ~1.8ms) with no perceptible agent lag.
-5. **Multi-agent memory substrate**: A shared in-memory + on-disk semantic plane for specialized agent swarms (Scouts, Readers, Writers, Crystallizers).
+3. **Pure Rust sub-millisecond speed**: Multi-hop graph traversal and hybrid ranking operate in real time (lexical p50 ~2.2ms, graph BFS ~1.8ms) with no perceptible agent lag.
+4. **Multi-agent memory substrate**: A shared in-memory + on-disk semantic plane for specialized agent swarms (Scouts, Readers, Writers, Analysts).
 
 ### Retrieval & Multi-Corpus Architecture
 - **4-Modality Hybrid Retrieval**: Fused via 3-way Reciprocal Rank Fusion (RRF) across Tantivy Okapi BM25, dense ONNX embeddings (`jina-embeddings-v2-base-code`, 768-dim), and Petgraph typed graph traversal.
@@ -31,6 +30,11 @@ Written in 100% pure Rust (`unsafe_code = "forbid"`) for memory safety, zero C-r
 ## 2. Greenfield Engineering Principles
 
 ctxvault has no legacy external consumers to protect. Optimize for a clean, minimal, cohesive codebase.
+
+### Simplification & Generalization Strategy (Prompt First)
+- **Proactive Simplification**: Continuously seek to simplify architectures, collapse overlapping modes, prune bloated parameter surfaces, and generalize bespoke abstractions into clean, robust primitives.
+- **User Consent Required**: Always present proposed simplifications and architectural reductions to the user and obtain explicit consent before performing major refactoring.
+- **Clean Greenfield Pruning**: Once user consent is granted, eliminate obsolete code, flags, and types outright. Never leave dead code, deprecated aliases, or compatibility shims behind.
 
 ### No Backwards Compatibility
 - **Never add compatibility shims**, deprecated tool names, aliased handlers, or "fallback to legacy behavior" logic.
@@ -146,7 +150,7 @@ ctxvault/
 
 ## 7. Evergreen Documentation & Bidirectional Code Links
 
-Documentation in `ctxvault` is not passive prose; it is a **compiled, structured knowledge corpus** that dogfoods `ctxvault`'s own semantic indexing and graph retrieval (Principle 3).
+Documentation in `ctxvault` is not passive prose; it is a **compiled, structured knowledge corpus** that dogfoods `ctxvault`'s own semantic indexing and graph retrieval.
 
 ### Strict 3-Pillar Documentation Hierarchy
 All documentation must conform to the 3-pillar directory layout:

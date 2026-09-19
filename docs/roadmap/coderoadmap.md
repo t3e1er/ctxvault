@@ -502,3 +502,23 @@ Expands `ctxvault` beyond Markdown notes into polyglot document vaults while str
      - **HTML (`.html`)**: [`HtmlDocExtractor`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-core/src/parser/document/html.rs) using `scraper` with automatic chrome stripping (`<nav>`, `<header>`, `<footer>`, `<script>`, `<style>`) and semantic Markdown synthesis.
 4. **Strict Read-Only Ingestion Boundary**:
    - [`write_note`](file:///c:/dev/ctx/ctxvault/crates/ctxvault-mcp/src/tools/mod.rs) strictly rejects non-markdown document formats with `NotPermitted`. Principle 3 knowledge crystallization authors canonical Markdown notes linking to extracted documents via `derived_from: ["specs/architecture.docx"]`.
+
+---
+
+### 11.3 cAST Structural Signal Boosting & Partitioned Multi-Channel Hyperplanes (Proposed)
+*Authoritative RFC*: [[docs/roadmap/RFC-cast-signal-boosting-and-partitioned-hyperplanes]]  
+*Status*: **Proposed**  
+*Scope*: `ctxvault-core`, `ctxvault-common`
+
+Eliminates the 2D $\rightarrow$ 1D Bag-of-Words reduction loss and 64-bit quantization resolution blur in algorithmic binary embeddings via cAST concrete syntax tree metadata:
+
+1. **Syntactic Role-Decorated Tokens**:
+   - Tags extracted tokens with AST syntactic slots (`def:`, `param:`, `callee:`, `ret:`) to distinguish between caller/callee and subject/object roles without transformer attention.
+2. **Tree-Depth Attenuation ($1/\sqrt{1 + \text{depth}}$)**:
+   - Weights tokens by inverse square root of tree nesting depth, prioritizing top-level interface definitions and suppressing inner loop boilerplate.
+3. **Data-Flow Edge Synthesis**:
+   - Extracts definition-use chains (`flow:param->callee->return`) to capture behavioral execution paths across functions with disjoint vocabularies.
+4. **Partitioned Multi-Channel Hyperplanes (24b / 24b / 16b)**:
+   - Allocates the 64-bit signature across three orthogonal channels: Channel A (Lexical/Interface, 24 bits), Channel B (Data Flow/Calls, 24 bits), and Channel C (Control AST Shape, 16 bits). Enables channel-masked bitwise sweeps for behavioral clone detection.
+5. **Deterministic Idiom Injection**:
+   - Unifies cross-language patterns (`try/catch`, `if err != nil`, `match Err`) into canonical synthetic semantic tokens (`$sem:error_handler`).

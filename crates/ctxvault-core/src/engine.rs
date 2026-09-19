@@ -237,7 +237,7 @@ impl Engine {
                 FileFormat::Source,
             )?;
 
-            let mut pending = Vec::new();
+            let pending = Vec::new();
 
             // 2. Chunks and symbols
             if let Some(res) = parse_res {
@@ -298,43 +298,11 @@ impl Engine {
                     }
                 }
 
-                // 4. Vector index: clear existing vectors for this doc
+                // 4. Vector index: clear existing vectors for this code file (code is not dense embedded).
                 if let Some(ref mut vi) = self.vector_index {
                     vi.remove_document(rel_path);
                 }
-
-                // Build pending chunks for embedding
-                if self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton {
-                    let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
-                        rel_path,
-                        &res.chunks,
-                        self.config.chunking.max_tokens,
-                    );
-                    pending.extend(skeleton_chunks);
-                } else {
-                    for c in &res.chunks {
-                        let modality = c
-                            .entity_kind
-                            .as_ref()
-                            .map(EntityKind::modality_tag)
-                            .unwrap_or("docs")
-                            .to_string();
-                        let embed_policy = if self.config.index_mode
-                            == ctxvault_common::config::IndexMode::DocsEmbed
-                        {
-                            ChunkEmbedPolicy::GraphOnly
-                        } else {
-                            c.embed_policy
-                        };
-                        pending.push(PendingChunk {
-                            doc_path: rel_path.to_string(),
-                            chunk_index: c.chunk_index,
-                            text: c.text.clone(),
-                            embed_policy,
-                            modality,
-                        });
-                    }
-                }
+                // Code modality is served by Binary Hamming + AST Graph + BM25 without dense vectors.
 
                 // 5. Code Graph
                 self.graph.remove_edges_for_node(rel_path);
@@ -424,36 +392,41 @@ impl Engine {
             vi.remove_document(rel_path);
         }
 
-        // Build context-prefixed text for embedding
+        // Build context-prefixed text for embedding in Full mode (skipped in Fast mode).
         let doc_title = doc.title.as_deref().unwrap_or("").trim();
-        let pending: Vec<PendingChunk> = chunks
-            .iter()
-            .map(|c| {
-                let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                let text = if !doc_title.is_empty() && !section.is_empty() {
-                    format!("{} > {}: {}", doc_title, section, c.text)
-                } else if !doc_title.is_empty() {
-                    format!("{}: {}", doc_title, c.text)
-                } else if !section.is_empty() {
-                    format!("{}: {}", section, c.text)
-                } else {
-                    c.text.clone()
-                };
-                let modality = c
-                    .entity_kind
-                    .as_ref()
-                    .map(EntityKind::modality_tag)
-                    .unwrap_or("docs")
-                    .to_string();
-                PendingChunk {
-                    doc_path: rel_path.to_string(),
-                    chunk_index: c.chunk_index,
-                    text,
-                    embed_policy: c.embed_policy,
-                    modality,
-                }
-            })
-            .collect();
+        let pending: Vec<PendingChunk> =
+            if self.config.index_mode == ctxvault_common::config::IndexMode::Full {
+                chunks
+                    .iter()
+                    .map(|c| {
+                        let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                        let text = if !doc_title.is_empty() && !section.is_empty() {
+                            format!("{} > {}: {}", doc_title, section, c.text)
+                        } else if !doc_title.is_empty() {
+                            format!("{}: {}", doc_title, c.text)
+                        } else if !section.is_empty() {
+                            format!("{}: {}", section, c.text)
+                        } else {
+                            c.text.clone()
+                        };
+                        let modality = c
+                            .entity_kind
+                            .as_ref()
+                            .map(EntityKind::modality_tag)
+                            .unwrap_or("docs")
+                            .to_string();
+                        PendingChunk {
+                            doc_path: rel_path.to_string(),
+                            chunk_index: c.chunk_index,
+                            text,
+                            embed_policy: c.embed_policy,
+                            modality,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // 7. Remove old edges and rebuild from document.
         self.graph.remove_edges_for_node(rel_path);
@@ -472,14 +445,10 @@ impl Engine {
         }
 
         // Partition buffer into anchor chunks and graph-only chunks.
-        // In DocsEmbed mode, code chunks are excluded from embedding even if marked Anchor.
+        // In Full mode, only docs chunks with Anchor embed policy are embedded.
         let anchor_chunks: Vec<&PendingChunk> = buffer
             .iter()
-            .filter(|c| {
-                c.embed_policy == ChunkEmbedPolicy::Anchor
-                    && !(self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed
-                        && c.modality == "code")
-            })
+            .filter(|c| c.embed_policy == ChunkEmbedPolicy::Anchor && c.modality != "code")
             .collect();
 
         tracing::debug!(
@@ -1560,16 +1529,6 @@ impl Engine {
         self.config.index_mode == ctxvault_common::config::IndexMode::Fast
     }
 
-    /// Check whether the engine is running in DocsEmbed Mode.
-    pub fn is_docs_embed_mode(&self) -> bool {
-        self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed
-    }
-
-    /// Check whether the engine is running in Skeleton Mode.
-    pub fn is_skeleton_mode(&self) -> bool {
-        self.config.index_mode == ctxvault_common::config::IndexMode::Skeleton
-    }
-
     /// Access the in-memory binary search index.
     pub fn binary_index(&self) -> &crate::search::binary::BinarySearchIndex {
         &self.binary_index
@@ -1587,9 +1546,7 @@ impl Engine {
             ctxvault_common::config::IndexMode::Fast => {
                 self.vector_index = None;
             }
-            ctxvault_common::config::IndexMode::Full
-            | ctxvault_common::config::IndexMode::Skeleton
-            | ctxvault_common::config::IndexMode::DocsEmbed => {
+            ctxvault_common::config::IndexMode::Full => {
                 self.ensure_vector_index();
             }
         }
@@ -1998,7 +1955,7 @@ impl Engine {
         let corpus_path = std::path::PathBuf::from(&self.config.path);
         for file in &files {
             let is_code = crate::parser::code::is_code_file(std::path::Path::new(&file.path));
-            if self.config.index_mode == ctxvault_common::config::IndexMode::DocsEmbed && is_code {
+            if is_code {
                 continue;
             }
 
@@ -2134,43 +2091,13 @@ fn parse_file_record(
                 chunking_config,
             );
 
-            let mut pending = Vec::new();
+            let pending = Vec::new();
             let mut raw_chunks = Vec::new();
             let mut symbols = Vec::new();
             let mut graph_edges = Vec::new();
             let mut external_refs = Vec::new();
 
             if let Some(res) = parse_res {
-                if index_mode == IndexMode::Skeleton {
-                    let skeleton_chunks = crate::index::skeleton::build_file_skeleton_chunks(
-                        rel_path,
-                        &res.chunks,
-                        chunking_config.max_tokens,
-                    );
-                    pending.extend(skeleton_chunks);
-                } else {
-                    for c in &res.chunks {
-                        let modality = c
-                            .entity_kind
-                            .as_ref()
-                            .map(EntityKind::modality_tag)
-                            .unwrap_or("docs")
-                            .to_string();
-                        let embed_policy = if index_mode == IndexMode::DocsEmbed {
-                            ChunkEmbedPolicy::GraphOnly
-                        } else {
-                            c.embed_policy
-                        };
-                        pending.push(PendingChunk {
-                            doc_path: rel_path.to_string(),
-                            chunk_index: c.chunk_index,
-                            text: c.text.clone(),
-                            embed_policy,
-                            modality,
-                        });
-                    }
-                }
-
                 let symbol_index =
                     crate::graph::code::CodeGraphExtractor::build_symbol_index(&res.symbols);
                 let extraction =
@@ -2242,34 +2169,38 @@ fn parse_file_record(
             let chunks = chunker::chunk_document(rel_path, &doc.content, chunking_config);
 
             let doc_title = doc.title.as_deref().unwrap_or("").trim();
-            let pending: Vec<PendingChunk> = chunks
-                .iter()
-                .map(|c| {
-                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                    let text = if !doc_title.is_empty() && !section.is_empty() {
-                        format!("{} > {}: {}", doc_title, section, c.text)
-                    } else if !doc_title.is_empty() {
-                        format!("{}: {}", doc_title, c.text)
-                    } else if !section.is_empty() {
-                        format!("{}: {}", section, c.text)
-                    } else {
-                        c.text.clone()
-                    };
-                    let modality = c
-                        .entity_kind
-                        .as_ref()
-                        .map(EntityKind::modality_tag)
-                        .unwrap_or("docs")
-                        .to_string();
-                    PendingChunk {
-                        doc_path: rel_path.to_string(),
-                        chunk_index: c.chunk_index,
-                        text,
-                        embed_policy: c.embed_policy,
-                        modality,
-                    }
-                })
-                .collect();
+            let pending: Vec<PendingChunk> = if index_mode == IndexMode::Full {
+                chunks
+                    .iter()
+                    .map(|c| {
+                        let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                        let text = if !doc_title.is_empty() && !section.is_empty() {
+                            format!("{} > {}: {}", doc_title, section, c.text)
+                        } else if !doc_title.is_empty() {
+                            format!("{}: {}", doc_title, c.text)
+                        } else if !section.is_empty() {
+                            format!("{}: {}", section, c.text)
+                        } else {
+                            c.text.clone()
+                        };
+                        let modality = c
+                            .entity_kind
+                            .as_ref()
+                            .map(EntityKind::modality_tag)
+                            .unwrap_or("docs")
+                            .to_string();
+                        PendingChunk {
+                            doc_path: rel_path.to_string(),
+                            chunk_index: c.chunk_index,
+                            text,
+                            embed_policy: c.embed_policy,
+                            modality,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             // Project 256-bit binary fingerprints in Stage A worker thread (Pillars 2 & 3)
             use ctxvault_common::types::{FingerprintRecord, Modality};
@@ -2309,34 +2240,38 @@ fn parse_file_record(
                 chunker::chunk_document(rel_path, &extracted.normalized_text, chunking_config);
 
             let doc_title = extracted.title.as_deref().unwrap_or("").trim();
-            let pending: Vec<PendingChunk> = chunks
-                .iter()
-                .map(|c| {
-                    let section = c.heading_chain.as_deref().unwrap_or("").trim();
-                    let text = if !doc_title.is_empty() && !section.is_empty() {
-                        format!("{} > {}: {}", doc_title, section, c.text)
-                    } else if !doc_title.is_empty() {
-                        format!("{}: {}", doc_title, c.text)
-                    } else if !section.is_empty() {
-                        format!("{}: {}", section, c.text)
-                    } else {
-                        c.text.clone()
-                    };
-                    let modality = c
-                        .entity_kind
-                        .as_ref()
-                        .map(EntityKind::modality_tag)
-                        .unwrap_or("docs")
-                        .to_string();
-                    PendingChunk {
-                        doc_path: rel_path.to_string(),
-                        chunk_index: c.chunk_index,
-                        text,
-                        embed_policy: c.embed_policy,
-                        modality,
-                    }
-                })
-                .collect();
+            let pending: Vec<PendingChunk> = if index_mode == IndexMode::Full {
+                chunks
+                    .iter()
+                    .map(|c| {
+                        let section = c.heading_chain.as_deref().unwrap_or("").trim();
+                        let text = if !doc_title.is_empty() && !section.is_empty() {
+                            format!("{} > {}: {}", doc_title, section, c.text)
+                        } else if !doc_title.is_empty() {
+                            format!("{}: {}", doc_title, c.text)
+                        } else if !section.is_empty() {
+                            format!("{}: {}", section, c.text)
+                        } else {
+                            c.text.clone()
+                        };
+                        let modality = c
+                            .entity_kind
+                            .as_ref()
+                            .map(EntityKind::modality_tag)
+                            .unwrap_or("docs")
+                            .to_string();
+                        PendingChunk {
+                            doc_path: rel_path.to_string(),
+                            chunk_index: c.chunk_index,
+                            text,
+                            embed_policy: c.embed_policy,
+                            modality,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             let doc = Document {
                 path: rel_path.to_string(),
@@ -2527,14 +2462,14 @@ mod tests {
     }
 
     #[test]
-    fn test_docs_embed_mode() {
+    fn test_full_mode_docs_vector_code_hamming() {
         let tmp = TempDir::new().unwrap();
         let corpus_dir = tmp.path().join("corpus");
         fs::create_dir_all(&corpus_dir).unwrap();
 
         fs::write(
             corpus_dir.join("guide.md"),
-            "# Architecture Guide\n\n## Overview\n\nDocsEmbed mode preserves doc vectors while skipping code.\n",
+            "# Architecture Guide\n\n## Overview\n\nFull mode indexes docs into dense vector store and code into binary hamming.\n",
         )
         .unwrap();
 
@@ -2545,12 +2480,11 @@ mod tests {
         .unwrap();
 
         let mut config = test_config(&corpus_dir);
-        config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
+        config.index_mode = ctxvault_common::config::IndexMode::Full;
 
         let index_dir = tmp.path().join("index");
         let mut engine = Engine::open(config, &index_dir).unwrap();
 
-        assert!(engine.is_docs_embed_mode());
         assert!(!engine.is_fast_mode());
         assert!(engine.has_vector_index());
 
@@ -2571,84 +2505,21 @@ mod tests {
         // Verify Graph indexed both
         assert!(engine.graph().node_count() >= 2);
 
-        // Staged chunk generation: code chunk embed_policy must be coerced to GraphOnly
+        // Staged chunk generation: code chunk pending vector queue must be empty
         let (code_pending, _) = engine.index_file_staged("src/main.rs", "pub struct Foo;").unwrap();
-        assert!(!code_pending.is_empty());
-        for chunk in &code_pending {
-            assert_eq!(chunk.embed_policy, ctxvault_common::types::ChunkEmbedPolicy::GraphOnly);
-        }
+        assert!(code_pending.is_empty(), "Code chunks must not be staged for vector embedding");
 
-        // Staged chunk generation: doc chunk embed_policy must preserve Anchor
+        // Staged chunk generation: doc chunk pending vector queue must contain chunks
         let (doc_pending, _) = engine
             .index_file_staged("readme.md", "# Readme\n\n## Overview\n\nAnchor content.")
             .unwrap();
         let has_anchor = doc_pending
             .iter()
             .any(|c| c.embed_policy == ctxvault_common::types::ChunkEmbedPolicy::Anchor);
-        assert!(has_anchor);
-    }
+        assert!(has_anchor, "Doc chunks must be staged for vector embedding in Full mode");
 
-    #[test]
-    fn test_skeleton_mode() {
-        let tmp = TempDir::new().unwrap();
-        let corpus_dir = tmp.path().join("corpus");
-        fs::create_dir_all(&corpus_dir).unwrap();
-
-        fs::write(
-            corpus_dir.join("guide.md"),
-            "# Architecture Guide\n\n## Overview\n\nSkeleton mode indexes signature text for code vectors.\n",
-        )
-        .unwrap();
-
-        let rust_code = r#"
-/// Configuration for the database connection pool.
-pub struct PoolConfig {
-    pub max_size: u32,
-    pub timeout_ms: u64,
-}
-
-impl PoolConfig {
-    /// Initialize with defaults.
-    pub fn new() -> Self {
-        Self { max_size: 10, timeout_ms: 5000 }
-    }
-}
-"#;
-        fs::write(corpus_dir.join("pool.rs"), rust_code).unwrap();
-
-        let mut config = test_config(&corpus_dir);
-        config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
-
-        let index_dir = tmp.path().join("index");
-        let mut engine = Engine::open(config, &index_dir).unwrap();
-
-        assert!(engine.is_skeleton_mode());
-        assert!(!engine.is_fast_mode());
-        assert!(!engine.is_docs_embed_mode());
-        assert!(engine.has_vector_index());
-
-        let (code_pending, _) = engine.index_file_staged("src/pool.rs", rust_code).unwrap();
-        assert!(!code_pending.is_empty());
-
-        // In skeleton mode, the text submitted to the embedder should be the skeleton text (signature + doc)
-        // rather than the full method body!
-        let struct_chunk = code_pending.iter().find(|c| c.text.contains("PoolConfig")).unwrap();
-        assert_eq!(struct_chunk.embed_policy, ctxvault_common::types::ChunkEmbedPolicy::Anchor);
-        assert!(struct_chunk.text.contains("pub struct PoolConfig"));
-
-        // All chunks in skeleton mode must have skeleton text populated (no inner function bodies)
-        for chunk in &code_pending {
-            assert!(!chunk.text.contains("Self { max_size: 10"));
-        }
-
-        let files_indexed = engine.full_reindex_paginated(10, false).unwrap();
-        assert_eq!(files_indexed, 2);
-
-        // Test delta sync: modify pool.rs and verify incremental reindex
-        fs::write(corpus_dir.join("pool.rs"), format!("{}\n// modified line\n", rust_code))
-            .unwrap();
-        let delta_result = engine.sync_delta_paths(&[corpus_dir.join("pool.rs")]).unwrap();
-        assert_eq!(delta_result.modified_files.len(), 1);
+        // Verify binary index has entries for code
+        assert!(!engine.binary_index().is_empty());
     }
 
     #[test]

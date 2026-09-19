@@ -3,7 +3,6 @@
 pub mod classifier;
 pub mod exclude;
 pub mod pipeline;
-pub mod skeleton;
 
 pub use classifier::{FileClassification, FileClassifier};
 

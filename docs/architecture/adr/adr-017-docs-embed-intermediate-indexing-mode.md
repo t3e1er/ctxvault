@@ -1,18 +1,21 @@
-﻿---
+---
 title: "ADR 017: Intermediate Docs-Only Embedding Mode (DocsEmbed)"
 category: "code-architecture"
-status: "accepted"
-tags: ["adr", "docs-embed", "indexing", "performance", "decision"]
+status: "superseded"
+tags: ["adr", "docs-embed", "indexing", "performance", "decision", "superseded"]
 related:
   - "[[docs/code-architecture/index]]"
   - "[[docs/code-architecture/decisions/adr-008-anchor-embedding-paradigm]]"
   - "[[docs/roadmap/RFC-docs-embed-intermediate-indexing-mode]]"
+  - "[[docs/concepts/search/binary-hamming-embedding]]"
 ---
 
 # ADR 017: Intermediate Docs-Only Embedding Mode (`DocsEmbed`)
 
 ## Status
-Accepted / Implemented
+Superseded by the 2-Mode Modality Convergence (`IndexMode::Full` and `IndexMode::Fast`).
+
+> **Note**: As of the Modality Convergence, `IndexMode::DocsEmbed` and `IndexMode::Skeleton` have been eliminated. `IndexMode::Full` now natively embodies this architecture: **Docs Modality** uses dense ONNX embeddings (bundled Jina sidecar) + Wikilinks + BM25, while **Code Modality** uses Algorithmic Binary Hamming + AST Graph + BM25. `IndexMode::Fast` applies Algorithmic Binary Hamming across both.
 
 ## Context
 In large polyglot software repositories, source code constitutes 95%+ of the file and chunk volume, while documentation (.md files) constitutes less than 5%. 

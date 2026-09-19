@@ -42,12 +42,8 @@ pub fn handle_config_set(key: &str, val: &str) -> anyhow::Result<()> {
         "index_mode" => {
             cfg.index_mode = match val.to_lowercase().as_str() {
                 "full" => IndexMode::Full,
-                "docs-embed" | "docsembed" => IndexMode::DocsEmbed,
                 "fast" => IndexMode::Fast,
-                _ => anyhow::bail!(
-                    "invalid index_mode: '{}' (expected full, docs-embed, or fast)",
-                    val
-                ),
+                _ => anyhow::bail!("invalid index_mode: '{}' (expected full or fast)", val),
             };
         }
         "idle_timeout_mins" => {
