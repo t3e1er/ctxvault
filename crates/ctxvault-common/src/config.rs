@@ -192,14 +192,10 @@ pub fn default_exclude_patterns() -> Vec<String> {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum IndexMode {
-    /// Full indexing: BM25 + Graph + Embedding/Vector across both code and docs (default).
+    /// Full indexing: Dense Embeddings (Jina ONNX) for Docs; Binary Hamming for Code; BM25 + Graph for both (default).
     #[default]
     Full,
-    /// Skeleton mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown doc anchors and code symbol skeletons (signature + docstring + scope).
-    Skeleton,
-    /// Intermediate mode: BM25 + Graph for both code and docs; HNSW Vector embeddings for markdown docs anchors only.
-    DocsEmbed,
-    /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
+    /// Fast mode: Algorithmic Binary Hamming + BM25 + Graph across both Docs and Code (Zero ONNX inference).
     Fast,
 }
 
@@ -729,22 +725,6 @@ mod tests {
         "#;
         let config_def: CorpusConfig = toml::from_str(toml_default).unwrap();
         assert_eq!(config_def.index_mode, IndexMode::Full);
-
-        let toml_docs_embed = r#"
-            name = "docs-embed-corpus"
-            path = "./src"
-            index_mode = "docs-embed"
-        "#;
-        let config_docs_embed: CorpusConfig = toml::from_str(toml_docs_embed).unwrap();
-        assert_eq!(config_docs_embed.index_mode, IndexMode::DocsEmbed);
-
-        let toml_skeleton = r#"
-            name = "skeleton-corpus"
-            path = "./src"
-            index_mode = "skeleton"
-        "#;
-        let config_skeleton: CorpusConfig = toml::from_str(toml_skeleton).unwrap();
-        assert_eq!(config_skeleton.index_mode, IndexMode::Skeleton);
     }
 
     #[test]

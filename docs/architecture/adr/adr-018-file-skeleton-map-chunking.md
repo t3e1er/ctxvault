@@ -1,19 +1,21 @@
 ---
 title: "ADR 018: File Skeleton Map Chunking for Skeleton Indexing Mode"
 category: "code-architecture"
-status: "accepted"
-tags: ["adr", "skeleton-mode", "embedding", "chunking", "performance", "indexing"]
+status: "superseded"
+tags: ["adr", "skeleton-mode", "embedding", "chunking", "performance", "indexing", "superseded"]
 related:
   - "[[docs/architecture/adr/adr-008-anchor-embedding-paradigm]]"
   - "[[docs/architecture/adr/adr-017-docs-embed-intermediate-indexing-mode]]"
   - "[[docs/architecture/adr/adr-019-file-level-rrf-fusion]]"
-  - "[[docs/roadmap/RFC-graphview]]"
+  - "[[docs/concepts/search/binary-hamming-embedding]]"
 ---
 
 # ADR 018: File Skeleton Map Chunking for Skeleton Indexing Mode
 
 ## Status
-Accepted / In Implementation
+Superseded by 2-Mode Modality Convergence (`IndexMode::Full` and `IndexMode::Fast`).
+
+> **Note**: As of the Modality Convergence, `IndexMode::Skeleton` has been removed. Code modality is handled by Algorithmic Binary Hamming distance matching in CPU registers without requiring any neural vector embeddings.
 
 ## Context
 

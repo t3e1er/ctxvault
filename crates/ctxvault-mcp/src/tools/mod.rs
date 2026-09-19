@@ -485,9 +485,7 @@ impl ToolRegistry {
                 "properties": {
                     "mode": { "type": "string", "enum": ["delta", "full", "reembed"], "description": "Sync mode: 'delta' (default, incremental sync), 'full' (full reindex), 'reembed' (recompute embeddings)" },
                     "fast": { "type": "boolean", "description": "Enable Fast Mode: skip dense embedding and vector indexing for instant indexing" },
-                    "docs_embed": { "type": "boolean", "description": "Enable DocsEmbed Mode: compute embeddings for markdown doc anchors only, skipping code" },
-                    "skeleton": { "type": "boolean", "description": "Enable Skeleton Mode: compute embeddings for markdown doc anchors and code symbol skeletons, skipping code bodies" },
-                    "index_mode": { "type": "string", "enum": ["full", "skeleton", "docs-embed", "fast"], "description": "Indexing mode override ('full', 'skeleton', 'docs-embed', 'fast')" },
+                    "index_mode": { "type": "string", "enum": ["full", "fast"], "description": "Indexing mode override ('full', 'fast')" },
                     "batch_size": { "type": "number", "description": "Batch size for commits / intermediate checkpoints (default 50)" },
                     "resume": { "type": "boolean", "description": "For mode 'full': resume from last indexing checkpoint if available (default true)" }
                 },
@@ -507,7 +505,6 @@ impl ToolRegistry {
                     "sync": { "type": "boolean", "description": "Run delta sync after mounting (default true)" },
                     "reindex": { "type": "boolean", "description": "Force full reindex from scratch (default false)" },
                     "fast": { "type": "boolean", "description": "Skip dense vector embedding for instant indexing (default false)" },
-                    "docs_embed": { "type": "boolean", "description": "Compute embeddings for markdown docs anchors only (default false)" },
                     "batch_size": { "type": "integer", "description": "Batch size for indexing (default 50)" }
                 },
                 "required": ["path"]
@@ -1198,7 +1195,6 @@ fn handle_index_corpus_manager(manager: &mut CorpusManager, args: Value) -> Resu
     let do_reindex = args.get("reindex").and_then(Value::as_bool).unwrap_or(false);
     let do_sync = args.get("sync").and_then(Value::as_bool).unwrap_or(true);
     let fast = args.get("fast").and_then(Value::as_bool).unwrap_or(false);
-    let docs_embed = args.get("docs_embed").and_then(Value::as_bool).unwrap_or(false);
     let batch_size =
         args.get("batch_size").and_then(Value::as_u64).map(|n| n as usize).unwrap_or(50);
 
@@ -1206,8 +1202,6 @@ fn handle_index_corpus_manager(manager: &mut CorpusManager, args: Value) -> Resu
 
     if fast {
         engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Fast;
-    } else if docs_embed {
-        engine.config_mut().index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
     }
 
     let index_stats = if do_reindex {
@@ -1435,8 +1429,6 @@ pub(crate) struct SyncCorpusParams {
     pub batch_size: Option<usize>,
     pub resume: Option<bool>,
     pub fast: Option<bool>,
-    pub docs_embed: Option<bool>,
-    pub skeleton: Option<bool>,
     pub index_mode: Option<String>,
 }
 
@@ -2571,24 +2563,14 @@ fn handle_graph_communities(engine: &Engine, args: Value) -> Result<Value> {
 fn apply_index_mode_override(
     engine: &mut Engine,
     index_mode: Option<&str>,
-    docs_embed: Option<bool>,
-    skeleton: Option<bool>,
     fast: Option<bool>,
 ) -> Result<()> {
     if let Some(mode_str) = index_mode {
         match mode_str.to_lowercase().as_str() {
             "fast" => engine.set_index_mode(ctxvault_common::config::IndexMode::Fast),
-            "docs-embed" | "docsembed" | "docs_embed" => {
-                engine.set_index_mode(ctxvault_common::config::IndexMode::DocsEmbed);
-            }
-            "skeleton" => engine.set_index_mode(ctxvault_common::config::IndexMode::Skeleton),
             "full" => engine.set_index_mode(ctxvault_common::config::IndexMode::Full),
             other => return Err(Error::Config(format!("invalid index_mode '{}'", other))),
         }
-    } else if let Some(true) = skeleton {
-        engine.set_index_mode(ctxvault_common::config::IndexMode::Skeleton);
-    } else if let Some(true) = docs_embed {
-        engine.set_index_mode(ctxvault_common::config::IndexMode::DocsEmbed);
     } else if let Some(fast) = fast {
         engine.set_index_mode(if fast {
             ctxvault_common::config::IndexMode::Fast
@@ -2606,17 +2588,9 @@ fn handle_sync_corpus(engine: &mut Engine, args: Value) -> Result<Value> {
         batch_size: None,
         resume: None,
         fast: None,
-        docs_embed: None,
-        skeleton: None,
         index_mode: None,
     });
-    apply_index_mode_override(
-        engine,
-        params.index_mode.as_deref(),
-        params.docs_embed,
-        params.skeleton,
-        params.fast,
-    )?;
+    apply_index_mode_override(engine, params.index_mode.as_deref(), params.fast)?;
 
     match params.mode.as_deref().unwrap_or("delta") {
         "reembed" => {
@@ -4835,13 +4809,13 @@ pub fn indexed_fn() -> u32 {
     }
 
     #[test]
-    fn test_docs_embed_mode_mcp_tools() {
+    fn test_full_mode_mcp_tools() {
         let tmp = TempDir::new().unwrap();
-        let corpus_dir = tmp.path().join("docs_embed_corpus");
+        let corpus_dir = tmp.path().join("full_corpus");
         fs::create_dir_all(&corpus_dir).unwrap();
         fs::write(
             corpus_dir.join("guide.md"),
-            "# Architecture Guide\nDocsEmbed provides vector search for documentation.\n",
+            "# Architecture Guide\nFull mode provides vector search for documentation and hamming for code.\n",
         )
         .unwrap();
         fs::write(
@@ -4851,24 +4825,23 @@ pub fn indexed_fn() -> u32 {
         .unwrap();
 
         let mut config = test_config(&corpus_dir);
-        config.index_mode = IndexMode::DocsEmbed;
+        config.index_mode = IndexMode::Full;
 
         let index_dir = tmp.path().join(".index");
         let mut engine = Engine::open(config, &index_dir).unwrap();
         let files_indexed = engine.full_reindex().unwrap();
         assert_eq!(files_indexed, 2);
-        assert!(engine.is_docs_embed_mode());
         assert!(!engine.is_fast_mode());
         assert!(engine.has_vector_index());
 
         let mut registry = ToolRegistry::new();
         registry.register_all();
 
-        // 1. Status tool reflects DocsEmbed mode
+        // 1. Status tool reflects Full mode
         let status_res = registry
             .execute_read("status", &engine, serde_json::json!({ "scope": "corpus" }))
             .unwrap();
-        assert_eq!(status_res["index_mode"], "DocsEmbed");
+        assert_eq!(status_res["index_mode"], "Full");
 
         // 2. BM25 search finds both doc and code
         let bm25_res = registry
@@ -4894,16 +4867,16 @@ pub fn indexed_fn() -> u32 {
             serde_json::from_value(hyb_res).unwrap();
         assert!(hyb_resp.docs.is_some());
 
-        // 4. Reindex with index_mode override preserves DocsEmbed
+        // 4. Reindex with index_mode override preserves Full
         let reindex_res = registry
             .execute(
                 "sync_corpus",
                 &mut engine,
-                serde_json::json!({ "mode": "full", "index_mode": "docs-embed" }),
+                serde_json::json!({ "mode": "full", "index_mode": "full" }),
             )
             .unwrap();
         assert_eq!(reindex_res["status"], "complete");
-        assert!(engine.is_docs_embed_mode());
+        assert!(!engine.is_fast_mode());
     }
 
     // ─── Progressive Disclosure Tests (Tier 1 → 2 → 3) ─────────────────

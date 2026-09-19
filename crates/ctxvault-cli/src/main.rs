@@ -85,15 +85,7 @@ struct Cli {
     #[arg(long)]
     fast: bool,
 
-    /// Docs-only embedding mode: compute vector embeddings for markdown docs anchors only, skipping code.
-    #[arg(long = "docs-embed")]
-    docs_embed: bool,
-
-    /// Skeleton mode: compute embeddings for markdown docs anchors and code symbol skeletons (signature + docstring + scope).
-    #[arg(long)]
-    skeleton: bool,
-
-    /// Indexing mode: full, skeleton, docs-embed, or fast. Overrides --fast, --skeleton, and --docs-embed if set.
+    /// Indexing mode: full or fast. Overrides --fast if set.
     #[arg(long = "index-mode", value_enum)]
     index_mode: Option<CliIndexMode>,
 
@@ -193,12 +185,6 @@ enum Commands {
         /// Skip dense embeddings and vector indexing for instant BM25+Graph indexing.
         #[arg(long)]
         fast: bool,
-        /// Docs-only embedding mode: compute vector embeddings for markdown docs anchors only.
-        #[arg(long = "docs-embed")]
-        docs_embed: bool,
-        /// Skeleton mode: compute embeddings for docs anchors and code symbol skeletons.
-        #[arg(long)]
-        skeleton: bool,
         /// Batch size for delta scanning (default 50).
         #[arg(long, default_value = "50")]
         batch_size: usize,
@@ -273,13 +259,9 @@ enum ConfigAction {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum CliIndexMode {
-    /// Full indexing: BM25 + Graph + Embedding across both code and docs.
+    /// Full indexing: Dense Embeddings (Jina ONNX) for Docs; Binary Hamming for Code; BM25 + Graph for both.
     Full,
-    /// Skeleton mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown doc anchors and code symbol skeletons.
-    Skeleton,
-    /// Intermediate mode: BM25 + Graph for code and docs; HNSW Vector embeddings for markdown docs anchors only.
-    DocsEmbed,
-    /// Fast mode: BM25 + Graph only. Zero ONNX loading, zero vector index allocation.
+    /// Fast mode: Algorithmic Binary Hamming + BM25 + Graph across both Docs and Code (Zero ONNX inference).
     Fast,
 }
 
@@ -287,8 +269,6 @@ impl From<CliIndexMode> for ctxvault_common::config::IndexMode {
     fn from(m: CliIndexMode) -> Self {
         match m {
             CliIndexMode::Full => ctxvault_common::config::IndexMode::Full,
-            CliIndexMode::Skeleton => ctxvault_common::config::IndexMode::Skeleton,
-            CliIndexMode::DocsEmbed => ctxvault_common::config::IndexMode::DocsEmbed,
             CliIndexMode::Fast => ctxvault_common::config::IndexMode::Fast,
         }
     }
@@ -479,7 +459,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("[+] Imported artifact into central storage: {}", imported.display());
                 return Ok(());
             }
-            Commands::Index { path, name, reindex, fast, docs_embed, skeleton, batch_size } => {
+            Commands::Index { path, name, reindex, fast, batch_size } => {
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
                 let dir_name =
                     canonical.file_name().and_then(|n| n.to_str()).unwrap_or("corpus").to_string();
@@ -492,10 +472,6 @@ async fn main() -> anyhow::Result<()> {
                 let engine = manager.get_engine_mut(&active_name)?;
                 if *fast {
                     engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Fast;
-                } else if *docs_embed {
-                    engine.config_mut().index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
-                } else if *skeleton {
-                    engine.config_mut().index_mode = ctxvault_common::config::IndexMode::Skeleton;
                 }
 
                 println!(
@@ -869,10 +845,6 @@ async fn main() -> anyhow::Result<()> {
             }
             if let Some(mode) = cli.index_mode {
                 config.index_mode = mode.into();
-            } else if cli.skeleton {
-                config.index_mode = ctxvault_common::config::IndexMode::Skeleton;
-            } else if cli.docs_embed {
-                config.index_mode = ctxvault_common::config::IndexMode::DocsEmbed;
             } else if cli.fast {
                 config.index_mode = ctxvault_common::config::IndexMode::Fast;
             }
