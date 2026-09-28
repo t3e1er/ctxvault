@@ -682,6 +682,11 @@ pub fn get_corpora_cache_dir() -> PathBuf {
     get_cache_dir().join("corpora")
 }
 
+/// Directory where central model weights and tokenizers are stored: `${CTXV_CACHE_DIR}/models`.
+pub fn get_models_cache_dir() -> PathBuf {
+    get_cache_dir().join("models")
+}
+
 /// Central index storage directory for a specific corpus: `${CTXV_CACHE_DIR}/corpora/<name>`.
 pub fn get_corpus_index_dir(name: &str) -> PathBuf {
     get_corpora_cache_dir().join(name)
