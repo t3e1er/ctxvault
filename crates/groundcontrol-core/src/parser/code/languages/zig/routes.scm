@@ -1,0 +1,1 @@
+(test_declaration) @definition.function @test

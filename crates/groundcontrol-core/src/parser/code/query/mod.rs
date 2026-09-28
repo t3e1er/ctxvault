@@ -1,15 +1,13 @@
-﻿//! Tree-sitter `.scm` query pack engine for declarative symbol extraction.
+//! Tree-sitter `.scm` query pack engine for declarative symbol extraction.
 //!
 //! Replaces imperative, handwritten string slice matching with compiled
-//! declarative Tree-sitter queries (`tags.scm`) for core languages.
+//! declarative Tree-sitter queries (`tags.scm`, `locals.scm`, `routes.scm`) for core languages.
 
-use std::sync::OnceLock;
+pub mod cache;
+pub use cache::get_language_query;
 
 use groundcontrol_common::types::CodeSymbolType;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
-
-use crate::parser::code::languages::SupportedLanguage;
-pub mod vended;
 
 /// Compiled Tree-sitter query with pre-resolved capture indices for high-performance dispatch.
 pub struct LanguageQuery {
@@ -128,16 +126,15 @@ impl LanguageQuery {
         }
     }
 
-    /// Execute the compiled query over an AST root node, collecting deduplicated definitions.
-    pub fn extract_matches<'a>(
+    /// Execute the compiled query over an AST root node, collecting all matching symbol definitions.
+    pub fn extract_symbols<'a>(
         &self,
         root_node: Node<'a>,
         source: &'a [u8],
     ) -> Vec<ExtractedQueryDefinition<'a>> {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root_node, source);
-        let mut results_map: std::collections::HashMap<usize, ExtractedQueryDefinition<'a>> =
-            std::collections::HashMap::new();
+        let mut defs = Vec::new();
 
         while let Some(m) = matches.next() {
             let mut name_node = None;
@@ -150,94 +147,90 @@ impl LanguageQuery {
 
             for capture in m.captures() {
                 let id = capture.index;
+                let cname = self.query.capture_names()[id as usize];
+
                 if Some(id) == self.name_capture_id {
                     name_node = Some(capture.node);
-                } else if Some(id) == self.def_function_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Function);
-                } else if Some(id) == self.def_method_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Method);
-                } else if Some(id) == self.def_class_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Class);
-                } else if Some(id) == self.def_struct_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Struct);
-                } else if Some(id) == self.def_interface_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Interface);
-                } else if Some(id) == self.def_trait_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Trait);
-                } else if Some(id) == self.def_enum_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Enum);
-                } else if Some(id) == self.def_module_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Module);
-                } else if Some(id) == self.def_type_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::TypeAlias);
-                } else if Some(id) == self.def_route_id {
-                    def_node = Some(capture.node);
-                    symbol_type = Some(CodeSymbolType::Route);
                 } else if Some(id) == self.inherits_id || Some(id) == self.extends_id {
                     inherits_nodes.push(capture.node);
                 } else if Some(id) == self.implements_id || Some(id) == self.implements_trait_id {
                     implements_nodes.push(capture.node);
                 } else if Some(id) == self.test_id {
                     is_test = true;
-                } else if Some(id) == self.local_var_id
-                    || Some(id) == self.local_type_id
-                    || Some(id) == self.doc_id
-                {
-                    // Skip local binding and doc comment captures from dynamic relation edges
+                } else if let Some(rel) = cname.strip_prefix("rel.") {
+                    dynamic_captures.push((rel.to_string(), capture.node));
+                } else if matches!(
+                    cname,
+                    "handles"
+                        | "decorates"
+                        | "macro_expands"
+                        | "foreign_key"
+                        | "embeds_struct"
+                        | "struct_embeds"
+                ) {
+                    dynamic_captures.push((cname.to_string(), capture.node));
                 } else {
-                    let cap_name = self.query.capture_names()[id as usize];
-                    dynamic_captures.push((cap_name.to_string(), capture.node));
-                }
-            }
+                    let st = if Some(id) == self.def_function_id {
+                        Some(CodeSymbolType::Function)
+                    } else if Some(id) == self.def_method_id {
+                        Some(CodeSymbolType::Method)
+                    } else if Some(id) == self.def_class_id {
+                        Some(CodeSymbolType::Class)
+                    } else if Some(id) == self.def_struct_id {
+                        Some(CodeSymbolType::Struct)
+                    } else if Some(id) == self.def_interface_id {
+                        Some(CodeSymbolType::Interface)
+                    } else if Some(id) == self.def_trait_id {
+                        Some(CodeSymbolType::Trait)
+                    } else if Some(id) == self.def_enum_id {
+                        Some(CodeSymbolType::Enum)
+                    } else if Some(id) == self.def_module_id {
+                        Some(CodeSymbolType::Module)
+                    } else if Some(id) == self.def_type_id {
+                        Some(CodeSymbolType::TypeAlias)
+                    } else if Some(id) == self.def_route_id {
+                        Some(CodeSymbolType::Route)
+                    } else {
+                        None
+                    };
 
-            if let (Some(def), Some(name), Some(sym_type)) = (def_node, name_node, symbol_type) {
-                let id = def.id();
-                if let Some(existing) = results_map.get_mut(&id) {
-                    if symbol_priority(sym_type) > symbol_priority(existing.symbol_type) {
-                        existing.symbol_type = sym_type;
-                        existing.name_node = name;
+                    if let Some(st) = st {
+                        let should_replace = match symbol_type {
+                            None => true,
+                            Some(existing) => symbol_priority(st) > symbol_priority(existing),
+                        };
+                        if should_replace {
+                            def_node = Some(capture.node);
+                            symbol_type = Some(st);
+                        }
                     }
-                    existing.inherits_nodes.extend(inherits_nodes);
-                    existing.implements_nodes.extend(implements_nodes);
-                    existing.dynamic_captures.extend(dynamic_captures);
-                    existing.is_test |= is_test;
-                } else {
-                    results_map.insert(
-                        id,
-                        ExtractedQueryDefinition {
-                            def_node: def,
-                            name_node: name,
-                            symbol_type: sym_type,
-                            inherits_nodes,
-                            implements_nodes,
-                            is_test,
-                            dynamic_captures,
-                        },
-                    );
                 }
+            }
+
+            if let (Some(name), Some(def), Some(st)) = (name_node, def_node, symbol_type) {
+                defs.push(ExtractedQueryDefinition {
+                    def_node: def,
+                    name_node: name,
+                    symbol_type: st,
+                    inherits_nodes,
+                    implements_nodes,
+                    is_test,
+                    dynamic_captures,
+                });
             }
         }
 
-        // Deduplicate relations per definition
-        for def in results_map.values_mut() {
-            let mut seen_in = std::collections::HashSet::new();
-            def.inherits_nodes.retain(|n| seen_in.insert(n.id()));
-            let mut seen_im = std::collections::HashSet::new();
-            def.implements_nodes.retain(|n| seen_im.insert(n.id()));
-            let mut seen_dyn = std::collections::HashSet::new();
-            def.dynamic_captures.retain(|(k, n)| seen_dyn.insert((k.clone(), n.id())));
-        }
+        defs
+    }
 
-        results_map.into_values().collect()
+    /// Execute the compiled query over an AST root node, collecting all matching symbol definitions.
+    #[inline]
+    pub fn extract_matches<'a>(
+        &self,
+        root_node: Node<'a>,
+        source: &'a [u8],
+    ) -> Vec<ExtractedQueryDefinition<'a>> {
+        self.extract_symbols(root_node, source)
     }
 
     /// Execute the compiled query over an AST root node, collecting local variable-to-type bindings.
@@ -350,50 +343,17 @@ impl<'a> ExtractedQueryDefinition<'a> {
     }
 }
 
-fn compile_query(lang: SupportedLanguage, source: &str) -> Option<LanguageQuery> {
-    let ts_lang = lang.tree_sitter_language();
-    match Query::new(&ts_lang, source) {
-        Ok(q) => Some(LanguageQuery::new(q)),
-        Err(err) => {
-            tracing::error!(
-                "Failed to compile tree-sitter query pack for {}: {:?}",
-                lang.name(),
-                err
-            );
-            None
-        }
-    }
-}
-
-const LANG_COUNT: usize = 48;
-static QUERIES: [OnceLock<Option<LanguageQuery>>; LANG_COUNT] =
-    [const { OnceLock::new() }; LANG_COUNT];
-
-/// Retrieve the pre-compiled LanguageQuery for a given language, if available.
-pub fn get_language_query(lang: SupportedLanguage) -> Option<&'static LanguageQuery> {
-    let idx = lang as usize;
-    if idx < LANG_COUNT {
-        QUERIES[idx]
-            .get_or_init(|| {
-                let src = vended::get_vended_query(lang);
-                compile_query(lang, src)
-            })
-            .as_ref()
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::code::languages::SupportedLanguage;
 
     #[test]
     fn test_all_query_packs_compile() {
         for &lang in SupportedLanguage::ALL {
-            let query_src = vended::get_vended_query(lang);
+            let query_src = lang.query_source();
             let ts_lang = lang.tree_sitter_language();
-            if let Err(e) = tree_sitter::Query::new(&ts_lang, query_src) {
+            if let Err(e) = tree_sitter::Query::new(&ts_lang, &query_src) {
                 panic!("Query pack for language {} failed: {:?}", lang.name(), e);
             }
 
@@ -406,4 +366,3 @@ mod tests {
         }
     }
 }
-

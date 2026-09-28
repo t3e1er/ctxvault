@@ -237,8 +237,8 @@ Instead of running heavy daemons dynamically:
 timeline
     title Strategic Implementation Roadmap
     section Tier 1 : Pure Rust Crates & In-Engine LSP (Delivered)
-        Declarative LanguageSpec : spec/ modular declarative symbol mapping
-        47 Language Support : 47 languages across official tree-sitter crates
+        Declarative LanguageSpec : Self-contained languages/<lang>/ module architecture
+        48 Language Support : 48 languages across official tree-sitter crates
         Pure-Rust Hybrid LSP : TypeEnvironment & receiver method resolution
         SCIP Ingestion : Direct protobuf ingestion via Engine::ingest_scip
     section Tier 2 : Vendored C Grammars (Roadmap)
@@ -249,27 +249,41 @@ timeline
         External LSP Socket : Opt-in socket client to existing IDE LSP daemons
 ```
 
-### 7.1 Tier 1: Declarative Specs, 47 Languages, Hybrid LSP & SCIP (Delivered)
-1. **Declarative `LanguageSpec` Architecture**:
-   Unified declarative specifications modularized across language families in [`crates/groundcontrol-core/src/parser/code/spec/`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/spec/mod.rs) covering 47 programming and config languages.
+### 7.1 Tier 1: Declarative Specs, 48 Languages, Hybrid LSP & SCIP (Delivered)
+1. **Self-Contained Language Module Architecture (`languages/<lang>/`)**:
+   Unified language definitions and AST specifications into self-contained directory packages under [`crates/groundcontrol-core/src/parser/code/languages/<lang>/`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/languages/) covering 48 programming and config languages. Each language directory encapsulates its grammar constructor, file extensions, exact filenames, co-located query packs, and AST node specifications in a single place:
+   - `mod.rs`: Exports `pub static DEFINITION: LanguageDefinition` and `pub static SPEC: LanguageSpec`.
+   - `tags.scm`: Co-located canonical symbol definitions, container scopes, and relational captures (`@inherits`, `@implements`, `@extends`).
+   - `locals.scm`: Co-located lexical scopes (`@local.scope`) and identifier bindings (`@local.var`, `@local.type`).
+   - `routes.scm`: Co-located semantic route patterns (`@route.pattern`, `@route.handler`) and test assertions (`@test.definition`).
+   Adding a language requires only creating `languages/<lang>/` and adding a 1-line tuple `(Variant, module_name)` to `define_languages!` in `languages/mod.rs`.
 2. **Grammar Expansion**:
-   Expanded from 15 to **47 supported languages** across systems, web, scripting, functional, cloud/infra, and schema domains.
+   Expanded from 15 to **48 supported languages** across systems, web, scripting, functional, cloud/infra, and schema domains.
 3. **In-Engine Pure-Rust Hybrid LSP & In-Process SCIP Moniker Synthesis**:
    Implemented `TypeEnvironment` and lexical scopes in [`crates/groundcontrol-core/src/graph/hybrid_lsp.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/hybrid_lsp.rs), paired with deterministic package manifest scoping (`package.json`, `go.mod`, `Cargo.toml`, `pom.xml`, `pyproject.toml`) and in-process SCIP moniker generation in [`crates/groundcontrol-core/src/graph/scip.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/scip.rs) without requiring external compiler toolchains.
-4. **Upstream Vended Query Packs & Elimination of Repo `.scm` Files**:
-   Eliminated manual authoring and maintenance of 48 individual `.scm` files. Upstream vended queries based on nvim-treesitter / helix canonical `tags.scm` (definitions) and `locals.scm` (scopes and local bindings) are consolidated in [`crates/groundcontrol-core/src/parser/code/query/vended.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/query/vended.rs) and bound directly to [`LanguageSpec`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/spec/types.rs) and [`SupportedLanguage`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/languages.rs). Adding a language now rolls grammar, import kinds, and query together with zero filesystem `.scm` bloat.
-5. **Dynamic Grammar-Derived AST Edge Engine & Petgraph Storage**:
+4. **Co-Located Upstream Query Packs & Greenfield Registry**:
+   Eliminated monolithic hand-rolled query strings in `vended.rs` and centralized query packs directly into their respective language modules (`languages/<lang>/tags.scm`, `locals.scm`, `routes.scm`). Structured across 3 clean layers:
+   - `tags.scm`: Canonical symbol definitions, container scopes, and relational captures (`@inherits`, `@implements`, `@extends`).
+   - `locals.scm`: Lexical scopes (`@local.scope`) and identifier bindings (`@local.var`, `@local.type`).
+   - `routes.scm`: Semantic route patterns (`@route.pattern`, `@route.handler`) and test assertions (`@test.definition`).
+   Compiled once at runtime via `OnceLock` with zero unsafe code and sub-millisecond caching in `query/cache.rs`.
+5. **Decoupled Code Parser Subsystems & Separation of Concerns**:
+   Refactored `parser/code/` into focused, cohesive subsystems adhering to the repository's modular architecture:
+   - `languages/`: Modular catalog of self-contained language modules (`languages/<lang>/mod.rs`, `spec.rs`, `mod.rs`).
+   - `semantics/`: Grammar extraction (`grammar.rs`), token normalization (`patterns.rs`), and scope path resolution (`scope.rs`).
+   - `query/`: Match extraction (`mod.rs`) and thread-safe `OnceLock` query compilation caching (`cache.rs`).
+   - `chunker/`: Syntax-aware AST chunking (`cAST`).
+   - `manifest/`: Project package manifest detection (`Cargo.toml`, `package.json`, `go.mod`, etc.).
+6. **Dynamic Grammar-Derived AST Edge Engine & Petgraph Storage**:
    Refactored relational edge types into generalized [`EdgeKind`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/types/edge.rs) (`Universal(UniversalEdge)` + `Grammar(Arc<str>)`), dynamically minting open grammar edges from Tree-sitter `@<rel_name>` captures with full Postcard binary serialization round-tripping in `graph.bin` (Graph Schema Version 3) and linear Cypher-Lite `graph_match` traversal.
-6. **Declarative Route Query Packs & Handles Topology**:
+7. **Declarative Route Query Packs & Handles Topology**:
    Extracted Web Framework API endpoints (`Axum`, `Actix`, `Express`, `Gin`, `FastAPI`, `Spring Boot`, `Rails`) declaratively via Tree-sitter queries into `CodeSymbolType::Route` nodes and synthesized `:handles` edges pointing directly to handler functions with `EdgeProvenance::CodeHandlesRoute`.
-7. **Pure AST Polyglot Inheritance & Test-to-Target Linking**:
+8. **Pure AST Polyglot Inheritance & Test-to-Target Linking**:
    Eliminated imperative language-specific inheritance branching in [`crates/groundcontrol-core/src/graph/code/visitor/defs.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/code/visitor/defs.rs); derived class/interface inheritance across Java, C#, C++, Python, Kotlin, Scala, Swift, and Rust purely through declarative `@inherits` and `@implements` captures. Automated `@test` function identification and test-to-target linking via outgoing call analysis with comprehensive assertion framework sink pruning (`assert`, `assert_eq!`, `expect`, `t.Run`, `Assert.Equal`).
-8. **Subproject Multi-SCIP Protobuf Index Ingestion**:
+9. **Subproject Multi-SCIP Protobuf Index Ingestion**:
    Added [`crates/groundcontrol-core/src/graph/scip.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/scip.rs) and `Engine::ingest_all_scip_indices` with subproject prefix remapping and recursive discovery across monorepos and polyglot microservices in `CorpusManager`, supporting <200ms ingestion of compiler-exact `.scip` dumps.
-9. **Universal Deterministic Import-Path Resolution & Greenfield LSP Simplification**:
-   Pruned 240+ lines of bespoke, language-specific AST walkers (`inspect_rust_node`, `inspect_js_ts_node`, `inspect_python_node`, `inspect_go_node`) and fragile string heuristics from [`crates/groundcontrol-core/src/graph/hybrid_lsp.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/hybrid_lsp.rs) into a pure, generic lexical scope stack. Implemented declarative local bindings (`@local.var`, `@local.type`) in compiled query packs and a universal import table resolution pass in [`crates/groundcontrol-core/src/graph/code/visitor/imports.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/code/visitor/imports.rs) normalizing relative (`./`, `../`), crate (`crate::`, `super::`), and module paths against repository roots to produce deterministic `ResolutionConfidence::High` cross-file call edges.
-10. **Unified Language Definition & Extension Architecture**:
-   Integrated grammar, import/call classification, and vended query packs into a unified contract across `SupportedLanguage::spec()`, `SupportedLanguage::vended_query()`, and `LanguageSpec::tree_sitter_language()`, ensuring new language additions immediately roll grammar bindings and queries together with 100% test coverage across all 48 languages.
+10. **Universal Deterministic Import-Path Resolution & Greenfield LSP Simplification**:
+    Pruned 240+ lines of bespoke, language-specific AST walkers (`inspect_rust_node`, `inspect_js_ts_node`, `inspect_python_node`, `inspect_go_node`) and fragile string heuristics from [`crates/groundcontrol-core/src/graph/hybrid_lsp.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/hybrid_lsp.rs) into a pure, generic lexical scope stack. Implemented declarative local bindings (`@local.var`, `@local.type`) in compiled query packs and a universal import table resolution pass in [`crates/groundcontrol-core/src/graph/code/visitor/imports.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/code/visitor/imports.rs) normalizing relative (`./`, `../`), crate (`crate::`, `super::`), and module paths against repository roots to produce deterministic `ResolutionConfidence::High` cross-file call edges.
 
 ### 7.2 Tier 2: Upstream C/C++ Tree-Sitter Grammars via `cc` in `build.rs` (Roadmap)
 * **Goal**: Expand from 47 to 100+ languages by directly compiling upstream C grammars (`parser.c`, `scanner.c`) via `cc::Build` in `build.rs`.
