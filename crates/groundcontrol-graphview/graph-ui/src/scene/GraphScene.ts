@@ -213,7 +213,11 @@ export class GraphScene {
   }
 
   public setBloomStrength(val: number) {
-    this.bloomPass.strength = val / 15.0;
+    this.bloomPass.strength = val / 30.0;
+  }
+
+  public setBloomThreshold(val: number) {
+    this.bloomPass.threshold = val;
   }
 
   public setEdgeDensity(val: number) {

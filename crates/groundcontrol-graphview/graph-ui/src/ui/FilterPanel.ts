@@ -8,6 +8,7 @@ export class FilterPanel {
   public onEdgeTypeToggle?: (edgeType: string, enabled: boolean) => void;
   public onParticleSizeChange?: (val: number) => void;
   public onBloomChange?: (val: number) => void;
+  public onBloomThresholdChange?: (val: number) => void;
   public onEdgeDensityChange?: (val: number) => void;
   public onClusterDistChange?: (val: number) => void;
   public onNodeDispChange?: (val: number) => void;
@@ -180,8 +181,12 @@ export class FilterPanel {
               <input type="range" id="size-slider" min="1" max="15" value="6">
             </div>
             <div class="slider-row">
-              <span>Bloom Strength</span>
-              <input type="range" id="bloom-slider" min="0" max="30" value="18">
+              <span>Bloom Intensity</span>
+              <input type="range" id="bloom-slider" min="0" max="30" value="12">
+            </div>
+            <div class="slider-row">
+              <span>Glow Threshold</span>
+              <input type="range" id="bloom-threshold-slider" min="10" max="95" value="48" title="Cutoff luminance for glow (higher = less blowout)">
             </div>
             <div class="slider-row">
               <span>Edge Density</span>
@@ -259,6 +264,11 @@ export class FilterPanel {
     const bloomSlider = this.container.querySelector('#bloom-slider') as HTMLInputElement;
     bloomSlider?.addEventListener('input', () => {
       this.onBloomChange?.(parseFloat(bloomSlider.value));
+    });
+
+    const bloomThresholdSlider = this.container.querySelector('#bloom-threshold-slider') as HTMLInputElement;
+    bloomThresholdSlider?.addEventListener('input', () => {
+      this.onBloomThresholdChange?.(parseFloat(bloomThresholdSlider.value) / 100.0);
     });
 
     const edgeSlider = this.container.querySelector('#edge-slider') as HTMLInputElement;

@@ -21,6 +21,7 @@ export class HeaderControls {
   ) {
     const corpusOptions = [
       '<option value="all">All Corpora (Galaxy)</option>',
+      ...(activeCorpus === 'ego' ? [`<option value="ego" selected>Ego Subgraph (${nodeCount.toLocaleString()} n)</option>`] : []),
       ...corpora.map(
         (c) =>
           `<option value="${c.name}" ${c.name === activeCorpus ? 'selected' : ''}>${c.name} (${c.nodes.toLocaleString()} n)</option>`

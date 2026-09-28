@@ -84,6 +84,10 @@ class GraphViewApp {
       this.scene.setBloomStrength(val);
     };
 
+    this.filterPanel.onBloomThresholdChange = (val) => {
+      this.scene.setBloomThreshold(val);
+    };
+
     this.filterPanel.onEdgeDensityChange = (val) => {
       this.scene.setEdgeDensity(val);
     };
@@ -270,17 +274,29 @@ class GraphViewApp {
   }
 
   private async loadEgoSubgraph(centerPath: string) {
-    const url = `/api/graph/subgraph?center=${encodeURIComponent(centerPath)}&hops=2&budget=120&cluster_mode=${this.currentClusterMode}`;
-    const res = await fetch(url);
-    if (!res.ok) return;
+    this.showLoading(`Extracting ego subgraph for ${centerPath}...`);
+    try {
+      const url = `/api/graph/subgraph?center=${encodeURIComponent(centerPath)}&hops=2&budget=120&cluster_mode=community`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.error(`Failed to load ego subgraph for ${centerPath}: HTTP ${res.status}`);
+        this.hideLoading();
+        return;
+      }
 
-    const buffer = await res.arrayBuffer();
-    const payload = decodeBinaryGraph(buffer);
-    payload.corpus = 'ego';
-    this.currentPayload = payload;
+      const buffer = await res.arrayBuffer();
+      const payload = decodeBinaryGraph(buffer);
+      payload.corpus = 'ego';
+      this.currentPayload = payload;
 
-    this.scene.setData(payload, this.corpora, this.currentViewMode);
-    this.filterPanel.render(payload.nodes, payload.edges);
+      this.scene.setData(payload, this.corpora, this.currentViewMode);
+      this.header.render(this.corpora, 'ego', this.currentViewMode, payload.nodes.length, payload.edges.length);
+      this.filterPanel.render(payload.nodes, payload.edges);
+      this.hideLoading();
+    } catch (err) {
+      console.error('Error loading ego subgraph:', err);
+      this.hideLoading();
+    }
   }
 }
 
