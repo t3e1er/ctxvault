@@ -19,7 +19,7 @@ use tracing::info;
 
 use crate::layout::tiered::{
     build_tier_0_overview, build_tier_1_corpus, build_tier_2_local, compute_corpus_centers,
-    TIER_0_BUDGET, TIER_1_DEFAULT_BUDGET,
+    DEFAULT_NODE_BUDGET,
 };
 use crate::layout::{ClusterMode, GraphLayout};
 use crate::server::state::ServerState;
@@ -106,10 +106,16 @@ pub async fn handle_status(State(state): State<ServerState>) -> Json<Value> {
         .iter()
         .map(|name| {
             if let Some(snap) = catalog.get_corpus(name) {
+                let mtime_secs = snap
+                    .graph_mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 serde_json::json!({
                     "name": name,
                     "nodes": snap.graph.node_count(),
                     "edges": snap.graph.edge_count(),
+                    "graph_mtime": mtime_secs,
                 })
             } else {
                 serde_json::json!({ "name": name })
@@ -162,7 +168,7 @@ pub async fn handle_overview(
     Query(q): Query<FormatQuery>,
 ) -> Response {
     let mode = q.cluster_mode.unwrap_or_default();
-    let budget = q.budget.unwrap_or(TIER_0_BUDGET);
+    let budget = q.budget.unwrap_or(DEFAULT_NODE_BUDGET);
     let cache_key = format!("overview:all:{budget}:{mode:?}");
     {
         let cache = state.layout_cache.read().await;
@@ -189,7 +195,7 @@ pub async fn handle_corpus(
     AxumPath(name): AxumPath<String>,
     Query(q): Query<CorpusQuery>,
 ) -> Response {
-    let budget = q.budget.unwrap_or(TIER_1_DEFAULT_BUDGET);
+    let budget = q.budget.unwrap_or(DEFAULT_NODE_BUDGET);
     let mode = q.cluster_mode.unwrap_or_default();
     let cache_key = format!("corpus:{}:{}:{:?}", name, budget, mode);
 
@@ -254,7 +260,40 @@ pub async fn handle_subgraph(
     }
 }
 
-/// Search/Query handler matching nodes.
+/// Reload a single corpus: invalidates all layout cache entries for that corpus and the
+/// galaxy overview, then reloads the corpus graph snapshot from disk.
+pub async fn handle_reload_corpus(
+    State(state): State<ServerState>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    {
+        let mut catalog = state.catalog.write().await;
+        match catalog.reload_corpus(&name) {
+            Ok(_) => {}
+            Err(e) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("Failed to reload corpus '{}': {}", name, e),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Evict all cache entries touching this corpus or the galaxy overview.
+    {
+        let mut cache = state.layout_cache.write().await;
+        cache.retain(|k, _| {
+            !k.starts_with(&format!("corpus:{}:", name))
+                && !k.starts_with("overview:all:")
+        });
+    }
+
+    info!(corpus = %name, "Corpus reloaded and layout cache invalidated");
+    (StatusCode::OK, format!("Corpus '{}' reloaded", name)).into_response()
+}
+
+/// Search nodes across corpora matching a substring query.
 pub async fn handle_query(
     State(state): State<ServerState>,
     Json(req): Json<SearchQueryRequest>,
@@ -387,6 +426,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/graph/corpus/{name}", get(handle_corpus))
         .route("/api/graph/subgraph", get(handle_subgraph))
         .route("/api/graph/query", post(handle_query))
+        .route("/api/graph/reload/{name}", post(handle_reload_corpus))
         .route(
             "/api/events/activations",
             get(handle_sse_activations).post(handle_inject_activation),

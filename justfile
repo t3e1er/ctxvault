@@ -118,6 +118,11 @@ run *ARGS:
 graphview *ARGS:
     cargo run -p groundcontrol-cli -- graphview {{ARGS}}
 
+# Build the 3D GraphView singlefile bundle (requires Node.js 20+)
+# Commit the generated embedded_dashboard.html to git so pure Rust builds need no Node.js
+build-ui:
+    cd crates/groundcontrol-graphview/graph-ui && npm run build
+
 # ── Groundtruth Benchmarking & Regression ────────────
 
 # Run the groundtruth regression and progress pipeline by TOML version

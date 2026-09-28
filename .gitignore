@@ -49,4 +49,8 @@ ctxv-clients.json
 
 # Benchmark workspaces & cloned reference repos/datasets
 benchmarks/workspace/
+
+# Node / Frontend UI
+node_modules/
+**/dist/
 

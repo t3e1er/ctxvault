@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
+
 /// Structured agent activity event emitted on MCP tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivation {
@@ -53,7 +54,7 @@ fn default_true() -> bool {
 #[derive(Clone)]
 pub struct TelemetryHub {
     tx: broadcast::Sender<AgentActivation>,
-    history: Arc<RwLock<Vec<AgentActivation>>>,
+    history: Arc<RwLock<std::collections::VecDeque<AgentActivation>>>,
     max_history: usize,
 }
 
@@ -61,16 +62,20 @@ impl TelemetryHub {
     /// Create a new telemetry hub.
     pub fn new(capacity: usize, max_history: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity);
-        Self { tx, history: Arc::new(RwLock::new(Vec::with_capacity(max_history))), max_history }
+        Self {
+            tx,
+            history: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(max_history))),
+            max_history,
+        }
     }
 
     /// Broadcast a new agent activation and append to ring buffer.
     pub async fn publish(&self, activation: AgentActivation) {
         let mut hist = self.history.write().await;
         if hist.len() >= self.max_history {
-            hist.remove(0);
+            hist.pop_front(); // O(1) VecDeque eviction
         }
-        hist.push(activation.clone());
+        hist.push_back(activation.clone());
         let _ = self.tx.send(activation);
     }
 
@@ -81,7 +86,7 @@ impl TelemetryHub {
 
     /// Get a snapshot of recent activations.
     pub async fn recent_history(&self) -> Vec<AgentActivation> {
-        self.history.read().await.clone()
+        self.history.read().await.iter().cloned().collect()
     }
 }
 

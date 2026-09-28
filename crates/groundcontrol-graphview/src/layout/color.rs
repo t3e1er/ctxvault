@@ -158,3 +158,37 @@ pub fn assign_color_and_type(
         ("CodeSymbol".to_string(), color)
     }
 }
+
+/// Map an edge relationship type to a distinct theme color.
+pub fn color_for_edge_type(edge_type: &str) -> u32 {
+    match edge_type.to_lowercase().as_str() {
+        // Code relations
+        "calls" | "call" => 0x10b981,                       // Emerald
+        "defines" | "defines_method" => 0xa855f7,            // Purple
+        "imports" | "import" => 0x3b82f6,                    // Blue
+        "implements" => 0xf97316,                            // Orange
+        // Structural relations
+        "wikilink" | "reference" => 0x38bdf8,                // Cyan
+        "related" | "frontmatter" => 0x67e8f9,               // Light Cyan
+        // Semantic relations
+        "similar_to" | "tag_similarity" => 0x8b5cf6,         // Violet
+        // CrossModal relations
+        "documents" | "tested_by" | "specifies" => 0xf59e0b, // Amber
+        // Cross-Corpus special
+        "cross_corpus" => 0xffffff,                          // White
+        _ => 0x64748b,                                       // Slate Gray fallback
+    }
+}
+
+/// Stellar spectral color based on node degree (M -> O spectral classes).
+/// Mirrors astrophysical Morgan-Keenan spectral classification.
+pub fn stellar_color_for_degree(degree: usize) -> u32 {
+    match degree {
+        0..=1 => 0xef4444,   // Red (Class M)
+        2..=4 => 0xf97316,   // Orange (Class K)
+        5..=9 => 0xfacc15,   // Yellow (Class G)
+        10..=19 => 0xf8fafc, // White (Class F/A)
+        20..=49 => 0x67e8f9, // Light Blue (Class B)
+        _ => 0x38bdf8,       // Deep Blue / Neon Violet (Class O)
+    }
+}
