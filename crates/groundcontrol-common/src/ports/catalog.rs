@@ -134,6 +134,15 @@ pub trait MetadataCatalog {
     /// Retrieve all code symbols in the entire catalog.
     fn get_all_code_symbols(&self) -> Result<Vec<CodeSymbol>>;
 
+    /// Find code symbols whose SCIP canonical moniker matches exactly.
+    fn find_symbols_by_canonical_name(&self, canonical_name: &str) -> Result<Vec<CodeSymbol>> {
+        let all = self.get_all_code_symbols()?;
+        Ok(all
+            .into_iter()
+            .filter(|s| s.canonical_name.as_deref() == Some(canonical_name))
+            .collect())
+    }
+
     /// Flush the database write-ahead log or checkpoint changes to disk.
     fn checkpoint(&self) -> Result<()> {
         Ok(())

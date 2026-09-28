@@ -108,6 +108,7 @@ tree-sitter-gleam = "1.0"
 tree-sitter-powershell = "0.26"
 tree-sitter-d = "0.8"
 tree-sitter-wgsl-bevy = "0.1.4"
+tree-sitter-erlang = "0.20"
 
 
 # SCIP Code Intelligence & Ingestion

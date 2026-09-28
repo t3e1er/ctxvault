@@ -25,6 +25,7 @@ pub(crate) struct CallAndImportVisitor<'a> {
     pub(super) visited_edges: HashSet<(String, String, String)>,
     pub(super) visited_external_refs: HashSet<(String, String, ExternalRefKind)>,
     pub(super) type_env: TypeEnvironment,
+    pub(super) test_callers: HashSet<String>,
     pub(super) depth: usize,
 }
 
@@ -36,6 +37,23 @@ impl<'a> CallAndImportVisitor<'a> {
         file_symbols: &'a [CodeSymbol],
         symbol_index: &'a HashMap<String, Vec<&'a CodeSymbol>>,
     ) -> Self {
+        let manifest =
+            crate::parser::code::manifest::find_enclosing_manifest(Path::new(&file_path), None);
+        let mut test_callers = HashSet::new();
+        let fp_lower = file_path.to_lowercase();
+        let is_test_file = fp_lower.contains("test") || fp_lower.contains("spec");
+        for s in file_symbols {
+            if is_test_file
+                || s.name.starts_with("test_")
+                || s.name.starts_with("Test")
+                || s.signature.contains("#[test]")
+                || s.signature.contains("#[tokio::test]")
+                || s.signature.contains("@Test")
+                || s.signature.contains("@pytest")
+            {
+                test_callers.insert(s.scope_path.clone());
+            }
+        }
         Self {
             file_path,
             content,
@@ -49,7 +67,8 @@ impl<'a> CallAndImportVisitor<'a> {
             visited_calls: HashSet::new(),
             visited_edges: HashSet::new(),
             visited_external_refs: HashSet::new(),
-            type_env: TypeEnvironment::new(language),
+            type_env: TypeEnvironment::new(language).with_manifest(manifest),
+            test_callers,
             depth: 0,
         }
     }

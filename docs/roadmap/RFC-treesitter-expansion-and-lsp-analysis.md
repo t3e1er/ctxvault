@@ -254,16 +254,24 @@ timeline
    Unified declarative specifications modularized across language families in [`crates/groundcontrol-core/src/parser/code/spec/`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/spec/mod.rs) covering 47 programming and config languages.
 2. **Grammar Expansion**:
    Expanded from 15 to **47 supported languages** across systems, web, scripting, functional, cloud/infra, and schema domains.
-3. **In-Engine Pure-Rust Hybrid LSP**:
-   Implemented `TypeEnvironment` and lexical scopes in [`crates/groundcontrol-core/src/graph/code.rs`](file:///c:/dev/ctx/groundcontrol/crates/groundcontrol-core/src/graph/code.rs), enabling receiver method disambiguation (`x.method()` $\to$ `Type::method`) with `ResolutionConfidence::High`.
-4. **SCIP Protobuf Index Ingestion**:
-   Added [`crates/groundcontrol-core/src/graph/scip.rs`](file:///c:/dev/ctx/groundcontrol/crates/groundcontrol-core/src/graph/scip.rs) and `Engine::ingest_scip` with CLI `--scip <PATH>`, supporting <200ms ingestion of compiler-exact `.scip` dumps.
+3. **In-Engine Pure-Rust Hybrid LSP & In-Process SCIP Moniker Synthesis**:
+   Implemented `TypeEnvironment` and lexical scopes in [`crates/groundcontrol-core/src/graph/hybrid_lsp.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/hybrid_lsp.rs), paired with deterministic package manifest scoping (`package.json`, `go.mod`, `Cargo.toml`, `pom.xml`, `pyproject.toml`) and in-process SCIP moniker generation in [`crates/groundcontrol-core/src/graph/scip.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/scip.rs) without requiring external compiler toolchains.
+4. **Compiled Tree-sitter `.scm` Query Pack Engine**:
+   Integrated 15 standard compiled upstream `.scm` query packs (`rust.scm`, `python.scm`, `typescript.scm`, `go.scm`, `java.scm`, `csharp.scm`, `c.scm`, `cpp.scm`, `ruby.scm`, `php.scm`, `kotlin.scm`, `scala.scm`, `swift.scm`, `elixir.scm`, `erlang.scm`) in [`crates/groundcontrol-core/src/parser/code/query/`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/code/query/mod.rs) using cached `QueryCursor` dispatch, pruning legacy handwritten node kind string slices.
+5. **Dynamic Grammar-Derived AST Edge Engine & Petgraph Storage**:
+   Refactored relational edge types into generalized [`EdgeKind`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/types/edge.rs) (`Universal(UniversalEdge)` + `Grammar(Arc<str>)`), dynamically minting open grammar edges from Tree-sitter `@<rel_name>` captures with full Postcard binary serialization round-tripping in `graph.bin` (Graph Schema Version 3) and linear Cypher-Lite `graph_match` traversal.
+6. **Declarative Route Query Packs & Handles Topology**:
+   Extracted Web Framework API endpoints (`Axum`, `Actix`, `Express`, `Gin`, `FastAPI`, `Spring Boot`, `Rails`) declaratively via Tree-sitter queries into `CodeSymbolType::Route` nodes and synthesized `:handles` edges pointing directly to handler functions with `EdgeProvenance::CodeHandlesRoute`.
+7. **Pure AST Polyglot Inheritance & Test-to-Target Linking**:
+   Eliminated imperative language-specific inheritance branching in [`crates/groundcontrol-core/src/graph/code/visitor/defs.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/code/visitor/defs.rs); derived class/interface inheritance across Java, C#, C++, Python, Kotlin, Scala, Swift, and Rust purely through declarative `@inherits` and `@implements` captures. Automated `@test` function identification and test-to-target linking via outgoing call analysis with comprehensive assertion framework sink pruning (`assert`, `assert_eq!`, `expect`, `t.Run`, `Assert.Equal`).
+8. **Subproject Multi-SCIP Protobuf Index Ingestion**:
+   Added [`crates/groundcontrol-core/src/graph/scip.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/scip.rs) and `Engine::ingest_all_scip_indices` with subproject prefix remapping and recursive discovery across monorepos and polyglot microservices in `CorpusManager`, supporting <200ms ingestion of compiler-exact `.scip` dumps.
 
 ### 7.2 Tier 2: Upstream C/C++ Tree-Sitter Grammars via `cc` in `build.rs` (Roadmap)
 * **Goal**: Expand from 47 to 100+ languages by directly compiling upstream C grammars (`parser.c`, `scanner.c`) via `cc::Build` in `build.rs`.
-* **Target Languages**: Clojure, Nim, Odin, Fortran, COBOL, Ada, Apex, Pascal, Perl, Erlang, Fish, V, Reason, Scheme, Common Lisp, Racket.
+* **Target Languages**: Clojure, Nim, Odin, Fortran, COBOL, Ada, Apex, Pascal, Perl, Fish, V, Reason, Scheme, Common Lisp, Racket.
 * **Safety Isolation**: Maintain `#![forbid(unsafe_code)]` at our crate boundary by isolating raw FFI declarations within a sealed `ffi` module.
 
-### 7.3 Tier 3: Compiler-Grade Code Intelligence & LSP Daemon Integrations (Roadmap)
-* **Automated SCIP Pipeline**: Toolchain automation hooks for `scip-rust`, `scip-typescript`, `scip-python`, and `scip-clang` with incremental diffing and cross-corpus namespace resolution.
+### 7.3 Tier 3: Compiler-Grade Code Intelligence & LSP Daemon Integrations (In Progress)
+* **Automated SCIP Pipeline & Multi-Project Discovery**: Automated recursive discovery of subproject `index.scip` files generated by external LSPs (`rust-analyzer`, `gopls`, `pyright`, `jdtls`, `scip-clang`), remapping document paths relative to repository root and reconciling monikers with `CodeSymbol.canonical_name`.
 * **External LSP Socket Connector**: Zero-overhead opt-in socket client (`--lsp-socket <lang>:<addr>`) connecting to pre-existing background IDE language servers without spawning unmanaged, memory-heavy daemon supervisor processes inside `groundcontrol`.

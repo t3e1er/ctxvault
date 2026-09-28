@@ -120,6 +120,7 @@ impl CodeGraphExtractor {
 
         let mut visitor =
             CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, symbol_index);
+        visitor.extract_query_edges(tree.root_node());
         visitor.visit(tree.root_node());
 
         let mut external_refs = visitor.external_refs;

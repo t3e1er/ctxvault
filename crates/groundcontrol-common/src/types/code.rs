@@ -140,6 +140,8 @@ pub enum CodeSymbolType {
     Constant,
     /// Type alias definition.
     TypeAlias,
+    /// HTTP / gRPC / RPC API route endpoint declaration.
+    Route,
 }
 
 /// A structured code symbol record extracted via AST analysis.
@@ -164,6 +166,9 @@ pub struct CodeSymbol {
     pub start_line: usize,
     /// 1-based end line.
     pub end_line: usize,
+    /// Canonical SCIP moniker / symbol identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
 }
 
 /// Alias for code symbol and document node identifiers.

@@ -100,6 +100,8 @@ pub enum SupportedLanguage {
     D,
     /// WGSL WebGPU Shader (`.wgsl`)
     Wgsl,
+    /// Erlang (`.erl`, `.hrl`)
+    Erlang,
 }
 
 impl SupportedLanguage {
@@ -153,6 +155,7 @@ impl SupportedLanguage {
             Self::PowerShell => "powershell",
             Self::D => "d",
             Self::Wgsl => "wgsl",
+            Self::Erlang => "erlang",
         }
     }
 
@@ -206,6 +209,7 @@ impl SupportedLanguage {
             Self::PowerShell => tree_sitter_powershell::LANGUAGE.into(),
             Self::D => tree_sitter_d::LANGUAGE.into(),
             Self::Wgsl => tree_sitter_wgsl_bevy::LANGUAGE.into(),
+            Self::Erlang => tree_sitter_erlang::LANGUAGE.into(),
         }
     }
 
@@ -287,6 +291,7 @@ pub fn detect_language(path: &Path) -> Option<SupportedLanguage> {
         "ps1" | "psm1" | "psd1" => Some(SupportedLanguage::PowerShell),
         "d" | "di" => Some(SupportedLanguage::D),
         "wgsl" => Some(SupportedLanguage::Wgsl),
+        "erl" | "hrl" => Some(SupportedLanguage::Erlang),
         _ => None,
     }
 }

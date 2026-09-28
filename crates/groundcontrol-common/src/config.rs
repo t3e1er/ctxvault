@@ -178,14 +178,21 @@ pub fn default_exclude_patterns() -> Vec<String> {
         "*.bz2".to_string(),
         "*.xz".to_string(),
         "*.7z".to_string(),
-        // Package manager lockfiles
+        // Package manager lockfiles & dependency checksums
         "package-lock.json".to_string(),
+        "*-lock.json".to_string(),
         "pnpm-lock.yaml".to_string(),
+        "*-lock.yaml".to_string(),
         "yarn.lock".to_string(),
         "Cargo.lock".to_string(),
         "composer.lock".to_string(),
         "Gemfile.lock".to_string(),
         "poetry.lock".to_string(),
+        "flake.lock".to_string(),
+        "pubspec.lock".to_string(),
+        "mix.lock".to_string(),
+        "*.lock".to_string(),
+        "*.sum".to_string(),
     ]
 }
 
@@ -991,6 +998,11 @@ mod tests {
         assert!(config.exclude.patterns.contains(&"tests/".to_string()));
         assert!(config.exclude.patterns.contains(&"node_modules/".to_string()));
         assert!(config.exclude.patterns.contains(&"target/".to_string()));
+        assert!(config.exclude.patterns.contains(&"package-lock.json".to_string()));
+        assert!(config.exclude.patterns.contains(&"*-lock.json".to_string()));
+        assert!(config.exclude.patterns.contains(&"Cargo.lock".to_string()));
+        assert!(config.exclude.patterns.contains(&"*.lock".to_string()));
+        assert!(config.exclude.patterns.contains(&"*.sum".to_string()));
     }
 
     #[test]

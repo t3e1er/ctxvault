@@ -46,7 +46,7 @@ impl KnowledgeGraph {
             for edge in self.graph.edges_directed(current, Direction::Outgoing) {
                 let edge_data = edge.weight();
                 if let Some(filter) = edge_type_filter {
-                    if !filter.contains(&edge_data.edge_type) {
+                    if !filter.iter().any(|f| f.as_str() == edge_data.edge_type()) {
                         continue;
                     }
                 }
@@ -103,7 +103,7 @@ impl KnowledgeGraph {
             for edge in self.graph.edges_directed(current, Direction::Outgoing) {
                 let edge_data = edge.weight();
                 if let Some(filter) = edge_type_filter {
-                    if !filter.contains(&edge_data.edge_type) {
+                    if !filter.iter().any(|f| f.as_str() == edge_data.edge_type()) {
                         continue;
                     }
                 }
@@ -146,7 +146,7 @@ impl KnowledgeGraph {
                     }
                 }
                 result
-                    .entry(edge_data.edge_type.clone())
+                    .entry(edge_data.edge_type().to_string())
                     .or_default()
                     .push(source_node.path.clone());
             }
@@ -177,7 +177,7 @@ impl KnowledgeGraph {
                     }
                 }
                 result
-                    .entry(edge_data.edge_type.clone())
+                    .entry(edge_data.edge_type().to_string())
                     .or_default()
                     .push(target_node.path.clone());
             }
@@ -216,7 +216,7 @@ impl KnowledgeGraph {
             for edge in self.graph.edges_directed(current, Direction::Outgoing) {
                 let edge_data = edge.weight();
                 if let Some(filter) = edge_type_filter {
-                    if !filter.contains(&edge_data.edge_type) {
+                    if !filter.iter().any(|f| f.as_str() == edge_data.edge_type()) {
                         continue;
                     }
                 }
@@ -266,7 +266,7 @@ impl KnowledgeGraph {
 
         for edge_ref in self.graph.edges_directed(idx, Direction::Outgoing) {
             let weight = edge_ref.weight();
-            match weight.edge_type.as_str() {
+            match weight.edge_type() {
                 "calls" => affordances.calls_out = Some(affordances.calls_out.unwrap_or(0) + 1),
                 "implements" | "implements_trait" => {
                     affordances.implements = Some(affordances.implements.unwrap_or(0) + 1)
@@ -286,7 +286,7 @@ impl KnowledgeGraph {
 
         for edge_ref in self.graph.edges_directed(idx, Direction::Incoming) {
             let weight = edge_ref.weight();
-            match weight.edge_type.as_str() {
+            match weight.edge_type() {
                 "calls" => affordances.calls_in = Some(affordances.calls_in.unwrap_or(0) + 1),
                 "wikilink" => {
                     affordances.wikilinks_in = Some(affordances.wikilinks_in.unwrap_or(0) + 1)
@@ -313,13 +313,13 @@ impl KnowledgeGraph {
         let mut outgoing_by_type: HashMap<&str, Vec<String>> = HashMap::new();
 
         for edge_ref in self.graph.edges_directed(idx, Direction::Incoming) {
-            let edge_type = edge_ref.weight().edge_type.as_str();
+            let edge_type = edge_ref.weight().edge_type();
             let source_name = clean_node_name(&self.graph[edge_ref.source()].path);
             incoming_by_type.entry(edge_type).or_default().push(source_name);
         }
 
         for edge_ref in self.graph.edges_directed(idx, Direction::Outgoing) {
-            let edge_type = edge_ref.weight().edge_type.as_str();
+            let edge_type = edge_ref.weight().edge_type();
             let target_name = clean_node_name(&self.graph[edge_ref.target()].path);
             outgoing_by_type.entry(edge_type).or_default().push(target_name);
         }
@@ -433,7 +433,7 @@ impl KnowledgeGraph {
 
             if allow_outgoing {
                 for edge in self.graph.edges_directed(curr, Direction::Outgoing) {
-                    if edge.weight().edge_type.eq_ignore_ascii_case(edge_type) {
+                    if edge.weight().edge_type().eq_ignore_ascii_case(edge_type) {
                         let neighbor = edge.target();
                         if !visited.contains(&neighbor) {
                             let _ = visited.insert(neighbor);
@@ -448,7 +448,7 @@ impl KnowledgeGraph {
                                 path,
                                 title,
                                 depth: depth + 1,
-                                edge_type: edge.weight().edge_type.clone(),
+                                edge_type: edge.weight().edge_type().to_string(),
                                 direction: "outgoing".to_string(),
                             });
                             queue.push_back((neighbor, depth + 1));
@@ -459,7 +459,7 @@ impl KnowledgeGraph {
 
             if allow_incoming {
                 for edge in self.graph.edges_directed(curr, Direction::Incoming) {
-                    if edge.weight().edge_type.eq_ignore_ascii_case(edge_type) {
+                    if edge.weight().edge_type().eq_ignore_ascii_case(edge_type) {
                         let neighbor = edge.source();
                         if !visited.contains(&neighbor) {
                             let _ = visited.insert(neighbor);
@@ -474,7 +474,7 @@ impl KnowledgeGraph {
                                 path,
                                 title,
                                 depth: depth + 1,
-                                edge_type: edge.weight().edge_type.clone(),
+                                edge_type: edge.weight().edge_type().to_string(),
                                 direction: "incoming".to_string(),
                             });
                             queue.push_back((neighbor, depth + 1));
@@ -499,7 +499,7 @@ impl KnowledgeGraph {
         for edge in self.graph.edges_directed(idx, Direction::Incoming) {
             let src_idx = edge.source();
             if let Some(src_node) = self.graph.node_weight(src_idx) {
-                let et = edge.weight().edge_type.to_lowercase();
+                let et = edge.weight().edge_type().to_lowercase();
                 match et.as_str() {
                     "supersedes" => ann.superseded_by.push(src_node.path.clone()),
                     "implements" => ann.implemented_by.push(src_node.path.clone()),
@@ -513,7 +513,7 @@ impl KnowledgeGraph {
                     _ => {
                         if edge.weight().class.matches(EdgeClass::Structural) {
                             ann.incoming
-                                .entry(edge.weight().edge_type.clone())
+                                .entry(edge.weight().edge_type().to_string())
                                 .or_default()
                                 .push(src_node.path.clone());
                         }
@@ -525,7 +525,7 @@ impl KnowledgeGraph {
         for edge in self.graph.edges_directed(idx, Direction::Outgoing) {
             let tgt_idx = edge.target();
             if let Some(tgt_node) = self.graph.node_weight(tgt_idx) {
-                let et = edge.weight().edge_type.to_lowercase();
+                let et = edge.weight().edge_type().to_lowercase();
                 match et.as_str() {
                     "supersedes" => ann.supersedes.push(tgt_node.path.clone()),
                     "implements" => ann.implements.push(tgt_node.path.clone()),
@@ -539,7 +539,7 @@ impl KnowledgeGraph {
                     _ => {
                         if edge.weight().class.matches(EdgeClass::Structural) {
                             ann.outgoing
-                                .entry(edge.weight().edge_type.clone())
+                                .entry(edge.weight().edge_type().to_string())
                                 .or_default()
                                 .push(tgt_node.path.clone());
                         }

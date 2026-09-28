@@ -61,8 +61,13 @@ impl CodeChunker {
             return None;
         };
         let max_chars = config.max_tokens.max(256) * 4;
-        let mut extractor =
-            AstExtractor::new(file_path.to_string_lossy().to_string(), content, lang, max_chars);
+        let mut extractor = AstExtractor::new(
+            file_path.to_string_lossy().to_string(),
+            content,
+            lang,
+            max_chars,
+            tree.root_node(),
+        );
         extractor.traverse(tree.root_node());
 
         Some(CodeParseResult {
@@ -71,6 +76,15 @@ impl CodeChunker {
             grammar_semantics: extractor.grammar_semantics,
         })
     }
+}
+
+struct ExtractedDefInfo {
+    symbol_type: CodeSymbolType,
+    name: String,
+    #[allow(dead_code)]
+    is_test: bool,
+    #[allow(dead_code)]
+    dynamic_captures: Vec<(String, String)>,
 }
 
 struct AstExtractor<'a> {
@@ -82,6 +96,8 @@ struct AstExtractor<'a> {
     chunks: Vec<Chunk>,
     symbols: Vec<CodeSymbol>,
     grammar_semantics: Vec<ExtractedGrammarSemantics>,
+    manifest: Option<super::manifest::PackageManifest>,
+    query_defs: std::collections::HashMap<usize, ExtractedDefInfo>,
     chunk_index: usize,
     depth: usize,
 }
@@ -92,7 +108,32 @@ impl<'a> AstExtractor<'a> {
         content: &'a str,
         language: SupportedLanguage,
         max_chars: usize,
+        root_node: Node<'a>,
     ) -> Self {
+        let manifest = super::manifest::find_enclosing_manifest(Path::new(&file_path), None);
+
+        let mut query_defs = std::collections::HashMap::new();
+        if let Some(q) = super::query::get_language_query(language) {
+            let matches = q.extract_matches(root_node, content.as_bytes());
+            for m in matches {
+                let name = &content[m.name_node.start_byte()..m.name_node.end_byte()];
+                let dynamic_captures = m
+                    .dynamic_captures
+                    .into_iter()
+                    .map(|(rel, n)| (rel, content[n.start_byte()..n.end_byte()].to_string()))
+                    .collect();
+                query_defs.insert(
+                    m.def_node.id(),
+                    ExtractedDefInfo {
+                        symbol_type: m.symbol_type,
+                        name: name.to_string(),
+                        is_test: m.is_test,
+                        dynamic_captures,
+                    },
+                );
+            }
+        }
+
         Self {
             file_path,
             content,
@@ -102,6 +143,8 @@ impl<'a> AstExtractor<'a> {
             chunks: Vec::new(),
             symbols: Vec::new(),
             grammar_semantics: Vec::new(),
+            manifest,
+            query_defs,
             chunk_index: 0,
             depth: 0,
         }
@@ -173,6 +216,15 @@ impl<'a> AstExtractor<'a> {
                 format!("{breadcrumb}{signature}")
             };
 
+            let container = self.scope_stack.last().map(|s| s.as_str());
+            let canonical_moniker = crate::graph::scip::synthesize_moniker(
+                self.manifest.as_ref(),
+                &self.file_path,
+                container,
+                &name,
+                sym_type,
+            );
+
             // Register symbol definition
             self.symbols.push(CodeSymbol {
                 file_path: self.file_path.clone(),
@@ -184,6 +236,7 @@ impl<'a> AstExtractor<'a> {
                 docstring: docstring.clone(),
                 start_line,
                 end_line,
+                canonical_name: Some(canonical_moniker),
             });
 
             // If it's a container type (class, struct, trait, impl), push to scope stack and traverse children
@@ -370,6 +423,57 @@ impl<'a> AstExtractor<'a> {
 
     fn classify_node(&self, node: Node) -> Option<(CodeSymbolType, String, String)> {
         let lang = self.language;
+
+        // 1. Declarative Tree-sitter query pack match
+        if let Some(def_info) = self.query_defs.get(&node.id()) {
+            let mut sym_type = def_info.symbol_type;
+            let mut name = def_info.name.clone();
+
+            if sym_type == CodeSymbolType::Route {
+                name = name.trim_matches(['"', '\'', '`']).to_string();
+            }
+
+            if lang == SupportedLanguage::Rust && node.kind() == "impl_item" {
+                let type_name = if let Some(n) = node.child_by_field_name("type") {
+                    self.node_text(n).to_string()
+                } else {
+                    let mut found = None;
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        let kind = child.kind();
+                        if kind == "type_identifier"
+                            || kind == "generic_type"
+                            || kind == "primitive_type"
+                            || kind == "scoped_type_identifier"
+                        {
+                            found = Some(self.node_text(child).to_string());
+                        }
+                    }
+                    found.unwrap_or_else(|| "impl".to_string())
+                };
+
+                let trait_name = node
+                    .child_by_field_name("trait")
+                    .map(|n| format!("{} for ", self.node_text(n)));
+                name = format!("{}{}", trait_name.unwrap_or_default(), type_name);
+            }
+
+            if lang == SupportedLanguage::Python
+                && sym_type == CodeSymbolType::Function
+                && !self.scope_stack.is_empty()
+            {
+                sym_type = CodeSymbolType::Method;
+            }
+
+            let sig = self.extract_first_line(node);
+            return Some((sym_type, name, sig));
+        }
+
+        // If the language is governed by a declarative query pack, don't fall back to legacy strings
+        if super::query::get_language_query(lang).is_some() {
+            return None;
+        }
+
         let spec = crate::parser::code::spec::get_language_spec(lang);
 
         // Rust custom constructs

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use groundcontrol_common::config::ChunkingConfig;
-use groundcontrol_common::types::{ExternalRefKind, ResolutionConfidence};
+use groundcontrol_common::types::{EdgeProvenance, ExternalRefKind, ResolutionConfidence};
 
 use super::CodeGraphExtractor;
 use crate::parser::code::chunker::CodeChunker;
@@ -415,4 +415,387 @@ pub fn run() {
         .expect("expected an ExternalRef for the unresolved external call");
     assert_eq!(ext.caller_scope_path, "run");
     assert_eq!(ext.confidence, ResolutionConfidence::Speculative);
+}
+
+#[test]
+fn test_polyglot_pure_ast_declarative_inheritance() {
+    let config = ChunkingConfig::default();
+
+    // 1. Java: class extends base implements interface
+    let java_code = r#"
+package com.example;
+
+public class AdService extends BaseService implements IAdService {
+    public void serveAd() {}
+}
+"#;
+    let java_res =
+        CodeChunker::parse_and_chunk(Path::new("src/AdService.java"), java_code, &config).unwrap();
+    let java_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/AdService.java"),
+        java_code,
+        &java_res.symbols,
+        &java_res.symbols,
+    );
+    assert!(
+        java_edges.iter().any(|e| e.edge_type == "inherits"
+            && e.source == "AdService"
+            && e.target == "BaseService"),
+        "Expected Java AdService -[:inherits]-> BaseService, got: {:?}",
+        java_edges
+    );
+    assert!(
+        java_edges.iter().any(|e| e.edge_type == "implements"
+            && e.source == "AdService"
+            && e.target == "IAdService"),
+        "Expected Java AdService -[:implements]-> IAdService, got: {:?}",
+        java_edges
+    );
+
+    // 2. C#: class inherits base
+    let cs_code = r#"
+namespace Cart;
+
+public class CartService : BaseCartService {
+    public void Checkout() {}
+}
+"#;
+    let cs_res =
+        CodeChunker::parse_and_chunk(Path::new("src/CartService.cs"), cs_code, &config).unwrap();
+    let cs_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/CartService.cs"),
+        cs_code,
+        &cs_res.symbols,
+        &cs_res.symbols,
+    );
+    assert!(
+        cs_edges.iter().any(|e| e.edge_type == "inherits"
+            && e.source == "CartService"
+            && e.target == "BaseCartService"),
+        "Expected C# CartService -[:inherits]-> BaseCartService, got: {:?}",
+        cs_edges
+    );
+
+    // 3. C++: class inherits base
+    let cpp_code = r#"
+class Derived : public BaseClass {
+    void process() {}
+};
+"#;
+    let cpp_res =
+        CodeChunker::parse_and_chunk(Path::new("src/derived.cpp"), cpp_code, &config).unwrap();
+    let cpp_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/derived.cpp"),
+        cpp_code,
+        &cpp_res.symbols,
+        &cpp_res.symbols,
+    );
+    assert!(
+        cpp_edges
+            .iter()
+            .any(|e| e.edge_type == "inherits" && e.source == "Derived" && e.target == "BaseClass"),
+        "Expected C++ Derived -[:inherits]-> BaseClass, got: {:?}",
+        cpp_edges
+    );
+
+    // 4. Go: struct embeds
+    let go_code = r#"
+package service
+
+type OrderService struct {
+    CommonService
+}
+"#;
+    let go_res =
+        CodeChunker::parse_and_chunk(Path::new("service/order.go"), go_code, &config).unwrap();
+    let go_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("service/order.go"),
+        go_code,
+        &go_res.symbols,
+        &go_res.symbols,
+    );
+    assert!(
+        go_edges.iter().any(|e| e.edge_type == "struct_embeds"
+            && e.source == "OrderService"
+            && e.target == "CommonService"),
+        "Expected Go OrderService -[:struct_embeds]-> CommonService, got: {:?}",
+        go_edges
+    );
+}
+
+#[test]
+fn test_test_to_target_linking_and_assertion_sink_pruning() {
+    let config = ChunkingConfig::default();
+
+    let code = r#"
+pub fn calculate_discount(price: f64) -> f64 {
+    price * 0.9
+}
+
+#[test]
+fn test_calculate_discount() {
+    let d = calculate_discount(100.0);
+    assert_eq!(d, 90.0);
+}
+"#;
+    let res =
+        CodeChunker::parse_and_chunk(Path::new("tests/discount_test.rs"), code, &config).unwrap();
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&res.symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("tests/discount_test.rs"),
+        code,
+        &res.symbols,
+        &symbol_index,
+    );
+
+    // (a) Normal calls edge exists
+    assert!(
+        extraction.edges.iter().any(|e| e.edge_type == "calls"
+            && e.source == "test_calculate_discount"
+            && e.target == "calculate_discount"),
+        "Expected test_calculate_discount -[:calls]-> calculate_discount, got: {:?}",
+        extraction.edges
+    );
+
+    // (b) Semantic tests edge exists with EdgeProvenance::CodeTests
+    let test_edge = extraction
+        .edges
+        .iter()
+        .find(|e| {
+            e.edge_type == "tests"
+                && e.source == "test_calculate_discount"
+                && e.target == "calculate_discount"
+        })
+        .expect("Expected test_calculate_discount -[:tests]-> calculate_discount");
+    assert_eq!(test_edge.provenance, EdgeProvenance::CodeTests);
+
+    // (c) Assertion sinks (assert_eq) must be pruned from tests edges
+    assert!(
+        !extraction.edges.iter().any(|e| e.edge_type == "tests" && e.target.contains("assert")),
+        "Assertion sinks must be pruned from `tests` edges, got: {:?}",
+        extraction.edges
+    );
+}
+
+#[test]
+fn test_declarative_route_query_packs_and_handles_edges() {
+    use groundcontrol_common::types::CodeSymbolType;
+    let config = ChunkingConfig::default();
+
+    // 1. Rust: Axum route
+    let rs_code = r#"
+async fn list_users() {}
+pub fn app() {
+    Router::new().route("/api/users", get(list_users));
+}
+"#;
+    let rs_res = CodeChunker::parse_and_chunk(Path::new("src/api.rs"), rs_code, &config).unwrap();
+    assert!(
+        rs_res
+            .symbols
+            .iter()
+            .any(|s| s.symbol_type == CodeSymbolType::Route && s.name == "/api/users"),
+        "Expected Axum route symbol '/api/users', got symbols: {:?}",
+        rs_res.symbols
+    );
+    let rs_symbol_index = CodeGraphExtractor::build_symbol_index(&rs_res.symbols);
+    let rs_extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/api.rs"),
+        rs_code,
+        &rs_res.symbols,
+        &rs_symbol_index,
+    );
+    let rs_route_edge = rs_extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "handles" && e.source == "/api/users" && e.target == "list_users");
+    assert!(
+        rs_route_edge.is_some(),
+        "Expected Axum /api/users -[:handles]-> list_users, got edges: {:?}",
+        rs_extraction.edges
+    );
+    assert_eq!(rs_route_edge.unwrap().provenance, EdgeProvenance::CodeHandlesRoute);
+
+    // 2. TypeScript: Express route
+    let ts_code = r#"
+function getUser() {}
+app.get("/users/:id", getUser);
+"#;
+    let ts_res =
+        CodeChunker::parse_and_chunk(Path::new("src/routes.ts"), ts_code, &config).unwrap();
+    assert!(
+        ts_res
+            .symbols
+            .iter()
+            .any(|s| s.symbol_type == CodeSymbolType::Route && s.name == "/users/:id"),
+        "Expected Express route symbol '/users/:id', got: {:?}",
+        ts_res.symbols
+    );
+    let ts_symbol_index = CodeGraphExtractor::build_symbol_index(&ts_res.symbols);
+    let ts_extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/routes.ts"),
+        ts_code,
+        &ts_res.symbols,
+        &ts_symbol_index,
+    );
+    let ts_route_edge = ts_extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "handles" && e.source == "/users/:id" && e.target == "getUser");
+    assert!(
+        ts_route_edge.is_some(),
+        "Expected Express /users/:id -[:handles]-> getUser, got edges: {:?}",
+        ts_extraction.edges
+    );
+    assert_eq!(ts_route_edge.unwrap().provenance, EdgeProvenance::CodeHandlesRoute);
+
+    // 3. Python: FastAPI route
+    let py_code = r#"
+@app.get("/items")
+def get_items():
+    pass
+"#;
+    let py_res = CodeChunker::parse_and_chunk(Path::new("src/main.py"), py_code, &config).unwrap();
+    assert!(
+        py_res.symbols.iter().any(|s| s.symbol_type == CodeSymbolType::Route && s.name == "/items"),
+        "Expected FastAPI route symbol '/items', got: {:?}",
+        py_res.symbols
+    );
+    let py_symbol_index = CodeGraphExtractor::build_symbol_index(&py_res.symbols);
+    let py_extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/main.py"),
+        py_code,
+        &py_res.symbols,
+        &py_symbol_index,
+    );
+    let py_route_edge = py_extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "handles" && e.source == "/items" && e.target == "get_items");
+    assert!(
+        py_route_edge.is_some(),
+        "Expected FastAPI /items -[:handles]-> get_items, got edges: {:?}",
+        py_extraction.edges
+    );
+    assert_eq!(py_route_edge.unwrap().provenance, EdgeProvenance::CodeHandlesRoute);
+}
+
+#[test]
+fn test_expanded_language_query_packs() {
+    use groundcontrol_common::types::CodeSymbolType;
+    let config = ChunkingConfig::default();
+
+    // 1. Kotlin
+    let kt_code = r#"
+class UserService : BaseService {
+    @Test
+    fun testLogin() {}
+}
+"#;
+    let kt_res =
+        CodeChunker::parse_and_chunk(Path::new("src/UserService.kt"), kt_code, &config).unwrap();
+    assert!(kt_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "UserService" && s.symbol_type == CodeSymbolType::Class));
+    let kt_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/UserService.kt"),
+        kt_code,
+        &kt_res.symbols,
+        &kt_res.symbols,
+    );
+    assert!(
+        kt_edges.iter().any(|e| e.edge_type == "inherits"
+            && e.source == "UserService"
+            && e.target == "BaseService"),
+        "Expected Kotlin UserService -[:inherits]-> BaseService, got: {:?}",
+        kt_edges
+    );
+
+    // 2. Scala
+    let scala_code = r#"
+class PaymentProcessor extends BaseProcessor {
+    def process(): Unit = ()
+}
+"#;
+    let scala_res =
+        CodeChunker::parse_and_chunk(Path::new("src/PaymentProcessor.scala"), scala_code, &config)
+            .unwrap();
+    assert!(scala_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "PaymentProcessor" && s.symbol_type == CodeSymbolType::Class));
+    let scala_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/PaymentProcessor.scala"),
+        scala_code,
+        &scala_res.symbols,
+        &scala_res.symbols,
+    );
+    assert!(
+        scala_edges.iter().any(|e| e.edge_type == "inherits"
+            && e.source == "PaymentProcessor"
+            && e.target == "BaseProcessor"),
+        "Expected Scala PaymentProcessor -[:inherits]-> BaseProcessor, got: {:?}",
+        scala_edges
+    );
+
+    // 3. Swift
+    let swift_code = r#"
+class AuthManager: BaseManager {
+    func authenticate() {}
+}
+"#;
+    let swift_res =
+        CodeChunker::parse_and_chunk(Path::new("src/AuthManager.swift"), swift_code, &config)
+            .unwrap();
+    assert!(swift_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "AuthManager" && s.symbol_type == CodeSymbolType::Class));
+    let swift_edges = CodeGraphExtractor::extract_edges_for_file(
+        Path::new("src/AuthManager.swift"),
+        swift_code,
+        &swift_res.symbols,
+        &swift_res.symbols,
+    );
+    assert!(
+        swift_edges.iter().any(|e| e.edge_type == "inherits"
+            && e.source == "AuthManager"
+            && e.target == "BaseManager"),
+        "Expected Swift AuthManager -[:inherits]-> BaseManager, got: {:?}",
+        swift_edges
+    );
+
+    // 4. Elixir
+    let ex_code = r#"
+defmodule AccountService do
+    def get_account(id) do
+        :ok
+    end
+end
+"#;
+    let ex_res =
+        CodeChunker::parse_and_chunk(Path::new("lib/account_service.ex"), ex_code, &config)
+            .unwrap();
+    assert!(ex_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "AccountService" && s.symbol_type == CodeSymbolType::Module));
+    assert!(ex_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "get_account" && s.symbol_type == CodeSymbolType::Function));
+
+    // 5. Erlang
+    let erl_code = "-module(order_server).\nprocess_order(Id) -> ok.\n";
+    let erl_res =
+        CodeChunker::parse_and_chunk(Path::new("src/order_server.erl"), erl_code, &config).unwrap();
+    assert!(erl_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "order_server" && s.symbol_type == CodeSymbolType::Module));
+    assert!(erl_res
+        .symbols
+        .iter()
+        .any(|s| s.name == "process_order" && s.symbol_type == CodeSymbolType::Function));
 }

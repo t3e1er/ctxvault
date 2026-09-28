@@ -19,14 +19,17 @@ use std::collections::HashMap;
 use tree_sitter::Node;
 
 use crate::parser::code::languages::SupportedLanguage;
+use crate::parser::code::manifest::PackageManifest;
 
-/// Lexical scope frame tracking variable types and imports within a block.
+/// Lexical scope frame tracking variable types, imports, and monikers within a block.
 #[derive(Debug, Clone, Default)]
 pub struct ScopeFrame {
     /// Local variable name -> Inferred Type Name (e.g., "client" -> "SearchEngine").
     pub variables: HashMap<String, String>,
     /// Imported symbol name -> Module / Import path (e.g., "SearchEngine" -> "crate::search::engine").
     pub imports: HashMap<String, String>,
+    /// Symbol/variable name -> SCIP moniker URI.
+    pub monikers: HashMap<String, String>,
     /// Enclosing struct/class/impl type name if inside a container, method, or impl block.
     pub enclosing_type: Option<String>,
 }
@@ -36,12 +39,29 @@ pub struct ScopeFrame {
 pub struct TypeEnvironment {
     frames: Vec<ScopeFrame>,
     language: SupportedLanguage,
+    manifest: Option<PackageManifest>,
 }
 
 impl TypeEnvironment {
     /// Create a new type environment for a file.
     pub fn new(language: SupportedLanguage) -> Self {
-        Self { frames: vec![ScopeFrame::default()], language }
+        Self { frames: vec![ScopeFrame::default()], language, manifest: None }
+    }
+
+    /// Attach a package manifest to the type environment for moniker synthesis.
+    pub fn with_manifest(mut self, manifest: Option<PackageManifest>) -> Self {
+        self.manifest = manifest;
+        self
+    }
+
+    /// Set or update the package manifest.
+    pub fn set_manifest(&mut self, manifest: Option<PackageManifest>) {
+        self.manifest = manifest;
+    }
+
+    /// Get the associated package manifest if present.
+    pub fn manifest(&self) -> Option<&PackageManifest> {
+        self.manifest.as_ref()
     }
 
     /// Push a new nested lexical scope frame (e.g. entering function, class, or block).
@@ -99,6 +119,40 @@ impl TypeEnvironment {
     /// Look up the import source of a symbol name.
     pub fn resolve_import_source(&self, symbol_name: &str) -> Option<String> {
         self.frames.first().and_then(|f| f.imports.get(symbol_name).cloned())
+    }
+
+    /// Register a SCIP moniker in the current innermost scope frame.
+    pub fn register_moniker(&mut self, symbol_name: String, moniker: String) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.monikers.insert(symbol_name, moniker);
+        }
+    }
+
+    /// Look up a SCIP moniker by walking up the scope stack.
+    pub fn resolve_moniker(&self, symbol_name: &str) -> Option<String> {
+        for frame in self.frames.iter().rev() {
+            if let Some(m) = frame.monikers.get(symbol_name) {
+                return Some(m.clone());
+            }
+        }
+        None
+    }
+
+    /// Synthesize a method call moniker for a receiver with known type bindings.
+    pub fn resolve_receiver_moniker(
+        &self,
+        receiver_name: &str,
+        method_name: &str,
+        file_path: &str,
+    ) -> Option<String> {
+        let type_name = self.resolve_variable_type(receiver_name)?;
+        Some(crate::graph::scip::synthesize_moniker(
+            self.manifest.as_ref(),
+            file_path,
+            Some(&type_name),
+            method_name,
+            groundcontrol_common::types::CodeSymbolType::Method,
+        ))
     }
 
     /// Inspect an AST node and update the type environment with bindings (declarations, parameters).

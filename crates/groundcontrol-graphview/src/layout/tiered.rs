@@ -389,7 +389,7 @@ pub fn build_tier_1_corpus(
             (idx_to_local.get(&pet_edge.source()), idx_to_local.get(&pet_edge.target()))
         {
             let w = pet_edge.weight();
-            raw_edges.push((src_loc, tgt_loc, w.edge_type.clone(), w.weight));
+            raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight));
         }
     }
 
@@ -499,7 +499,7 @@ pub fn build_tier_2_local(
                 (idx_to_local.get(&pet_idx), idx_to_local.get(&edge.target()))
             {
                 let w = edge.weight();
-                raw_edges.push((src_loc, tgt_loc, w.edge_type.clone(), w.weight));
+                raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight));
             }
         }
     }

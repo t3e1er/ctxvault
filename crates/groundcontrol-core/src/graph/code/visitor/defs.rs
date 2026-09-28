@@ -1,6 +1,6 @@
 //! Definition, inheritance, interface implementation, decorator, and macro extraction.
 
-use groundcontrol_common::types::{Edge, EdgeProvenance, ResolutionConfidence};
+use groundcontrol_common::types::EdgeProvenance;
 use tree_sitter::Node;
 
 use crate::parser::code::languages::SupportedLanguage;
@@ -8,24 +8,93 @@ use crate::parser::code::languages::SupportedLanguage;
 use super::state::CallAndImportVisitor;
 
 impl<'a> CallAndImportVisitor<'a> {
-    pub(super) fn extract_implements(&mut self, node: Node) {
-        if self.language == SupportedLanguage::Rust && node.kind() == "impl_item" {
-            if let Some(trait_node) = node.child_by_field_name("trait") {
-                let trait_name = self.node_text(trait_node).trim().to_string();
-                if let Some(type_node) = node.child_by_field_name("type") {
-                    let type_name = self.node_text(type_node).trim().to_string();
-                    self.edges.push(Edge {
-                        source: type_name,
-                        target: trait_name,
-                        edge_type: "implements_trait".to_string(),
-                        weight: 0.9,
-                        provenance: EdgeProvenance::CodeImplementsTrait,
-                        target_corpus: None,
-                        confidence: Some(ResolutionConfidence::High),
-                        target_path: None,
-                        target_symbol: None,
-                        target_kind: None,
-                    });
+    /// Declarative Tree-sitter query edge extraction: mints `inherits`, `implements`,
+    /// and dynamic `@rel` captures directly from compiled query packs.
+    pub(crate) fn extract_query_edges(&mut self, root_node: Node) {
+        let Some(query) = crate::parser::code::query::get_language_query(self.language) else {
+            return;
+        };
+
+        let matches = query.extract_matches(root_node, self.content.as_bytes());
+        for m in matches {
+            let symbol_name = &self.content[m.name_node.start_byte()..m.name_node.end_byte()];
+            let unquoted = symbol_name.trim_matches(['"', '\'', '`']);
+            let clean_name = unquoted.split('<').next().unwrap_or(unquoted).trim();
+            let start_line = m.name_node.start_position().row + 1;
+
+            let source_scope = self
+                .file_symbols
+                .iter()
+                .find(|s| {
+                    (s.name == clean_name || s.name.ends_with(clean_name))
+                        && s.start_line <= start_line
+                        && s.end_line >= start_line
+                })
+                .map(|s| s.scope_path.clone())
+                .unwrap_or_else(|| clean_name.to_string());
+
+            if m.is_test {
+                self.test_callers.insert(source_scope.clone());
+            }
+
+            // 1. Declarative inherits/extends edges
+            for inh_node in &m.inherits_nodes {
+                let target_raw = self.node_text(*inh_node).trim().to_string();
+                let clean_target = target_raw.split('<').next().unwrap_or(&target_raw).trim();
+                if !clean_target.is_empty() {
+                    let (target, conf) = self.resolve_target(clean_target);
+                    let edge_type = if self.language == SupportedLanguage::TypeScript
+                        || self.language == SupportedLanguage::Tsx
+                        || self.language == SupportedLanguage::JavaScript
+                    {
+                        "extends"
+                    } else {
+                        "inherits"
+                    };
+                    self.add_rel_edge(
+                        source_scope.clone(),
+                        target,
+                        edge_type,
+                        0.9,
+                        EdgeProvenance::CodeExtends,
+                        conf,
+                    );
+                }
+            }
+
+            // 2. Declarative implements edges
+            for imp_node in &m.implements_nodes {
+                let target_raw = self.node_text(*imp_node).trim().to_string();
+                let clean_target = target_raw.split('<').next().unwrap_or(&target_raw).trim();
+                if !clean_target.is_empty() {
+                    let (target, conf) = self.resolve_target(clean_target);
+                    self.add_rel_edge(
+                        source_scope.clone(),
+                        target,
+                        "implements",
+                        0.9,
+                        EdgeProvenance::CodeImplementsTrait,
+                        conf,
+                    );
+                }
+            }
+
+            // 3. Dynamic grammar captures (@rel)
+            for (rel_name, dyn_node) in &m.dynamic_captures {
+                let target_raw = self.node_text(*dyn_node).trim().to_string();
+                let clean_target =
+                    target_raw.trim_matches(['"', '\'', '`']).trim_start_matches('*').trim();
+                if !clean_target.is_empty() {
+                    let (target, conf) = self.resolve_target(clean_target);
+                    let prov = match rel_name.as_str() {
+                        "decorates" => EdgeProvenance::CodeDecorates,
+                        "macro_expands" => EdgeProvenance::CodeMacroExpands,
+                        "embeds_struct" | "struct_embeds" => EdgeProvenance::CodeStructEmbeds,
+                        "foreign_key" => EdgeProvenance::CodeForeignKey,
+                        "handles" => EdgeProvenance::CodeHandlesRoute,
+                        _ => EdgeProvenance::CodeExtends,
+                    };
+                    self.add_rel_edge(source_scope.clone(), target, rel_name, 0.85, prov, conf);
                 }
             }
         }
@@ -38,110 +107,6 @@ impl<'a> CallAndImportVisitor<'a> {
         };
 
         match self.language {
-            SupportedLanguage::Rust => {
-                if kind == "impl_item" {
-                    if let Some(trait_node) = node.child_by_field_name("trait") {
-                        let trait_name = self.node_text(trait_node).trim().to_string();
-                        let (target, conf) = self.resolve_target(&trait_name);
-                        self.add_rel_edge(
-                            container.clone(),
-                            target,
-                            "implements",
-                            0.9,
-                            EdgeProvenance::CodeImplementsTrait,
-                            conf,
-                        );
-                    }
-                }
-            }
-            SupportedLanguage::TypeScript
-            | SupportedLanguage::Tsx
-            | SupportedLanguage::JavaScript => {
-                if kind == "class_declaration" || kind == "class" {
-                    let mut cursor = node.walk();
-                    for child in node.children(&mut cursor) {
-                        if child.kind() == "class_heritage" {
-                            let mut hcursor = child.walk();
-                            for hchild in child.children(&mut hcursor) {
-                                if hchild.kind() == "extends_clause" {
-                                    if let Some(val) = hchild.child_by_field_name("value") {
-                                        let super_name = self.node_text(val).trim().to_string();
-                                        let (target, conf) = self.resolve_target(&super_name);
-                                        self.add_rel_edge(
-                                            container.clone(),
-                                            target,
-                                            "extends",
-                                            0.9,
-                                            EdgeProvenance::CodeExtends,
-                                            conf,
-                                        );
-                                    } else {
-                                        for sc in hchild.children(&mut hchild.walk()) {
-                                            let skind = sc.kind();
-                                            if skind == "identifier" || skind == "type_identifier" {
-                                                let super_name =
-                                                    self.node_text(sc).trim().to_string();
-                                                let (target, conf) =
-                                                    self.resolve_target(&super_name);
-                                                self.add_rel_edge(
-                                                    container.clone(),
-                                                    target,
-                                                    "extends",
-                                                    0.9,
-                                                    EdgeProvenance::CodeExtends,
-                                                    conf,
-                                                );
-                                            }
-                                        }
-                                    }
-                                } else if hchild.kind() == "implements_clause" {
-                                    let mut icursor = hchild.walk();
-                                    for if_child in hchild.children(&mut icursor) {
-                                        let ikind = if_child.kind();
-                                        if ikind == "type_identifier" || ikind == "identifier" {
-                                            let if_name =
-                                                self.node_text(if_child).trim().to_string();
-                                            let (target, conf) = self.resolve_target(&if_name);
-                                            self.add_rel_edge(
-                                                container.clone(),
-                                                target,
-                                                "implements",
-                                                0.9,
-                                                EdgeProvenance::CodeImplementsTrait,
-                                                conf,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            SupportedLanguage::Python => {
-                if kind == "class_definition" {
-                    if let Some(superclasses) = node.child_by_field_name("superclasses") {
-                        let mut cursor = superclasses.walk();
-                        for child in superclasses.children(&mut cursor) {
-                            let ckind = child.kind();
-                            if ckind == "identifier" || ckind == "attribute" {
-                                let super_name = self.node_text(child).trim().to_string();
-                                if !super_name.is_empty() {
-                                    let (target, conf) = self.resolve_target(&super_name);
-                                    self.add_rel_edge(
-                                        container.clone(),
-                                        target,
-                                        "inherits",
-                                        0.9,
-                                        EdgeProvenance::CodeExtends,
-                                        conf,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             SupportedLanguage::Go => {
                 self.extract_go_embedded_fields(node, &container);
             }

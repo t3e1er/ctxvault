@@ -193,6 +193,10 @@ impl MetadataCatalog for Store {
         Store::get_all_code_symbols(self)
     }
 
+    fn find_symbols_by_canonical_name(&self, canonical_name: &str) -> Result<Vec<CodeSymbol>> {
+        Store::find_symbols_by_canonical_name(self, canonical_name)
+    }
+
     fn checkpoint(&self) -> Result<()> {
         Store::checkpoint(self)
     }

@@ -43,7 +43,10 @@ impl CorpusManager {
             }
         }
 
-        let engine = crate::engine_builder::EngineBuilder::open(config, index_dir)?;
+        let mut engine = crate::engine_builder::EngineBuilder::open(config, index_dir)?;
+
+        // Auto-detect and passively ingest all SCIP indices (root and subprojects)
+        let _ = engine.ingest_all_scip_indices(&corpus_path);
 
         if self.default_corpus.is_none() {
             self.default_corpus = Some(name.clone());
@@ -155,7 +158,10 @@ impl CorpusManager {
             }
         };
 
-        let engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
+        let mut engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
+
+        // Auto-detect and passively ingest all SCIP indices (root and subprojects)
+        let _ = engine.ingest_all_scip_indices(&canonical);
 
         if self.default_corpus.is_none() {
             self.default_corpus = Some(name.clone());

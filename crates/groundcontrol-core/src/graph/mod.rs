@@ -176,7 +176,7 @@ impl KnowledgeGraph {
         if let Some(edge_ref) = self
             .graph
             .edges_connecting(src_idx, tgt_idx)
-            .find(|e| e.weight().edge_type == edge_type)
+            .find(|e| e.weight().kind.as_str() == edge_type)
         {
             let edge_id = edge_ref.id();
             if let Some(edge_mut) = self.graph.edge_weight_mut(edge_id) {
@@ -193,7 +193,7 @@ impl KnowledgeGraph {
         }
 
         let edge = GraphEdge {
-            edge_type: edge_type.to_string(),
+            kind: groundcontrol_common::types::EdgeKind::from_str(edge_type),
             weight,
             provenance,
             class,
@@ -274,7 +274,7 @@ impl KnowledgeGraph {
                 continue;
             }
             if let Some(target_node) = self.graph.node_weight(edge.target()) {
-                out.push((edge_data.edge_type.clone(), target_node.path.clone()));
+                out.push((edge_data.edge_type().to_string(), target_node.path.clone()));
             }
         }
         out
@@ -296,7 +296,7 @@ impl KnowledgeGraph {
         let class_filter = edge_class_filter.and_then(EdgeClass::from_str_name);
 
         let matches_filter = |edge: &GraphEdge| -> bool {
-            if !edge_types.is_empty() && !edge_types.iter().any(|t| t == &edge.edge_type) {
+            if !edge_types.is_empty() && !edge_types.iter().any(|t| t == edge.edge_type()) {
                 return false;
             }
             if let Some(cf) = class_filter {
@@ -315,7 +315,7 @@ impl KnowledgeGraph {
                     if let Some(target) = self.graph.node_weight(e.target()) {
                         results.push((
                             target.path.clone(),
-                            e.weight().edge_type.clone(),
+                            e.weight().edge_type().to_string(),
                             e.weight().weight,
                         ));
                     }
@@ -327,7 +327,7 @@ impl KnowledgeGraph {
                     if let Some(source) = self.graph.node_weight(e.source()) {
                         results.push((
                             source.path.clone(),
-                            e.weight().edge_type.clone(),
+                            e.weight().edge_type().to_string(),
                             e.weight().weight,
                         ));
                     }
@@ -339,7 +339,7 @@ impl KnowledgeGraph {
                     if let Some(target) = self.graph.node_weight(e.target()) {
                         results.push((
                             target.path.clone(),
-                            e.weight().edge_type.clone(),
+                            e.weight().edge_type().to_string(),
                             e.weight().weight,
                         ));
                     }
@@ -350,7 +350,7 @@ impl KnowledgeGraph {
                     if let Some(source) = self.graph.node_weight(e.source()) {
                         results.push((
                             source.path.clone(),
-                            e.weight().edge_type.clone(),
+                            e.weight().edge_type().to_string(),
                             e.weight().weight,
                         ));
                     }
@@ -400,7 +400,7 @@ impl KnowledgeGraph {
                 edges.push(groundcontrol_common::types::Edge {
                     source: source_node.path.clone(),
                     target: target_node.path.clone(),
-                    edge_type: weight_data.edge_type.clone(),
+                    edge_type: weight_data.edge_type().to_string(),
                     weight: weight_data.weight,
                     provenance: weight_data.provenance.clone(),
                     target_corpus: weight_data.target_corpus.clone(),
@@ -429,7 +429,7 @@ impl KnowledgeGraph {
                 edges.push(groundcontrol_common::types::Edge {
                     source: source_node.path.clone(),
                     target: target_node.path.clone(),
-                    edge_type: weight_data.edge_type.clone(),
+                    edge_type: weight_data.edge_type().to_string(),
                     weight: weight_data.weight,
                     provenance: weight_data.provenance.clone(),
                     target_corpus: weight_data.target_corpus.clone(),
@@ -457,7 +457,7 @@ impl KnowledgeGraph {
                     id: None,
                     source: source_node.path.clone(),
                     target: target_node.path.clone(),
-                    edge_type: weight_data.edge_type.clone(),
+                    edge_type: weight_data.edge_type().to_string(),
                     edge_class: weight_data.class.as_str().to_string(),
                     weight: weight_data.weight,
                     confidence: 1.0,
@@ -474,10 +474,10 @@ impl KnowledgeGraph {
         for edge in self.graph.edge_weights() {
             if let Some(cf) = class_filter {
                 if edge.class == cf {
-                    types.insert(edge.edge_type.clone());
+                    types.insert(edge.edge_type().to_string());
                 }
             } else {
-                types.insert(edge.edge_type.clone());
+                types.insert(edge.edge_type().to_string());
             }
         }
         types.into_iter().collect()

@@ -65,5 +65,26 @@ pub fn get_language_spec(lang: SupportedLanguage) -> &'static LanguageSpec {
         SupportedLanguage::PowerShell => &POWERSHELL_SPEC,
         SupportedLanguage::D => &D_SPEC,
         SupportedLanguage::Wgsl => &WGSL_SPEC,
+        SupportedLanguage::Erlang => &ERLANG_SPEC,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_specs_do_not_classify_pairs_as_structs() {
+        let json_spec = get_language_spec(SupportedLanguage::Json);
+        assert!(!json_spec.struct_node_kinds.contains(&"pair"));
+        assert!(!json_spec.struct_node_kinds.contains(&"object"));
+        assert!(!json_spec.callable_node_kinds.contains(&"pair"));
+
+        let toml_spec = get_language_spec(SupportedLanguage::Toml);
+        assert!(!toml_spec.struct_node_kinds.contains(&"pair"));
+        assert!(toml_spec.struct_node_kinds.contains(&"table"));
+
+        let yaml_spec = get_language_spec(SupportedLanguage::Yaml);
+        assert!(!yaml_spec.struct_node_kinds.contains(&"block_mapping_pair"));
     }
 }

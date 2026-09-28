@@ -37,6 +37,26 @@ impl<'a> CallAndImportVisitor<'a> {
                     target_kind: None,
                 });
             }
+
+            // Pure AST test-to-target linking: if caller is a test function and callee is not an assertion sink
+            if self.test_callers.contains(caller) && !Self::is_assertion_sink(&callee) {
+                let test_key = (caller.clone(), target_sym.scope_path.clone(), "tests".to_string());
+                if !self.visited_edges.contains(&test_key) && caller != &target_sym.scope_path {
+                    self.visited_edges.insert(test_key);
+                    self.edges.push(Edge {
+                        source: caller.clone(),
+                        target: target_sym.scope_path.clone(),
+                        edge_type: "tests".to_string(),
+                        weight: 0.9,
+                        provenance: EdgeProvenance::CodeTests,
+                        target_corpus: None,
+                        confidence: Some(confidence),
+                        target_path: None,
+                        target_symbol: None,
+                        target_kind: None,
+                    });
+                }
+            }
         } else {
             // Unresolved callee: do NOT emit a phantom edge to a non-existent node.
             // Only record as an external reference if it's not a local self/this method,
@@ -231,5 +251,55 @@ impl<'a> CallAndImportVisitor<'a> {
         }
 
         None
+    }
+
+    pub(super) fn is_assertion_sink(callee: &str) -> bool {
+        matches!(
+            callee,
+            "assert"
+                | "assert_eq"
+                | "assert_ne"
+                | "assert_true"
+                | "assert_false"
+                | "assert_that"
+                | "assert_nil"
+                | "assert_not_nil"
+                | "assertEquals"
+                | "assertNotEquals"
+                | "assertTrue"
+                | "assertFalse"
+                | "assertNull"
+                | "assertNotNull"
+                | "assertSame"
+                | "assertNotSame"
+                | "assertThat"
+                | "assertThrows"
+                | "fail"
+                | "expect"
+                | "expect_eq"
+                | "expect_ne"
+                | "Equal"
+                | "NotEqual"
+                | "True"
+                | "False"
+                | "Null"
+                | "NotNull"
+                | "Run"
+                | "Parallel"
+                | "Error"
+                | "Errorf"
+                | "Fatal"
+                | "Fatalf"
+                | "describe"
+                | "it"
+                | "test"
+                | "beforeEach"
+                | "afterEach"
+                | "beforeAll"
+                | "afterAll"
+        ) || callee.starts_with("assert_")
+            || callee.starts_with("assert!")
+            || callee.starts_with("assert_eq!")
+            || callee.starts_with("assert_ne!")
     }
 }

@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS code_symbols (
     symbol_type TEXT NOT NULL,
     language TEXT NOT NULL,
     start_line INTEGER NOT NULL,
-    end_line INTEGER NOT NULL
+    end_line INTEGER NOT NULL,
+    canonical_name TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name);
@@ -101,5 +102,10 @@ pub fn initialize_db(conn: &Connection) -> Result<()> {
     )
     .map_err(|e| Error::Database(e.to_string()))?;
     conn.execute_batch(SCHEMA_SQL).map_err(|e| Error::Database(e.to_string()))?;
+    let _ = conn.execute("ALTER TABLE code_symbols ADD COLUMN canonical_name TEXT", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_symbols_canonical ON code_symbols(canonical_name)",
+        [],
+    );
     Ok(())
 }

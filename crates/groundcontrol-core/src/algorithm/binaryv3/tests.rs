@@ -49,6 +49,7 @@ fn test_prior_flags_inference() {
         docstring: Some("Calculate shipping quote".to_string()),
         start_line: 10,
         end_line: 25,
+        canonical_name: None,
     };
 
     let flags = EntityPriorFlags::from_symbol(&sym, "src/shippingservice/src/quote.rs");
@@ -66,6 +67,7 @@ fn test_prior_flags_inference() {
         docstring: None,
         start_line: 1,
         end_line: 10,
+        canonical_name: None,
     };
 
     let test_flags = EntityPriorFlags::from_symbol(&test_sym, "tests/quote_test.rs");

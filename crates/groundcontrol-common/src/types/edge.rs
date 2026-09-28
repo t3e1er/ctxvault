@@ -43,6 +43,107 @@ pub enum ResolutionConfidence {
     Speculative,
 }
 
+use std::sync::Arc;
+
+/// Canonical universal semantic edge types across code and documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UniversalEdge {
+    /// Source defines target symbol.
+    Defines,
+    /// Source calls target function/method.
+    Calls,
+    /// Source imports target module/package.
+    Imports,
+    /// Source implements target interface/trait.
+    Implements,
+    /// Source inherits target class/type.
+    Inherits,
+    /// Source extends target class/type (e.g. TypeScript/Java class extension).
+    Extends,
+    /// Source test function tests target symbol.
+    Tests,
+    /// Source documentation documents target symbol.
+    Documents,
+    /// Wikilink reference between documents/code.
+    Wikilink,
+    /// Shared tag link.
+    SharedTag,
+    /// Frontmatter field link.
+    Frontmatter,
+    /// Route endpoint handles target function/method.
+    Handles,
+}
+
+impl UniversalEdge {
+    /// Return the canonical string identifier for this universal edge.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Defines => "defines",
+            Self::Calls => "calls",
+            Self::Imports => "imports",
+            Self::Implements => "implements",
+            Self::Inherits => "inherits",
+            Self::Extends => "extends",
+            Self::Tests => "tests",
+            Self::Documents => "documents",
+            Self::Wikilink => "wikilink",
+            Self::SharedTag => "tag",
+            Self::Frontmatter => "frontmatter",
+            Self::Handles => "handles",
+        }
+    }
+}
+
+/// Generalized relational edge kind: universal semantic edge or dynamic grammar-extracted relation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EdgeKind {
+    /// Universal standard semantic edge.
+    Universal(UniversalEdge),
+    /// Dynamic grammar-extracted edge (e.g. "embeds_struct", "jsx_embeds", "type_alias", "macro_expands").
+    Grammar(Arc<str>),
+}
+
+impl EdgeKind {
+    /// Create a new dynamic grammar edge kind.
+    pub fn grammar(s: impl AsRef<str>) -> Self {
+        Self::Grammar(Arc::from(s.as_ref()))
+    }
+
+    /// Return the string representation of this edge kind.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Universal(u) => u.as_str(),
+            Self::Grammar(s) => s.as_ref(),
+        }
+    }
+
+    /// Parse an edge kind from a string.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "defines" => Self::Universal(UniversalEdge::Defines),
+            "calls" => Self::Universal(UniversalEdge::Calls),
+            "imports" => Self::Universal(UniversalEdge::Imports),
+            "implements" | "implements_trait" => Self::Universal(UniversalEdge::Implements),
+            "inherits" => Self::Universal(UniversalEdge::Inherits),
+            "extends" => Self::Universal(UniversalEdge::Extends),
+            "tests" => Self::Universal(UniversalEdge::Tests),
+            "documents" | "documents_code" => Self::Universal(UniversalEdge::Documents),
+            "wikilink" => Self::Universal(UniversalEdge::Wikilink),
+            "tag" | "shared_tag" => Self::Universal(UniversalEdge::SharedTag),
+            "frontmatter" => Self::Universal(UniversalEdge::Frontmatter),
+            "handles" => Self::Universal(UniversalEdge::Handles),
+            other => Self::Grammar(Arc::from(other)),
+        }
+    }
+}
+
+impl std::fmt::Display for EdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// A typed, weighted, directed edge in the knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
@@ -106,6 +207,22 @@ impl Edge {
             target_kind: None,
         }
     }
+
+    /// Retrieve the typed [`EdgeKind`] of this edge.
+    pub fn kind(&self) -> EdgeKind {
+        EdgeKind::from_str(&self.edge_type)
+    }
+
+    /// Create an edge with a typed [`EdgeKind`].
+    pub fn with_kind(
+        source: impl Into<String>,
+        target: impl Into<String>,
+        kind: EdgeKind,
+        weight: f32,
+        provenance: EdgeProvenance,
+    ) -> Self {
+        Self::new(source, target, kind.as_str(), weight, provenance)
+    }
 }
 
 /// How an edge came into existence.
@@ -138,6 +255,10 @@ pub enum EdgeProvenance {
     CodeStructEmbeds,
     /// Relational foreign key constraint (e.g. SQL REFERENCES).
     CodeForeignKey,
+    /// Test function verifies target symbol.
+    CodeTests,
+    /// Route endpoint handles backend function or handler method.
+    CodeHandlesRoute,
     /// Markdown documentation specifies or documents code symbol.
     DocumentsCode,
     /// Code entity implements an architecture decision record (ADR).
