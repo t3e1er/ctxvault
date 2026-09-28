@@ -277,17 +277,17 @@ pub fn run() {
 
 #[test]
 fn test_hybrid_lsp_receiver_method_disambiguation_rust() {
-    let caller_code = r#"
-pub struct QueryService;
+    let config = ChunkingConfig::default();
 
-impl QueryService {
-    pub fn execute(&self) {
-        let client = SearchClient::new();
-        client.query("rust");
-    }
+    let caller_code = r#"
+use crate::search::SearchClient;
+
+pub fn execute() {
+    let client = SearchClient::new();
+    client.query("rust");
 }
 "#;
-    let search_client_code = r#"
+    let target_search_code = r#"
 pub struct SearchClient;
 
 impl SearchClient {
@@ -295,43 +295,58 @@ impl SearchClient {
     pub fn query(&self, q: &str) -> Vec<String> { vec![] }
 }
 "#;
-    let db_client_code = r#"
-pub struct DatabaseClient;
+    let legacy_search_code = r#"
+pub struct SearchClient;
 
-impl DatabaseClient {
-    pub fn query(&self, sql: &str) -> Vec<String> { vec![] }
+impl SearchClient {
+    pub fn new() -> Self { SearchClient }
+    pub fn query(&self, q: &str) -> Vec<String> { vec![] }
 }
 "#;
-    let config = ChunkingConfig::default();
+
     let caller_res =
-        CodeChunker::parse_and_chunk(Path::new("src/service.rs"), caller_code, &config).unwrap();
-    let search_res =
-        CodeChunker::parse_and_chunk(Path::new("src/search.rs"), search_client_code, &config)
+        CodeChunker::parse_and_chunk(Path::new("src/caller.rs"), caller_code, &config).unwrap();
+    let target_res =
+        CodeChunker::parse_and_chunk(Path::new("src/search.rs"), target_search_code, &config)
             .unwrap();
-    let db_res =
-        CodeChunker::parse_and_chunk(Path::new("src/db.rs"), db_client_code, &config).unwrap();
+    let legacy_res =
+        CodeChunker::parse_and_chunk(Path::new("legacy/search.rs"), legacy_search_code, &config)
+            .unwrap();
 
     let mut all_symbols = caller_res.symbols.clone();
-    all_symbols.extend(search_res.symbols.clone());
-    all_symbols.extend(db_res.symbols.clone());
+    all_symbols.extend(target_res.symbols.clone());
+    all_symbols.extend(legacy_res.symbols.clone());
 
-    let edges = CodeGraphExtractor::extract_edges_for_file(
-        Path::new("src/service.rs"),
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/caller.rs"),
         caller_code,
         &caller_res.symbols,
-        &all_symbols,
+        &symbol_index,
     );
 
-    let call_edge = edges
+    // Verify import edge exists
+    assert!(extraction
+        .edges
+        .iter()
+        .any(|e| e.edge_type == "imports" && e.target == "crate::search::SearchClient"));
+
+    // Verify call edge resolves to SearchClient > query with High confidence
+    let call_edge = extraction
+        .edges
         .iter()
         .find(|e| e.edge_type == "calls" && e.target == "SearchClient > query")
-        .expect("expected a call edge to SearchClient > query");
+        .expect("expected call edge to SearchClient > query");
     assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
 }
 
 #[test]
 fn test_hybrid_lsp_receiver_method_disambiguation_typescript() {
-    let ts_caller = r#"
+    let config = ChunkingConfig::default();
+
+    let caller_code = r#"
+import { ApiClient } from "./api";
+
 export class Controller {
     handleRequest() {
         const client = new ApiClient();
@@ -339,33 +354,45 @@ export class Controller {
     }
 }
 "#;
-    let ts_target = r#"
+    let target_api_code = r#"
 export class ApiClient {
     fetchData() {
-        return "data";
+        return "live";
     }
 }
 "#;
-    let config = ChunkingConfig::default();
+    let mock_api_code = r#"
+export class ApiClient {
+    fetchData() {
+        return "mock";
+    }
+}
+"#;
+
     let caller_res =
-        CodeChunker::parse_and_chunk(Path::new("src/controller.ts"), ts_caller, &config).unwrap();
+        CodeChunker::parse_and_chunk(Path::new("src/controller.ts"), caller_code, &config).unwrap();
     let target_res =
-        CodeChunker::parse_and_chunk(Path::new("src/api.ts"), ts_target, &config).unwrap();
+        CodeChunker::parse_and_chunk(Path::new("src/api.ts"), target_api_code, &config).unwrap();
+    let mock_res =
+        CodeChunker::parse_and_chunk(Path::new("mock/api.ts"), mock_api_code, &config).unwrap();
 
     let mut all_symbols = caller_res.symbols.clone();
     all_symbols.extend(target_res.symbols.clone());
+    all_symbols.extend(mock_res.symbols.clone());
 
-    let edges = CodeGraphExtractor::extract_edges_for_file(
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
         Path::new("src/controller.ts"),
-        ts_caller,
+        caller_code,
         &caller_res.symbols,
-        &all_symbols,
+        &symbol_index,
     );
 
-    let call_edge = edges
+    let call_edge = extraction
+        .edges
         .iter()
         .find(|e| e.edge_type == "calls" && e.target == "ApiClient > fetchData")
-        .expect("expected a call edge to ApiClient > fetchData");
+        .expect("expected call edge to ApiClient > fetchData");
     assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
 }
 
@@ -798,4 +825,250 @@ end
         .symbols
         .iter()
         .any(|s| s.name == "process_order" && s.symbol_type == CodeSymbolType::Function));
+}
+
+#[test]
+fn test_universal_import_resolution_rust_cross_file_disambiguation() {
+    test_hybrid_lsp_receiver_method_disambiguation_rust();
+}
+
+#[test]
+fn test_universal_import_resolution_typescript_disambiguation() {
+    test_hybrid_lsp_receiver_method_disambiguation_typescript();
+}
+
+#[test]
+fn test_universal_import_resolution_direct_imported_function() {
+    let config = ChunkingConfig::default();
+
+    let caller_code = r#"
+import { calculateTax } from "./tax";
+
+export function processOrder(order: any) {
+    calculateTax(order);
+}
+"#;
+    let target_tax_code = r#"
+export function calculateTax(order: any) {
+    return 0.1;
+}
+"#;
+    let other_tax_code = r#"
+export function calculateTax(order: any) {
+    return 0.2;
+}
+"#;
+
+    let caller_res =
+        CodeChunker::parse_and_chunk(Path::new("src/order.ts"), caller_code, &config).unwrap();
+    let target_res =
+        CodeChunker::parse_and_chunk(Path::new("src/tax.ts"), target_tax_code, &config).unwrap();
+    let other_res =
+        CodeChunker::parse_and_chunk(Path::new("legacy/tax.ts"), other_tax_code, &config).unwrap();
+
+    let mut all_symbols = caller_res.symbols.clone();
+    all_symbols.extend(target_res.symbols.clone());
+    all_symbols.extend(other_res.symbols.clone());
+
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/order.ts"),
+        caller_code,
+        &caller_res.symbols,
+        &symbol_index,
+    );
+
+    let call_edge = extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "calls" && e.target == "calculateTax")
+        .expect("expected call edge to calculateTax");
+    assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+}
+
+#[test]
+fn test_hybrid_lsp_receiver_method_disambiguation_python() {
+    let config = ChunkingConfig::default();
+
+    let caller_code = r#"
+from .service import DataService
+
+def run():
+    client = DataService()
+    client.fetch()
+"#;
+    let service_code = r#"
+class DataService:
+    def fetch(self):
+        return []
+"#;
+    let legacy_code = r#"
+class DataService:
+    def fetch(self):
+        return []
+"#;
+
+    let caller_res =
+        CodeChunker::parse_and_chunk(Path::new("app/views.py"), caller_code, &config).unwrap();
+    let service_res =
+        CodeChunker::parse_and_chunk(Path::new("app/service.py"), service_code, &config).unwrap();
+    let legacy_res =
+        CodeChunker::parse_and_chunk(Path::new("legacy/service.py"), legacy_code, &config).unwrap();
+
+    let mut all_symbols = caller_res.symbols.clone();
+    all_symbols.extend(service_res.symbols.clone());
+    all_symbols.extend(legacy_res.symbols.clone());
+
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("app/views.py"),
+        caller_code,
+        &caller_res.symbols,
+        &symbol_index,
+    );
+
+    let call_edge = extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "calls" && e.target == "DataService > fetch")
+        .expect("expected call edge to DataService > fetch");
+    assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+}
+
+#[test]
+fn test_universal_import_resolution_python_relative() {
+    test_hybrid_lsp_receiver_method_disambiguation_python();
+}
+
+#[test]
+fn test_hybrid_lsp_receiver_method_disambiguation_go() {
+    let config = ChunkingConfig::default();
+
+    let caller_code = r#"
+package main
+
+import "./search"
+
+func Execute(client *search.SearchClient) {
+    client.Query()
+}
+"#;
+    let target_search_code = r#"
+package search
+
+type SearchClient struct{}
+
+func (s *SearchClient) Query() {}
+"#;
+    let legacy_search_code = r#"
+package search
+
+type SearchClient struct{}
+
+func (s *SearchClient) Query() {}
+"#;
+
+    let caller_res =
+        CodeChunker::parse_and_chunk(Path::new("src/caller.go"), caller_code, &config).unwrap();
+    let target_res = CodeChunker::parse_and_chunk(
+        Path::new("src/search/client.go"),
+        target_search_code,
+        &config,
+    )
+    .unwrap();
+    let legacy_res = CodeChunker::parse_and_chunk(
+        Path::new("legacy/search/client.go"),
+        legacy_search_code,
+        &config,
+    )
+    .unwrap();
+
+    let mut all_symbols = caller_res.symbols.clone();
+    all_symbols.extend(target_res.symbols.clone());
+    all_symbols.extend(legacy_res.symbols.clone());
+
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/caller.go"),
+        caller_code,
+        &caller_res.symbols,
+        &symbol_index,
+    );
+
+    let call_edge = extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "calls" && e.target == "SearchClient > Query")
+        .expect("expected call edge to SearchClient > Query");
+    assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
+}
+
+#[test]
+fn test_hybrid_lsp_receiver_method_disambiguation_java() {
+    let config = ChunkingConfig::default();
+
+    let caller_code = r#"
+package com.example;
+
+import com.example.service.SearchService;
+
+public class Controller {
+    public void handleRequest() {
+        SearchService service = new SearchService();
+        service.execute();
+    }
+}
+"#;
+    let target_service_code = r#"
+package com.example.service;
+
+public class SearchService {
+    public void execute() {}
+}
+"#;
+    let legacy_service_code = r#"
+package legacy.service;
+
+public class SearchService {
+    public void execute() {}
+}
+"#;
+
+    let caller_res = CodeChunker::parse_and_chunk(
+        Path::new("src/com/example/Controller.java"),
+        caller_code,
+        &config,
+    )
+    .unwrap();
+    let target_res = CodeChunker::parse_and_chunk(
+        Path::new("src/com/example/service/SearchService.java"),
+        target_service_code,
+        &config,
+    )
+    .unwrap();
+    let legacy_res = CodeChunker::parse_and_chunk(
+        Path::new("legacy/service/SearchService.java"),
+        legacy_service_code,
+        &config,
+    )
+    .unwrap();
+
+    let mut all_symbols = caller_res.symbols.clone();
+    all_symbols.extend(target_res.symbols.clone());
+    all_symbols.extend(legacy_res.symbols.clone());
+
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&all_symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/com/example/Controller.java"),
+        caller_code,
+        &caller_res.symbols,
+        &symbol_index,
+    );
+
+    let call_edge = extraction
+        .edges
+        .iter()
+        .find(|e| e.edge_type == "calls" && e.target == "SearchService > execute")
+        .expect("expected call edge to SearchService > execute");
+    assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
 }

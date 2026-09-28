@@ -42,6 +42,16 @@ pub struct LanguageSpec {
 }
 
 impl LanguageSpec {
+    /// Return the native `tree_sitter::Language` grammar for this specification.
+    pub fn tree_sitter_language(&self) -> tree_sitter::Language {
+        self.language.tree_sitter_language()
+    }
+
+    /// Return the vended Tree-sitter query source for this specification.
+    pub fn vended_query(&self) -> &'static str {
+        crate::parser::code::query::vended::get_vended_query(self.language)
+    }
+
     /// Classify a Tree-sitter AST node into a [`CodeSymbolType`], if it represents a symbol.
     pub fn classify_symbol(&self, node: Node) -> Option<CodeSymbolType> {
         let kind = node.kind();

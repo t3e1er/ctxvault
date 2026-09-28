@@ -25,6 +25,8 @@ pub(crate) struct CallAndImportVisitor<'a> {
     pub(super) visited_edges: HashSet<(String, String, String)>,
     pub(super) visited_external_refs: HashSet<(String, String, ExternalRefKind)>,
     pub(super) type_env: TypeEnvironment,
+    pub(super) import_table: super::imports::ImportTable,
+    pub(crate) local_bindings: Vec<crate::parser::code::query::ExtractedLocalBinding>,
     pub(super) test_callers: HashSet<String>,
     pub(super) depth: usize,
 }
@@ -67,7 +69,9 @@ impl<'a> CallAndImportVisitor<'a> {
             visited_calls: HashSet::new(),
             visited_edges: HashSet::new(),
             visited_external_refs: HashSet::new(),
-            type_env: TypeEnvironment::new(language).with_manifest(manifest),
+            type_env: TypeEnvironment::new().with_manifest(manifest),
+            import_table: super::imports::ImportTable::default(),
+            local_bindings: Vec::new(),
             test_callers,
             depth: 0,
         }
@@ -138,6 +142,16 @@ impl<'a> CallAndImportVisitor<'a> {
         }
 
         if let Some(candidates) = self.symbol_index.get(clean) {
+            // Tier 2: Check if imported from a specific file path
+            if self.import_table.symbols.contains_key(clean) {
+                if let Some(import_match) = candidates
+                    .iter()
+                    .find(|c| self.import_table.matches_target_path(clean, &c.file_path))
+                {
+                    return (import_match.scope_path.clone(), ResolutionConfidence::High);
+                }
+            }
+
             if candidates.len() == 1 {
                 return (candidates[0].scope_path.clone(), ResolutionConfidence::High);
             }

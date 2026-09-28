@@ -116,7 +116,39 @@ impl<'a> AstExtractor<'a> {
         if let Some(q) = super::query::get_language_query(language) {
             let matches = q.extract_matches(root_node, content.as_bytes());
             for m in matches {
-                let name = &content[m.name_node.start_byte()..m.name_node.end_byte()];
+                let raw_name = &content[m.name_node.start_byte()..m.name_node.end_byte()];
+                let symbol_name =
+                    if language == SupportedLanguage::Hcl && m.def_node.kind() == "block" {
+                        let mut cursor = m.def_node.walk();
+                        let mut block_type = String::new();
+                        let mut labels = Vec::new();
+                        for child in m.def_node.children(&mut cursor) {
+                            if child.kind() == "identifier" && block_type.is_empty() {
+                                let text = &content[child.start_byte()..child.end_byte()];
+                                block_type = text.to_string();
+                            } else if child.kind() == "string_lit" {
+                                let text = &content[child.start_byte()..child.end_byte()];
+                                labels.push(text.trim_matches('"').to_string());
+                            }
+                        }
+                        match labels.len() {
+                            2 => format!("{}.{}", labels[0], labels[1]),
+                            1 => {
+                                if block_type.is_empty()
+                                    || block_type == "resource"
+                                    || block_type == "data"
+                                {
+                                    labels[0].clone()
+                                } else {
+                                    format!("{}.{}", block_type, labels[0])
+                                }
+                            }
+                            _ => raw_name.trim_matches('"').to_string(),
+                        }
+                    } else {
+                        raw_name.trim_matches('"').to_string()
+                    };
+
                 let dynamic_captures = m
                     .dynamic_captures
                     .into_iter()
@@ -126,7 +158,7 @@ impl<'a> AstExtractor<'a> {
                     m.def_node.id(),
                     ExtractedDefInfo {
                         symbol_type: m.symbol_type,
-                        name: name.to_string(),
+                        name: symbol_name,
                         is_test: m.is_test,
                         dynamic_captures,
                     },
@@ -187,7 +219,32 @@ impl<'a> AstExtractor<'a> {
             let end_line = node.end_position().row + 1;
 
             let parent_scope = self.current_scope();
-            let full_scope = if parent_scope == self.file_path {
+            let mut container_scope = None;
+            if parent_scope == self.file_path
+                && lang == SupportedLanguage::Go
+                && node.kind() == "method_declaration"
+            {
+                if let Some(rec_list) = node.child_by_field_name("receiver") {
+                    let mut cursor = rec_list.walk();
+                    for child in rec_list.children(&mut cursor) {
+                        if child.kind() == "parameter_declaration" {
+                            if let Some(type_node) = child.child_by_field_name("type") {
+                                let cleaned = crate::graph::hybrid_lsp::clean_type_name(
+                                    self.node_text(type_node),
+                                );
+                                if !cleaned.is_empty() {
+                                    container_scope = Some(cleaned);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let full_scope = if let Some(ref c) = container_scope {
+                format!("{c} > {name}")
+            } else if parent_scope == self.file_path {
                 name.clone()
             } else {
                 format!("{parent_scope} > {name}")
@@ -216,7 +273,8 @@ impl<'a> AstExtractor<'a> {
                 format!("{breadcrumb}{signature}")
             };
 
-            let container = self.scope_stack.last().map(|s| s.as_str());
+            let container =
+                container_scope.as_deref().or_else(|| self.scope_stack.last().map(|s| s.as_str()));
             let canonical_moniker = crate::graph::scip::synthesize_moniker(
                 self.manifest.as_ref(),
                 &self.file_path,

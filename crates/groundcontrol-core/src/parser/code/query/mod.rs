@@ -1,4 +1,4 @@
-//! Tree-sitter `.scm` query pack engine for declarative symbol extraction.
+﻿//! Tree-sitter `.scm` query pack engine for declarative symbol extraction.
 //!
 //! Replaces imperative, handwritten string slice matching with compiled
 //! declarative Tree-sitter queries (`tags.scm`) for core languages.
@@ -9,22 +9,7 @@ use groundcontrol_common::types::CodeSymbolType;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
 use crate::parser::code::languages::SupportedLanguage;
-
-const RUST_QUERY_SRC: &str = include_str!("packs/rust.scm");
-const PYTHON_QUERY_SRC: &str = include_str!("packs/python.scm");
-const TYPESCRIPT_QUERY_SRC: &str = include_str!("packs/typescript.scm");
-const GO_QUERY_SRC: &str = include_str!("packs/go.scm");
-const JAVA_QUERY_SRC: &str = include_str!("packs/java.scm");
-const CSHARP_QUERY_SRC: &str = include_str!("packs/csharp.scm");
-const C_QUERY_SRC: &str = include_str!("packs/c.scm");
-const CPP_QUERY_SRC: &str = include_str!("packs/cpp.scm");
-const RUBY_QUERY_SRC: &str = include_str!("packs/ruby.scm");
-const PHP_QUERY_SRC: &str = include_str!("packs/php.scm");
-const KOTLIN_QUERY_SRC: &str = include_str!("packs/kotlin.scm");
-const SCALA_QUERY_SRC: &str = include_str!("packs/scala.scm");
-const SWIFT_QUERY_SRC: &str = include_str!("packs/swift.scm");
-const ELIXIR_QUERY_SRC: &str = include_str!("packs/elixir.scm");
-const ERLANG_QUERY_SRC: &str = include_str!("packs/erlang.scm");
+pub mod vended;
 
 /// Compiled Tree-sitter query with pre-resolved capture indices for high-performance dispatch.
 pub struct LanguageQuery {
@@ -64,6 +49,10 @@ pub struct LanguageQuery {
     pub test_id: Option<u32>,
     /// Capture ID for `@definition.route`.
     pub def_route_id: Option<u32>,
+    /// Capture ID for `@local.var`.
+    pub local_var_id: Option<u32>,
+    /// Capture ID for `@local.type`.
+    pub local_type_id: Option<u32>,
 }
 
 impl LanguageQuery {
@@ -86,6 +75,8 @@ impl LanguageQuery {
         let mut implements_trait_id = None;
         let mut test_id = None;
         let mut def_route_id = None;
+        let mut local_var_id = None;
+        let mut local_type_id = None;
 
         for (idx, name) in query.capture_names().iter().enumerate() {
             let id = idx as u32;
@@ -107,6 +98,8 @@ impl LanguageQuery {
                 "implements" => implements_id = Some(id),
                 "implements_trait" => implements_trait_id = Some(id),
                 "test" => test_id = Some(id),
+                "local.var" => local_var_id = Some(id),
+                "local.type" => local_type_id = Some(id),
                 _ => {}
             }
         }
@@ -130,6 +123,8 @@ impl LanguageQuery {
             implements_trait_id,
             test_id,
             def_route_id,
+            local_var_id,
+            local_type_id,
         }
     }
 
@@ -193,6 +188,11 @@ impl LanguageQuery {
                     implements_nodes.push(capture.node);
                 } else if Some(id) == self.test_id {
                     is_test = true;
+                } else if Some(id) == self.local_var_id
+                    || Some(id) == self.local_type_id
+                    || Some(id) == self.doc_id
+                {
+                    // Skip local binding and doc comment captures from dynamic relation edges
                 } else {
                     let cap_name = self.query.capture_names()[id as usize];
                     dynamic_captures.push((cap_name.to_string(), capture.node));
@@ -239,6 +239,69 @@ impl LanguageQuery {
 
         results_map.into_values().collect()
     }
+
+    /// Execute the compiled query over an AST root node, collecting local variable-to-type bindings.
+    pub fn extract_local_bindings<'a>(
+        &self,
+        root_node: Node<'a>,
+        source: &'a [u8],
+    ) -> Vec<ExtractedLocalBinding> {
+        let (Some(var_id), Some(type_id)) = (self.local_var_id, self.local_type_id) else {
+            return Vec::new();
+        };
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&self.query, root_node, source);
+        let mut bindings = Vec::new();
+
+        while let Some(m) = matches.next() {
+            let mut var_node = None;
+            let mut type_node = None;
+
+            for capture in m.captures() {
+                if capture.index == var_id {
+                    var_node = Some(capture.node);
+                } else if capture.index == type_id {
+                    type_node = Some(capture.node);
+                }
+            }
+
+            if let (Some(var), Some(ty)) = (var_node, type_node) {
+                let var_name = std::str::from_utf8(&source[var.start_byte()..var.end_byte()])
+                    .unwrap_or_default()
+                    .trim()
+                    .trim_start_matches("mut ")
+                    .to_string();
+                let raw_type = std::str::from_utf8(&source[ty.start_byte()..ty.end_byte()])
+                    .unwrap_or_default()
+                    .trim();
+                let type_name = crate::graph::hybrid_lsp::clean_type_name(raw_type);
+                if !var_name.is_empty() && !type_name.is_empty() {
+                    bindings.push(ExtractedLocalBinding {
+                        var_name,
+                        type_name,
+                        byte_offset: var.start_byte(),
+                        line: var.start_position().row + 1,
+                    });
+                }
+            }
+        }
+
+        bindings
+    }
+}
+
+/// Local variable-to-type binding extracted from Tree-sitter `@local.var` and `@local.type` captures.
+#[derive(Debug, Clone)]
+pub struct ExtractedLocalBinding {
+    /// Variable identifier name (e.g. "client").
+    pub var_name: String,
+    /// Inferred or declared type name (e.g. "SearchClient").
+    pub type_name: String,
+    /// Start byte offset in the source buffer.
+    pub byte_offset: usize,
+    /// Line number (1-indexed).
+    pub line: usize,
 }
 
 fn symbol_priority(sym: CodeSymbolType) -> u8 {
@@ -302,74 +365,22 @@ fn compile_query(lang: SupportedLanguage, source: &str) -> Option<LanguageQuery>
     }
 }
 
-/// Retrieve the pre-compiled `LanguageQuery` for a given language, if available.
+const LANG_COUNT: usize = 48;
+static QUERIES: [OnceLock<Option<LanguageQuery>>; LANG_COUNT] =
+    [const { OnceLock::new() }; LANG_COUNT];
+
+/// Retrieve the pre-compiled LanguageQuery for a given language, if available.
 pub fn get_language_query(lang: SupportedLanguage) -> Option<&'static LanguageQuery> {
-    match lang {
-        SupportedLanguage::Rust => {
-            static RUST_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            RUST_Q.get_or_init(|| compile_query(lang, RUST_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Python => {
-            static PY_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            PY_Q.get_or_init(|| compile_query(lang, PYTHON_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => {
-            static TS_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            TS_Q.get_or_init(|| compile_query(lang, TYPESCRIPT_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Tsx => {
-            static TSX_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            TSX_Q.get_or_init(|| compile_query(lang, TYPESCRIPT_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Go => {
-            static GO_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            GO_Q.get_or_init(|| compile_query(lang, GO_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Java => {
-            static JAVA_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            JAVA_Q.get_or_init(|| compile_query(lang, JAVA_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::CSharp => {
-            static CS_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            CS_Q.get_or_init(|| compile_query(lang, CSHARP_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::C => {
-            static C_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            C_Q.get_or_init(|| compile_query(lang, C_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Cpp => {
-            static CPP_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            CPP_Q.get_or_init(|| compile_query(lang, CPP_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Ruby => {
-            static RUBY_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            RUBY_Q.get_or_init(|| compile_query(lang, RUBY_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Php => {
-            static PHP_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            PHP_Q.get_or_init(|| compile_query(lang, PHP_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Kotlin => {
-            static KOTLIN_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            KOTLIN_Q.get_or_init(|| compile_query(lang, KOTLIN_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Scala => {
-            static SCALA_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            SCALA_Q.get_or_init(|| compile_query(lang, SCALA_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Swift => {
-            static SWIFT_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            SWIFT_Q.get_or_init(|| compile_query(lang, SWIFT_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Elixir => {
-            static ELIXIR_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            ELIXIR_Q.get_or_init(|| compile_query(lang, ELIXIR_QUERY_SRC)).as_ref()
-        }
-        SupportedLanguage::Erlang => {
-            static ERLANG_Q: OnceLock<Option<LanguageQuery>> = OnceLock::new();
-            ERLANG_Q.get_or_init(|| compile_query(lang, ERLANG_QUERY_SRC)).as_ref()
-        }
-        _ => None,
+    let idx = lang as usize;
+    if idx < LANG_COUNT {
+        QUERIES[idx]
+            .get_or_init(|| {
+                let src = vended::get_vended_query(lang);
+                compile_query(lang, src)
+            })
+            .as_ref()
+    } else {
+        None
     }
 }
 
@@ -379,51 +390,20 @@ mod tests {
 
     #[test]
     fn test_all_query_packs_compile() {
-        let languages = [
-            SupportedLanguage::Rust,
-            SupportedLanguage::Python,
-            SupportedLanguage::TypeScript,
-            SupportedLanguage::JavaScript,
-            SupportedLanguage::Tsx,
-            SupportedLanguage::Go,
-            SupportedLanguage::Java,
-            SupportedLanguage::CSharp,
-            SupportedLanguage::C,
-            SupportedLanguage::Cpp,
-            SupportedLanguage::Ruby,
-            SupportedLanguage::Php,
-            SupportedLanguage::Kotlin,
-            SupportedLanguage::Scala,
-            SupportedLanguage::Swift,
-            SupportedLanguage::Elixir,
-            SupportedLanguage::Erlang,
-        ];
-
-        for lang in languages {
+        for &lang in SupportedLanguage::ALL {
+            let query_src = vended::get_vended_query(lang);
             let ts_lang = lang.tree_sitter_language();
-            let src = match lang {
-                SupportedLanguage::Rust => RUST_QUERY_SRC,
-                SupportedLanguage::Python => PYTHON_QUERY_SRC,
-                SupportedLanguage::TypeScript
-                | SupportedLanguage::JavaScript
-                | SupportedLanguage::Tsx => TYPESCRIPT_QUERY_SRC,
-                SupportedLanguage::Go => GO_QUERY_SRC,
-                SupportedLanguage::Java => JAVA_QUERY_SRC,
-                SupportedLanguage::CSharp => CSHARP_QUERY_SRC,
-                SupportedLanguage::C => C_QUERY_SRC,
-                SupportedLanguage::Cpp => CPP_QUERY_SRC,
-                SupportedLanguage::Ruby => RUBY_QUERY_SRC,
-                SupportedLanguage::Php => PHP_QUERY_SRC,
-                SupportedLanguage::Kotlin => KOTLIN_QUERY_SRC,
-                SupportedLanguage::Scala => SCALA_QUERY_SRC,
-                SupportedLanguage::Swift => SWIFT_QUERY_SRC,
-                SupportedLanguage::Elixir => ELIXIR_QUERY_SRC,
-                SupportedLanguage::Erlang => ERLANG_QUERY_SRC,
-                _ => continue,
-            };
-            if let Err(e) = tree_sitter::Query::new(&ts_lang, src) {
+            if let Err(e) = tree_sitter::Query::new(&ts_lang, query_src) {
                 panic!("Query pack for language {} failed: {:?}", lang.name(), e);
             }
+
+            // Also verify get_language_query resolves and compiles
+            assert!(
+                get_language_query(lang).is_some(),
+                "LanguageQuery for {} should resolve",
+                lang.name()
+            );
         }
     }
 }
+

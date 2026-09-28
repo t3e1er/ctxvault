@@ -9,7 +9,6 @@ use groundcontrol_common::types::CodeSymbolType;
 use groundcontrol_core::corpus_manager::CorpusManager;
 use groundcontrol_core::graph::hybrid_lsp::TypeEnvironment;
 use groundcontrol_core::graph::scip::{looks_like_moniker, moniker_leaf, synthesize_moniker};
-use groundcontrol_core::parser::code::languages::SupportedLanguage;
 use groundcontrol_core::parser::code::manifest::{
     find_enclosing_manifest, parse_cargo_toml, parse_go_mod, parse_package_json, parse_pom_xml,
     parse_pyproject_toml, PackageManifest,
@@ -151,7 +150,7 @@ fn test_type_environment_moniker_binding() {
     let manifest =
         PackageManifest::new("scip-rust", "cargo", "groundcontrol-core", "0.2.2", "/repo");
 
-    let mut env = TypeEnvironment::new(SupportedLanguage::Rust).with_manifest(Some(manifest));
+    let mut env = TypeEnvironment::new().with_manifest(Some(manifest));
     env.register_variable("client".to_string(), "SearchClient".to_string());
 
     let receiver_moniker = env.resolve_receiver_moniker("client", "query", "src/search.rs");

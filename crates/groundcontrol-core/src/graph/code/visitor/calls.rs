@@ -122,8 +122,10 @@ impl<'a> CallAndImportVisitor<'a> {
 
             if func_kind == "attribute" {
                 let attr = func.child_by_field_name("attribute")?;
-                let val =
-                    func.child_by_field_name("value").map(|v| self.node_text(v).trim().to_string());
+                let val = func
+                    .child_by_field_name("value")
+                    .or_else(|| func.child_by_field_name("object"))
+                    .map(|v| self.node_text(v).trim().to_string());
                 return Some((val, self.node_text(attr).trim().to_string()));
             }
 
@@ -181,19 +183,31 @@ impl<'a> CallAndImportVisitor<'a> {
         let clean_name = callee_name.rsplit("::").next().unwrap_or(callee_name);
         let clean_name = clean_name.rsplit('.').next().unwrap_or(clean_name);
 
-        // 0. Hybrid LSP: If receiver is present, attempt type-guided disambiguation
+        // 1. Intra-file definition: if callee is defined in the current file with no receiver
+        if receiver.is_none() {
+            if let Some(local_match) = self.file_symbols.iter().find(|s| s.name == clean_name) {
+                return Some((local_match, ResolutionConfidence::High));
+            }
+        }
+
+        // 2. Tier 2: Receiver-guided resolution via lexical scope & import table
         if let Some(rec) = receiver {
             let rec_clean = rec.trim();
+            // A. Check lexical scope variable type binding or import table for receiver
             let resolved_type = self.type_env.resolve_variable_type(rec_clean).or_else(|| {
-                if rec_clean.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
-                    Some(rec_clean.rsplit("::").next().unwrap_or(rec_clean).to_string())
+                if self.import_table.symbols.contains_key(rec_clean) {
+                    Some(rec_clean.to_string())
+                } else if self.file_symbols.iter().any(|s| s.name == rec_clean)
+                    || self.symbol_index.contains_key(rec_clean)
+                {
+                    Some(rec_clean.to_string())
                 } else {
                     None
                 }
             });
 
             if let Some(ref type_name) = resolved_type {
-                // A. Check within current file symbols
+                // Check within current file symbols
                 if let Some(local_match) = self.file_symbols.iter().find(|s| {
                     s.name == clean_name
                         && (s.scope_path.contains(type_name.as_str())
@@ -202,7 +216,7 @@ impl<'a> CallAndImportVisitor<'a> {
                     return Some((local_match, ResolutionConfidence::High));
                 }
 
-                // B. Check workspace symbol catalog
+                // Check workspace symbol catalog
                 if let Some(candidates) = self.symbol_index.get(clean_name) {
                     let type_matches: Vec<&&CodeSymbol> = candidates
                         .iter()
@@ -212,9 +226,16 @@ impl<'a> CallAndImportVisitor<'a> {
                         })
                         .collect();
 
-                    if type_matches.len() == 1 {
-                        return Some((type_matches[0], ResolutionConfidence::High));
-                    } else if !type_matches.is_empty() {
+                    if !type_matches.is_empty() {
+                        // Disambiguate using ImportTable target path
+                        if let Some(import_match) = type_matches.iter().find(|c| {
+                            self.import_table.matches_target_path(type_name, &c.file_path)
+                        }) {
+                            return Some((import_match, ResolutionConfidence::High));
+                        }
+                        if type_matches.len() == 1 {
+                            return Some((type_matches[0], ResolutionConfidence::High));
+                        }
                         let file_dir =
                             Path::new(&self.file_path).parent().unwrap_or_else(|| Path::new(""));
                         if let Some(dir_match) = type_matches.iter().find(|c| {
@@ -227,26 +248,53 @@ impl<'a> CallAndImportVisitor<'a> {
                     }
                 }
             }
+
+            // B. Receiver is a module/namespace import (e.g. `api.fetchData()` or `server.Handle()`)
+            if let Some(mod_res) = self.import_table.modules.get(rec_clean) {
+                if let Some(candidates) = self.symbol_index.get(clean_name) {
+                    if let Some(matched) = candidates.iter().find(|c| {
+                        if let Some(ref prefix) = mod_res.target_path_prefix {
+                            let norm_c = c.file_path.replace('\\', "/");
+                            norm_c.starts_with(prefix) || norm_c.contains(prefix)
+                        } else {
+                            false
+                        }
+                    }) {
+                        return Some((matched, ResolutionConfidence::High));
+                    }
+                }
+            }
         }
 
-        // 1. Search within the current file first (fastest and highest confidence)
+        // 3. Tier 2: Direct call to an explicitly imported function/symbol
+        if let Some(candidates) = self.symbol_index.get(clean_name) {
+            if self.import_table.symbols.contains_key(clean_name) {
+                if let Some(import_match) = candidates
+                    .iter()
+                    .find(|c| self.import_table.matches_target_path(clean_name, &c.file_path))
+                {
+                    return Some((import_match, ResolutionConfidence::High));
+                }
+            }
+        }
+
+        // 4. Local file fallback if not checked above
         if let Some(local_match) = self.file_symbols.iter().find(|s| s.name == clean_name) {
             return Some((local_match, ResolutionConfidence::High));
         }
 
-        // 2. Search in workspace symbols catalog
+        // 5. Tier 3: Intra-Module / Same-Package Resolution
         if let Some(candidates) = self.symbol_index.get(clean_name) {
             if candidates.len() == 1 {
                 return Some((candidates[0], ResolutionConfidence::High));
             }
-            // 3. If multiple candidates, prioritize same directory / crate
             let file_dir = Path::new(&self.file_path).parent().unwrap_or_else(|| Path::new(""));
             if let Some(dir_match) = candidates.iter().find(|c| {
                 Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new("")) == file_dir
             }) {
                 return Some((dir_match, ResolutionConfidence::Medium));
             }
-            // 4. Fall back to the first candidate with no disambiguating signal.
+            // 6. Tier 4: Speculative fallback
             return candidates.first().map(|c| (*c, ResolutionConfidence::Speculative));
         }
 

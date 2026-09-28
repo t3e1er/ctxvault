@@ -105,6 +105,58 @@ pub enum SupportedLanguage {
 }
 
 impl SupportedLanguage {
+    /// All 48 supported languages in enum declaration order.
+    pub const ALL: &'static [SupportedLanguage] = &[
+        SupportedLanguage::Rust,
+        SupportedLanguage::TypeScript,
+        SupportedLanguage::Tsx,
+        SupportedLanguage::JavaScript,
+        SupportedLanguage::Python,
+        SupportedLanguage::Go,
+        SupportedLanguage::C,
+        SupportedLanguage::Cpp,
+        SupportedLanguage::Java,
+        SupportedLanguage::CSharp,
+        SupportedLanguage::Ruby,
+        SupportedLanguage::Php,
+        SupportedLanguage::Swift,
+        SupportedLanguage::Elixir,
+        SupportedLanguage::Lua,
+        SupportedLanguage::Bash,
+        SupportedLanguage::Kotlin,
+        SupportedLanguage::Scala,
+        SupportedLanguage::Zig,
+        SupportedLanguage::Dart,
+        SupportedLanguage::Sql,
+        SupportedLanguage::Yaml,
+        SupportedLanguage::Dockerfile,
+        SupportedLanguage::Proto,
+        SupportedLanguage::Solidity,
+        SupportedLanguage::Html,
+        SupportedLanguage::Css,
+        SupportedLanguage::Json,
+        SupportedLanguage::Toml,
+        SupportedLanguage::Ocaml,
+        SupportedLanguage::Haskell,
+        SupportedLanguage::Cmake,
+        SupportedLanguage::Make,
+        SupportedLanguage::Julia,
+        SupportedLanguage::Graphql,
+        SupportedLanguage::R,
+        SupportedLanguage::Hcl,
+        SupportedLanguage::Nix,
+        SupportedLanguage::Cuda,
+        SupportedLanguage::Verilog,
+        SupportedLanguage::Tlaplus,
+        SupportedLanguage::Starlark,
+        SupportedLanguage::Bicep,
+        SupportedLanguage::Gleam,
+        SupportedLanguage::PowerShell,
+        SupportedLanguage::D,
+        SupportedLanguage::Wgsl,
+        SupportedLanguage::Erlang,
+    ];
+
     /// Canonical language identifier string.
     pub fn name(&self) -> &'static str {
         match self {
@@ -216,6 +268,16 @@ impl SupportedLanguage {
     /// Single line comment prefix for scope breadcrumbs.
     pub fn comment_prefix(&self) -> &'static str {
         crate::parser::code::spec::get_language_spec(*self).comment_prefix
+    }
+
+    /// Retrieve the declarative `LanguageSpec` for this language.
+    pub fn spec(&self) -> &'static crate::parser::code::spec::LanguageSpec {
+        crate::parser::code::spec::get_language_spec(*self)
+    }
+
+    /// Retrieve the vended Tree-sitter query source for this language.
+    pub fn vended_query(&self) -> &'static str {
+        crate::parser::code::query::vended::get_vended_query(*self)
     }
 }
 
