@@ -117,6 +117,50 @@ export class GraphScene {
     } else {
       this.corpusLabels.clear();
     }
+
+    // Automatically frame all items on first load / data update
+    this.fitToBounds(payload.nodes);
+  }
+
+  public fitToBounds(nodes: NodeData[]) {
+    if (!nodes || nodes.length === 0) return;
+
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const p = nodes[i].position;
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+      if (p[2] < minZ) minZ = p[2];
+      if (p[2] > maxZ) maxZ = p[2];
+    }
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const cz = (minZ + maxZ) / 2;
+
+    let maxDistSq = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const p = nodes[i].position;
+      const dx = p[0] - cx;
+      const dy = p[1] - cy;
+      const dz = p[2] - cz;
+      const dSq = dx * dx + dy * dy + dz * dz;
+      if (dSq > maxDistSq) maxDistSq = dSq;
+    }
+
+    const radius = Math.max(250, Math.sqrt(maxDistSq));
+    const halfFov = (this.camera.fov / 2) * (Math.PI / 180);
+    const fitDistance = (radius / Math.sin(halfFov)) * 1.15;
+
+    this.controls.target.set(cx, cy, cz);
+    this.camera.position.set(cx, cy + fitDistance * 0.22, cz + fitDistance);
+    this.camera.lookAt(cx, cy, cz);
+    this.controls.update();
   }
 
   private calculateCorpusCenters(nodes: NodeData[]): Map<string, [number, number, number]> {
@@ -189,6 +233,11 @@ export class GraphScene {
 
   public setEntityFilter(category: string) {
     this.nodeCloud.setEntityFilter(category);
+  }
+
+  public updateClusterScales(clusterDistScale: number, nodeDispScale: number) {
+    const updatedPositions = this.nodeCloud.updateClusterScales(clusterDistScale, nodeDispScale);
+    this.edgeLines.updatePositions(updatedPositions);
   }
 
   private onResize = () => {

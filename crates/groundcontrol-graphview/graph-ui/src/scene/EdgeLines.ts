@@ -66,6 +66,27 @@ export class EdgeLines {
     return !this.hiddenTypes.has(edgeType.toLowerCase());
   }
 
+  public updatePositions(nodePositions: Map<number, [number, number, number]>) {
+    this.nodePositions = nodePositions;
+    if (!this.lineSegments) return;
+    const posAttr = this.lineSegments.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!posAttr) return;
+
+    let writeIdx = 0;
+    for (const edge of this.allEdges) {
+      if (!this.activeClasses.has(edge.edgeClass)) continue;
+      if (this.hiddenTypes.has(edge.edgeType.toLowerCase())) continue;
+      if (nodePositions.has(edge.source) && nodePositions.has(edge.target)) {
+        const p1 = nodePositions.get(edge.source)!;
+        const p2 = nodePositions.get(edge.target)!;
+        posAttr.setXYZ(writeIdx * 2, p1[0], p1[1], p1[2]);
+        posAttr.setXYZ(writeIdx * 2 + 1, p2[0], p2[1], p2[2]);
+        writeIdx++;
+      }
+    }
+    posAttr.needsUpdate = true;
+  }
+
   public rebuildGeometry() {
     if (this.lineSegments) {
       this.group.remove(this.lineSegments);

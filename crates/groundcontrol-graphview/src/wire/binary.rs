@@ -1,4 +1,4 @@
-﻿//! High-density packed binary wire protocol serializer for 1M+ nodes.
+//! High-density packed binary wire protocol serializer for 1M+ nodes.
 //!
 //! Layout (WIRE_VERSION 2):
 //! - Header:       16 bytes (Magic u32, Version u32, NodeCount u32, EdgeCount u32)
@@ -59,8 +59,7 @@ impl BinaryWireEncoder {
         }
 
         // 16 header + 32 * nodes + 16 * edges + string table overhead
-        let estimated_size =
-            16 + (node_count as usize) * 32 + (edge_count as usize) * 16 + 4096;
+        let estimated_size = 16 + (node_count as usize) * 32 + (edge_count as usize) * 16 + 4096;
         let mut buf = Vec::with_capacity(estimated_size);
 
         // 1. Header (16 bytes)
@@ -71,28 +70,28 @@ impl BinaryWireEncoder {
 
         // 2. Nodes (32 bytes each — unchanged from v1)
         for (i, node) in layout.nodes.iter().enumerate() {
-            buf.extend_from_slice(&node.id.to_le_bytes());              // 4B
-            buf.extend_from_slice(&node.position[0].to_le_bytes());     // 4B
-            buf.extend_from_slice(&node.position[1].to_le_bytes());     // 4B
-            buf.extend_from_slice(&node.position[2].to_le_bytes());     // 4B
+            buf.extend_from_slice(&node.id.to_le_bytes()); // 4B
+            buf.extend_from_slice(&node.position[0].to_le_bytes()); // 4B
+            buf.extend_from_slice(&node.position[1].to_le_bytes()); // 4B
+            buf.extend_from_slice(&node.position[2].to_le_bytes()); // 4B
             buf.extend_from_slice(&(node.community as u16).to_le_bytes()); // 2B
             buf.extend_from_slice(&(node.degree as u16).to_le_bytes()); // 2B
-            buf.extend_from_slice(&node.color_rgb.to_le_bytes());       // 4B
-            buf.extend_from_slice(&node.size.to_le_bytes());            // 4B
+            buf.extend_from_slice(&node.color_rgb.to_le_bytes()); // 4B
+            buf.extend_from_slice(&node.size.to_le_bytes()); // 4B
             buf.extend_from_slice(&node_type_indices[i].to_le_bytes()); // 2B
             buf.extend_from_slice(&node_path_indices[i].to_le_bytes()); // 2B
         }
 
         // 3. Edges (16 bytes each — extended in v2)
         for (i, edge) in layout.edges.iter().enumerate() {
-            buf.extend_from_slice(&edge.source.to_le_bytes());           // 4B [0..4]
-            buf.extend_from_slice(&edge.target.to_le_bytes());           // 4B [4..8]
-            buf.extend_from_slice(&edge_type_indices[i].to_le_bytes());  // 2B [8..10]
+            buf.extend_from_slice(&edge.source.to_le_bytes()); // 4B [0..4]
+            buf.extend_from_slice(&edge.target.to_le_bytes()); // 4B [4..8]
+            buf.extend_from_slice(&edge_type_indices[i].to_le_bytes()); // 2B [8..10]
             let qw = ((edge.weight.clamp(0.0, 10.0)) * 1000.0) as u16;
-            buf.extend_from_slice(&qw.to_le_bytes());                    // 2B [10..12]
-            buf.push(edge.edge_class);                                   // 1B [12]
-            buf.push(edge.confidence);                                   // 1B [13]
-            buf.extend_from_slice(&[0u8; 2]);                           // 2B [14..16] reserved
+            buf.extend_from_slice(&qw.to_le_bytes()); // 2B [10..12]
+            buf.push(edge.edge_class); // 1B [12]
+            buf.push(edge.confidence); // 1B [13]
+            buf.extend_from_slice(&[0u8; 2]); // 2B [14..16] reserved
         }
 
         // 4. String Table
@@ -143,7 +142,11 @@ mod tests {
     fn test_wire_version_2_header() {
         let encoded = BinaryWireEncoder::encode(&make_layout(0, 0));
         assert_eq!(u32::from_le_bytes(encoded[0..4].try_into().unwrap()), WIRE_MAGIC);
-        assert_eq!(u32::from_le_bytes(encoded[4..8].try_into().unwrap()), 2, "WIRE_VERSION must be 2");
+        assert_eq!(
+            u32::from_le_bytes(encoded[4..8].try_into().unwrap()),
+            2,
+            "WIRE_VERSION must be 2"
+        );
         assert_eq!(u32::from_le_bytes(encoded[8..12].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[12..16].try_into().unwrap()), 1);
         // 16B header + 32B node + 16B edge = 64 bytes minimum before string table

@@ -36,39 +36,19 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
         return map;
     }
 
-    // 1. Build lookup of node paths per corpus to measure inter-corpus connectivity
-    let mut corpus_paths: Vec<HashSet<String>> = Vec::with_capacity(num_corpora);
-    for name in &names {
-        let mut paths = HashSet::new();
-        if let Some(snap) = catalog.get_corpus(name) {
-            let pet = snap.graph.inner();
-            for n_idx in pet.node_indices() {
-                let p = pet[n_idx].path.replace('\\', "/");
-                paths.insert(p.clone());
-                if let Some(sub) = p.split('#').nth(1) {
-                    paths.insert(sub.to_string());
-                }
-            }
-        }
-        corpus_paths.push(paths);
-    }
-
-    // 2. Count cross-corpus edge references between each pair of corpora (i, j)
+    // Count cross-corpus edge references between each pair of corpora (i, j)
     let mut inter_links: HashMap<(usize, usize), usize> = HashMap::new();
     for (i, name) in names.iter().enumerate() {
         if let Some(snap) = catalog.get_corpus(name) {
             let pet = snap.graph.inner();
             for edge_ref in pet.edge_references() {
-                let tgt_p = pet[edge_ref.target()].path.replace('\\', "/");
-                let tgt_sub = tgt_p.split('#').nth(1).unwrap_or("");
-
-                for (j, other_paths) in corpus_paths.iter().enumerate() {
-                    if i != j
-                        && (other_paths.contains(&tgt_p)
-                            || (!tgt_sub.is_empty() && other_paths.contains(tgt_sub)))
-                    {
-                        let key = if i < j { (i, j) } else { (j, i) };
-                        *inter_links.entry(key).or_insert(0) += 1;
+                let w = edge_ref.weight();
+                if let Some(ref tgt_corpus) = w.target_corpus {
+                    if let Some(j) = names.iter().position(|n| n == tgt_corpus) {
+                        if i != j {
+                            let key = if i < j { (i, j) } else { (j, i) };
+                            *inter_links.entry(key).or_insert(0) += 1;
+                        }
                     }
                 }
             }
@@ -239,9 +219,9 @@ pub fn build_tier_0_overview(
         // Proportional budget: larger corpora get more of the total budget.
         // Floor of 500 ensures every corpus gets at least some representation.
         let corpus_nodes = snapshot.graph.node_count().max(1);
-        let per_corpus_budget =
-            ((budget as f64 * corpus_nodes as f64 / total_nodes_all as f64).round() as usize)
-                .clamp(500, budget);
+        let per_corpus_budget = ((budget as f64 * corpus_nodes as f64 / total_nodes_all as f64)
+            .round() as usize)
+            .clamp(500, budget);
         let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
         let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
@@ -438,7 +418,14 @@ pub fn build_tier_1_corpus(
                 Some(ResolutionConfidence::Speculative) => 3,
                 None => 0,
             };
-            raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight, edge_class, confidence));
+            raw_edges.push((
+                src_loc,
+                tgt_loc,
+                w.edge_type().to_string(),
+                w.weight,
+                edge_class,
+                confidence,
+            ));
         }
     }
 
@@ -540,11 +527,7 @@ pub fn build_tier_2_local(
         degrees.push(deg);
         // Inherit community from the snapshot's pre-computed community map.
         // Falls back to 0 for nodes not in any detected community.
-        let comm = snapshot
-            .community_map
-            .get(&node_data.path)
-            .copied()
-            .unwrap_or(0);
+        let comm = snapshot.community_map.get(&node_data.path).copied().unwrap_or(0);
         communities.push(comm);
     }
 
@@ -571,7 +554,14 @@ pub fn build_tier_2_local(
                     Some(ResolutionConfidence::Speculative) => 3,
                     None => 0,
                 };
-                raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight, edge_class, confidence));
+                raw_edges.push((
+                    src_loc,
+                    tgt_loc,
+                    w.edge_type().to_string(),
+                    w.weight,
+                    edge_class,
+                    confidence,
+                ));
             }
         }
     }

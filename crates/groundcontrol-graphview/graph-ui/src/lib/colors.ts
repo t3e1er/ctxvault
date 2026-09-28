@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { EdgeClass } from '../types.ts';
 
 export const EDGE_TYPE_COLORS: Record<string, number> = {
@@ -6,15 +7,15 @@ export const EDGE_TYPE_COLORS: Record<string, number> = {
   call: 0x10b981,
   defines: 0xa855f7,
   defines_method: 0xa855f7,
-  imports: 0x3b82f6,
-  import: 0x3b82f6,
+  imports: 0x38bdf8,
+  import: 0x38bdf8,
   implements: 0xf97316,
 
   // Structural relations
   wikilink: 0x38bdf8,
   reference: 0x38bdf8,
-  related: 0x67e8f9,
-  frontmatter: 0x67e8f9,
+  related: 0x06b6d4,
+  frontmatter: 0x06b6d4,
 
   // Semantic relations
   similar_to: 0x8b5cf6,
@@ -26,7 +27,7 @@ export const EDGE_TYPE_COLORS: Record<string, number> = {
   specifies: 0xf59e0b,
 
   // Cross-corpus inter-repo links
-  cross_corpus: 0xffffff,
+  cross_corpus: 0xe2e8f0,
 };
 
 export const EDGE_CLASS_COLORS: Record<EdgeClass, number> = {
@@ -34,7 +35,7 @@ export const EDGE_CLASS_COLORS: Record<EdgeClass, number> = {
   [EdgeClass.Semantic]: 0x8b5cf6,   // Violet
   [EdgeClass.Code]: 0x10b981,       // Emerald
   [EdgeClass.CrossModal]: 0xf59e0b, // Amber
-  [EdgeClass.Hybrid]: 0xe2e8f0,     // Silver
+  [EdgeClass.Hybrid]: 0x94a3b8,     // Slate Silver
 };
 
 export function getEdgeColor(edgeType: string, edgeClass: EdgeClass): number {
@@ -46,23 +47,22 @@ export function getEdgeColor(edgeType: string, edgeClass: EdgeClass): number {
 }
 
 export function stellarColorForDegree(degree: number): number {
-  if (degree <= 1) return 0xef4444;       // Class M: Red
-  if (degree <= 4) return 0xf97316;       // Class K: Orange
-  if (degree <= 9) return 0xfacc15;       // Class G: Yellow
-  if (degree <= 19) return 0xf8fafc;      // Class F/A: White
-  if (degree <= 49) return 0x67e8f9;      // Class B: Light Blue
-  return 0x38bdf8;                        // Class O: High-energy Deep Cyan / Blue
+  if (degree <= 1) return 0xb45309;       // Ember Red/Orange
+  if (degree <= 3) return 0xd97706;       // Warm Amber
+  if (degree <= 7) return 0xf59e0b;       // Bright Gold
+  if (degree <= 15) return 0xfef08a;      // Solar Pale Yellow
+  if (degree <= 30) return 0xf8fafc;      // Stellar Pure White
+  if (degree <= 60) return 0x38bdf8;      // Electric Ice-Cyan
+  return 0x818cf8;                        // High-Energy Plasma Indigo
 }
 
-const COMMUNITY_PALETTE: number[] = [
-  0x38bdf8, 0x10b981, 0xa855f7, 0xf59e0b,
-  0xec4899, 0x06b6d4, 0x14b8a6, 0x6366f1,
-  0xe11d48, 0x84cc16, 0xeab308, 0xd946ef,
-  0x0284c7, 0x059669, 0x7c3aed, 0xf97316,
-];
+const tempColor = new THREE.Color();
 
 export function communityColor(commId: number): number {
-  return COMMUNITY_PALETTE[Math.abs(commId) % COMMUNITY_PALETTE.length];
+  // Golden ratio angle in HSL color wheel guarantees smooth, maximally distinct separation
+  const hue = ((Math.abs(commId) * 137.507764) % 360) / 360;
+  tempColor.setHSL(hue, 0.70, 0.55);
+  return tempColor.getHex();
 }
 
 export function hexToCss(colorHex: number): string {
@@ -70,14 +70,14 @@ export function hexToCss(colorHex: number): string {
 }
 
 export const CATEGORY_COLORS: Record<string, number> = {
-  DocNode: 0x3b82f6,
-  Function: 0x10b981,
-  Struct: 0x8b5cf6,
-  Trait: 0xec4899,
-  Enum: 0xf59e0b,
-  Module: 0x06b6d4,
-  Macro: 0x14b8a6,
-  CodeSymbol: 0x64748b,
+  DocNode: 0x38bdf8,     // Ice Blue
+  Function: 0x10b981,    // Emerald
+  Struct: 0x8b5cf6,      // Violet
+  Trait: 0xec4899,       // Rose Pink
+  Enum: 0xf59e0b,        // Amber
+  Module: 0x06b6d4,      // Teal Cyan
+  Macro: 0x14b8a6,       // Aqua
+  CodeSymbol: 0x64748b,  // Slate
 };
 
 export function getCategoryColor(cat: string): number {

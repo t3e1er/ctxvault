@@ -163,20 +163,20 @@ pub fn assign_color_and_type(
 pub fn color_for_edge_type(edge_type: &str) -> u32 {
     match edge_type.to_lowercase().as_str() {
         // Code relations
-        "calls" | "call" => 0x10b981,                       // Emerald
-        "defines" | "defines_method" => 0xa855f7,            // Purple
-        "imports" | "import" => 0x3b82f6,                    // Blue
-        "implements" => 0xf97316,                            // Orange
+        "calls" | "call" => 0x10b981,             // Emerald
+        "defines" | "defines_method" => 0xa855f7, // Purple
+        "imports" | "import" => 0x3b82f6,         // Blue
+        "implements" => 0xf97316,                 // Orange
         // Structural relations
-        "wikilink" | "reference" => 0x38bdf8,                // Cyan
-        "related" | "frontmatter" => 0x67e8f9,               // Light Cyan
+        "wikilink" | "reference" => 0x38bdf8,  // Cyan
+        "related" | "frontmatter" => 0x67e8f9, // Light Cyan
         // Semantic relations
-        "similar_to" | "tag_similarity" => 0x8b5cf6,         // Violet
+        "similar_to" | "tag_similarity" => 0x8b5cf6, // Violet
         // CrossModal relations
         "documents" | "tested_by" | "specifies" => 0xf59e0b, // Amber
         // Cross-Corpus special
-        "cross_corpus" => 0xffffff,                          // White
-        _ => 0x64748b,                                       // Slate Gray fallback
+        "cross_corpus" => 0xffffff, // White
+        _ => 0x64748b,              // Slate Gray fallback
     }
 }
 

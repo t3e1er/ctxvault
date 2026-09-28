@@ -284,8 +284,7 @@ pub async fn handle_reload_corpus(
     {
         let mut cache = state.layout_cache.write().await;
         cache.retain(|k, _| {
-            !k.starts_with(&format!("corpus:{}:", name))
-                && !k.starts_with("overview:all:")
+            !k.starts_with(&format!("corpus:{}:", name)) && !k.starts_with("overview:all:")
         });
     }
 

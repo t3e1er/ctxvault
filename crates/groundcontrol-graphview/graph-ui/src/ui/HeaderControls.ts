@@ -4,7 +4,6 @@ export class HeaderControls {
   private container: HTMLElement;
   public onViewModeChange?: (mode: ViewMode) => void;
   public onCorpusChange?: (corpus: string) => void;
-  public onClusterModeChange?: (mode: 'community' | 'directory') => void;
   public onReload?: () => void;
   public onQuery?: (query: string) => void;
   public onQuerySubmit?: (query: string) => void;
@@ -17,15 +16,14 @@ export class HeaderControls {
     corpora: CorpusMetadata[],
     activeCorpus: string,
     currentViewMode: ViewMode,
-    currentClusterMode: 'community' | 'directory',
     nodeCount: number,
     edgeCount: number
   ) {
     const corpusOptions = [
-      '<option value="all">🌌 Galaxy: All Corpora</option>',
+      '<option value="all">All Corpora (Galaxy)</option>',
       ...corpora.map(
         (c) =>
-          `<option value="${c.name}" ${c.name === activeCorpus ? 'selected' : ''}>📁 ${c.name} (${c.nodes.toLocaleString()} n)</option>`
+          `<option value="${c.name}" ${c.name === activeCorpus ? 'selected' : ''}>${c.name} (${c.nodes.toLocaleString()} n)</option>`
       ),
     ].join('');
 
@@ -42,50 +40,43 @@ export class HeaderControls {
             <span class="brand-title">GROUNDCONTROL <span class="brand-sub">GRAPHVIEW</span></span>
           </div>
 
-          <div class="control-group">
+          <div class="control-group" style="display: flex; align-items: center; gap: 6px;">
             <select id="corpus-select" class="hud-select">
               ${corpusOptions}
             </select>
-            <button id="reload-btn" class="hud-btn" title="Reload corpus and invalidate cache">↻</button>
+            <button id="reload-btn" class="hud-btn" title="Reload corpus and invalidate cache" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+            </button>
           </div>
 
-          <!-- Real Search Bar in Header -->
+          <!-- Real Search Bar in Header (No Emojis) -->
           <div class="header-search" id="header-search-box">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#94a3b8" stroke-width="2">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;">
               <circle cx="11" cy="11" r="8"/>
               <line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input type="text" id="query-input" placeholder="Query graph (BM25 / Cypher / AST)..." class="hud-input"/>
+            <input type="text" id="query-input" placeholder="Search symbols, paths, types..." class="hud-input"/>
           </div>
         </div>
 
-        <div class="header-center">
+        <div class="header-right">
           <div class="pill-group" id="view-mode-pills">
             <button class="pill-btn ${currentViewMode === 'entity' ? 'active' : ''}" data-mode="entity">
               Entity Type
             </button>
             <button class="pill-btn ${currentViewMode === 'degree' ? 'active' : ''}" data-mode="degree">
-              Degree (Stars)
+              Degree
             </button>
             <button class="pill-btn ${currentViewMode === 'community' ? 'active' : ''}" data-mode="community">
-              Community (Leiden)
-            </button>
-          </div>
-        </div>
-
-        <div class="header-right">
-          <div class="pill-group" id="cluster-mode-pills">
-            <button class="pill-btn ${currentClusterMode === 'community' ? 'active' : ''}" data-cluster="community" title="Leiden Topological Clustering">
-              Leiden 3D
-            </button>
-            <button class="pill-btn ${currentClusterMode === 'directory' ? 'active' : ''}" data-cluster="directory" title="Directory Hierarchy Clustering">
-              Directory
+              Community
             </button>
           </div>
 
           <div class="stats-badge">
             <span class="stat-highlight">${nodeCount.toLocaleString()}</span> nodes
-            <span class="stat-sep">/</span>
+            <span class="stat-sep" style="color: rgba(255,255,255,0.2); margin: 0 4px;">/</span>
             <span class="stat-highlight">${edgeCount.toLocaleString()}</span> edges
           </div>
         </div>
@@ -125,16 +116,6 @@ export class HeaderControls {
         viewPills.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         this.onViewModeChange?.(mode);
-      });
-    });
-
-    const clusterPills = this.container.querySelectorAll('#cluster-mode-pills .pill-btn');
-    clusterPills.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const clMode = btn.getAttribute('data-cluster') as 'community' | 'directory';
-        clusterPills.forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.onClusterModeChange?.(clMode);
       });
     });
   }

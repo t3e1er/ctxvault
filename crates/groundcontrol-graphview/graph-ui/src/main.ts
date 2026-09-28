@@ -16,7 +16,6 @@ class GraphViewApp {
   private corpora: CorpusMetadata[] = [];
   private activeCorpus = 'all';
   private currentViewMode: ViewMode = 'entity';
-  private currentClusterMode: 'community' | 'directory' = 'community';
   private currentPayload: GraphPayload | null = null;
   private currentSearchMatches: Set<number> | null = null;
 
@@ -42,11 +41,6 @@ class GraphViewApp {
     this.header.onCorpusChange = (corpus) => {
       this.activeCorpus = corpus;
       this.currentSearchMatches = null;
-      this.loadGraph();
-    };
-
-    this.header.onClusterModeChange = (clMode) => {
-      this.currentClusterMode = clMode;
       this.loadGraph();
     };
 
@@ -100,6 +94,19 @@ class GraphViewApp {
 
     this.filterPanel.onOrbitSpeedChange = (speed) => {
       this.scene.setAutoRotate(true, speed);
+    };
+
+    let clusterDistScale = 1.0;
+    let nodeDispScale = 1.0;
+
+    this.filterPanel.onClusterDistChange = (val) => {
+      clusterDistScale = val / 10.0;
+      this.scene.updateClusterScales(clusterDistScale, nodeDispScale);
+    };
+
+    this.filterPanel.onNodeDispChange = (val) => {
+      nodeDispScale = val / 10.0;
+      this.scene.updateClusterScales(clusterDistScale, nodeDispScale);
     };
 
     // 3. Scene Interaction
@@ -184,7 +191,6 @@ class GraphViewApp {
         this.corpora,
         this.activeCorpus,
         this.currentViewMode,
-        this.currentClusterMode,
         0,
         0
       );
@@ -226,13 +232,13 @@ class GraphViewApp {
 
   private async loadGraph() {
     const targetLabel = this.activeCorpus === 'all' ? 'All Corpora' : this.activeCorpus;
-    this.showLoading(`Loading ${targetLabel} (${this.currentClusterMode} mode)...`);
+    this.showLoading(`Loading ${targetLabel}...`);
 
     try {
       const url =
         this.activeCorpus === 'all'
-          ? `/api/graph/overview?cluster_mode=${this.currentClusterMode}`
-          : `/api/graph/corpus/${encodeURIComponent(this.activeCorpus)}?cluster_mode=${this.currentClusterMode}`;
+          ? `/api/graph/overview?cluster_mode=community`
+          : `/api/graph/corpus/${encodeURIComponent(this.activeCorpus)}?cluster_mode=community`;
 
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status} loading graph`);
@@ -247,7 +253,6 @@ class GraphViewApp {
         this.corpora,
         this.activeCorpus,
         this.currentViewMode,
-        this.currentClusterMode,
         payload.nodes.length,
         payload.edges.length
       );

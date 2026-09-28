@@ -47,10 +47,19 @@ export class Inspector {
         </div>
 
         <div class="inspector-actions">
-          <button class="hud-action-btn" id="focus-ego-btn" title="Focus 2-hop ego subgraph">
-            🔍 Subgraph Focus
+          <button class="hud-action-btn" id="focus-ego-btn" title="Focus 2-hop ego subgraph" style="display: flex; align-items: center; gap: 6px;">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <span>Focus Subgraph</span>
           </button>
-          <button class="close-btn" id="inspector-close" title="Dismiss">×</button>
+          <button class="close-btn" id="inspector-close" title="Dismiss" style="display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
       </div>
     `;

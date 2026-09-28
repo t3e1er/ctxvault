@@ -16,6 +16,10 @@ export class NodeCloud {
   private searchMatchIds: Set<number> | null = null;
   private entityFilter: string = 'all';
 
+  private basePositions: Float32Array = new Float32Array(0);
+  private currentPositions: Map<number, [number, number, number]> = new Map();
+  private commCentroids: Map<number, { count: number; cx: number; cy: number; cz: number }> = new Map();
+
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'NodeCloud';
@@ -28,6 +32,36 @@ export class NodeCloud {
 
     const count = nodes.length;
     if (count === 0) return;
+
+    this.basePositions = new Float32Array(count * 3);
+    this.currentPositions.clear();
+    this.commCentroids.clear();
+
+    // 1. Record base positions & compute community centroids
+    for (let i = 0; i < count; i++) {
+      const n = nodes[i];
+      this.basePositions[i * 3] = n.position[0];
+      this.basePositions[i * 3 + 1] = n.position[1];
+      this.basePositions[i * 3 + 2] = n.position[2];
+      this.currentPositions.set(n.id, [n.position[0], n.position[1], n.position[2]]);
+
+      const comm = n.community;
+      const c = this.commCentroids.get(comm) || { count: 0, cx: 0, cy: 0, cz: 0 };
+      c.count++;
+      c.cx += n.position[0];
+      c.cy += n.position[1];
+      c.cz += n.position[2];
+      this.commCentroids.set(comm, c);
+    }
+
+    // Average centroids
+    for (const entry of this.commCentroids.values()) {
+      if (entry.count > 0) {
+        entry.cx /= entry.count;
+        entry.cy /= entry.count;
+        entry.cz /= entry.count;
+      }
+    }
 
     if (count <= 75000) {
       this.buildInstanced(nodes, mode);
@@ -63,7 +97,8 @@ export class NodeCloud {
 
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
-      this.dummy.position.set(node.position[0], node.position[1], node.position[2]);
+      const pos = this.currentPositions.get(node.id) || node.position;
+      this.dummy.position.set(pos[0], pos[1], pos[2]);
       const s = Math.max(1.2, node.size * 0.45 * this.particleScale);
       this.dummy.scale.set(s, s, s);
       this.dummy.updateMatrix();
@@ -87,9 +122,10 @@ export class NodeCloud {
 
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
-      positions[i * 3] = n.position[0];
-      positions[i * 3 + 1] = n.position[1];
-      positions[i * 3 + 2] = n.position[2];
+      const pos = this.currentPositions.get(n.id) || n.position;
+      positions[i * 3] = pos[0];
+      positions[i * 3 + 1] = pos[1];
+      positions[i * 3 + 2] = pos[2];
 
       this.resolveColor(n, mode, this.color);
       colors[i * 3] = this.color.r;
@@ -110,6 +146,32 @@ export class NodeCloud {
 
     this.pointsMesh = new THREE.Points(geometry, material);
     this.group.add(this.pointsMesh);
+  }
+
+  public updateClusterScales(
+    clusterDistScale: number,
+    nodeDispScale: number
+  ): Map<number, [number, number, number]> {
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      const c = this.commCentroids.get(node.community) || { cx: 0, cy: 0, cz: 0 };
+      const bx = this.basePositions[i * 3];
+      const by = this.basePositions[i * 3 + 1];
+      const bz = this.basePositions[i * 3 + 2];
+
+      const dx = bx - c.cx;
+      const dy = by - c.cy;
+      const dz = bz - c.cz;
+
+      const nx = c.cx * clusterDistScale + dx * nodeDispScale;
+      const ny = c.cy * clusterDistScale + dy * nodeDispScale;
+      const nz = c.cz * clusterDistScale + dz * nodeDispScale;
+
+      this.currentPositions.set(node.id, [nx, ny, nz]);
+    }
+
+    this.updateScalesAndPositions();
+    return this.currentPositions;
   }
 
   private resolveColor(node: NodeData, mode: ViewMode, outColor: THREE.Color) {
@@ -173,43 +235,54 @@ export class NodeCloud {
   public setSearchMatches(matchIds: Set<number> | null) {
     this.searchMatchIds = matchIds;
     this.refreshColors();
-    this.updateScales();
+    this.updateScalesAndPositions();
   }
 
   public setEntityFilter(filter: string) {
     this.entityFilter = filter;
     this.refreshColors();
-    this.updateScales();
+    this.updateScalesAndPositions();
   }
 
   public setParticleScale(scale: number) {
     this.particleScale = scale / 6.0;
-    this.updateScales();
+    this.updateScalesAndPositions();
     if (this.pointsMesh) {
       (this.pointsMesh.material as THREE.PointsMaterial).size = 4.5 * this.particleScale;
     }
   }
 
-  private updateScales() {
-    if (!this.instancedMesh) return;
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
-      let s = Math.max(1.2, node.size * 0.45 * this.particleScale);
-      if (this.searchMatchIds !== null) {
-        if (this.searchMatchIds.has(node.id)) {
-          s *= 1.8;
-        } else {
+  private updateScalesAndPositions() {
+    if (this.instancedMesh) {
+      for (let i = 0; i < this.nodes.length; i++) {
+        const node = this.nodes[i];
+        let s = Math.max(1.2, node.size * 0.45 * this.particleScale);
+        if (this.searchMatchIds !== null) {
+          if (this.searchMatchIds.has(node.id)) {
+            s *= 1.8;
+          } else {
+            s *= 0.4;
+          }
+        } else if (this.entityFilter !== 'all' && node.entityType !== this.entityFilter) {
           s *= 0.4;
         }
-      } else if (this.entityFilter !== 'all' && node.entityType !== this.entityFilter) {
-        s *= 0.4;
+        const pos = this.currentPositions.get(node.id) || node.position;
+        this.dummy.position.set(pos[0], pos[1], pos[2]);
+        this.dummy.scale.set(s, s, s);
+        this.dummy.updateMatrix();
+        this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
       }
-      this.dummy.position.set(node.position[0], node.position[1], node.position[2]);
-      this.dummy.scale.set(s, s, s);
-      this.dummy.updateMatrix();
-      this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
+      this.instancedMesh.instanceMatrix.needsUpdate = true;
+    } else if (this.pointsMesh) {
+      const posAttr = this.pointsMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+      if (posAttr) {
+        for (let i = 0; i < this.nodes.length; i++) {
+          const pos = this.currentPositions.get(this.nodes[i].id) || this.nodes[i].position;
+          posAttr.setXYZ(i, pos[0], pos[1], pos[2]);
+        }
+        posAttr.needsUpdate = true;
+      }
     }
-    this.instancedMesh.instanceMatrix.needsUpdate = true;
   }
 
   public refreshColors() {

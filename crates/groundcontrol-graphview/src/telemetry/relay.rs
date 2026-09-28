@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
-
 /// Structured agent activity event emitted on MCP tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivation {

@@ -69,7 +69,7 @@ pub fn compute_cluster_anchors(
 
             let num_comms = distinct_comms.len().max(1);
             let mut comm_centers: HashMap<u32, [f32; 3]> = HashMap::with_capacity(num_comms);
-            
+
             // Volumetric Fibonacci distribution for community centroids across 3D space
             for (c_idx, &c) in distinct_comms.iter().enumerate() {
                 let c_f = c_idx as f32;
