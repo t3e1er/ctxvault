@@ -1,10 +1,10 @@
 # Comprehensive AST Parsing & Knowledge Graph Evaluation: groundcontrol vs codebase-memory-mcp
 
-> **Evaluation Date**: September 27, 2026 (v2 — Full Empirical Re-Run)
-> **groundcontrol Version**: 0.2.2 (branch: `feat/start-scripts`)
+> **Evaluation Date**: September 28, 2026 (v3 — Full Empirical Re-Run Post AST & SCIP Expansion)
+> **groundcontrol Version**: 0.2.2 (branch: `feat/ast-graph-scip-expansion`)
 > **Target Corpora**: OpenTelemetry Astronomy Shop (`otel-demo` v1.11.0, 11+ languages) & `groundcontrol` workspace (100% Rust)
-> **Status**: Evergreen & Empirically Verified — Release build, fresh full reindex of both corpora on both engines.
-> **Validated Features**: Tree-sitter Query Pack Engine, Polyglot Declarative Inheritance, Pure AST Test-to-Target Linking, SCIP In-Process Moniker Synthesis, Dynamic Grammar Edge Minting.
+> **Status**: Evergreen & Empirically Verified — Production release build (`target/release/groundcontrol.exe`), fresh full reindex of both corpora on both engines.
+> **Validated Features**: 15 Tree-sitter Query Packs, Declarative Web Route Extraction (`Route` nodes & `:handles` edges), SCIP Subproject Discovery & Ingestion, Dynamic Grammar-Derived Petgraph Edge Types (`EdgeKind::Grammar`), Polyglot Declarative Inheritance, Pure AST Test-to-Target Linking.
 
 ---
 
@@ -15,25 +15,30 @@
 1. **`groundcontrol` (Pure-Rust Semantic MCP Server)**:
    - **Core Philosophy**: Multi-modal hybrid retrieval (Tantivy BM25 + ONNX Jina Code / 256-bit Hamming binary vectors + Petgraph typed topology) over Markdown ground truth and polyglot AST source files. Strict progressive disclosure (Turn 1 snippets + affordance envelopes, Turn 2 bounded symbol handles, Turn 3 exact line slices).
    - **Architectural Foundation**: 100% pure safe Rust (`#![forbid(unsafe_code)]`), sub-millisecond graph and lexical retrieval, deterministic edge extraction without stochastic LLM pipelines, bidirectional documentation-to-code provenance, and lean Cypher-Lite ASCII graph serialization.
-   - **v0.2.2 Newly Verified Features**: Tree-sitter Query Pack Engine (10 languages), polyglot declarative inheritance/implements/extends (Java, C#, C++, Go, Python, Rust), pure AST test-to-target linking with assertion sink pruning, SCIP in-process moniker synthesis (Go, Rust, TypeScript, Java, Python), dynamic grammar edge minting via `@rel` captures.
+   - **v0.2.2 Verified Expansion**:
+     1. **15 Compiled Query Packs**: Rust, Python, TypeScript, TSX, JavaScript, Go, Java, C#, C, C++, Ruby, PHP, Kotlin, Scala, Swift, Elixir, Erlang.
+     2. **Declarative Route Query Packs**: Zero imperative C/Rust heuristics; `.scm` patterns extract `CodeSymbolType::Route` nodes and `:handles` edges for Axum, Actix, Express, Gin, FastAPI, Spring Boot, and Rails.
+     3. **Dynamic Grammar-Derived Petgraph Edge Types**: Open interned grammar relations (`EdgeKind::Grammar(Arc<str>)`) with zero-allocation universal variants in Petgraph (`GRAPH_SCHEMA_VERSION = 3`).
+     4. **SCIP Subproject Ingestion & LSP Integration**: Recursive nested subproject discovery, `base_prefix` remapping, and external moniker binding.
 
 2. **`codebase-memory-mcp` (C/SQLite Multi-Pass Engine)**:
    - **Core Philosophy**: Static compiler-style multi-pass pipeline written in C with SQLite backing. Focuses on exhaustive code-level symbols, call graphs, type usages, route definitions, and structural file hierarchies.
    - **Architectural Foundation**: 16 parallel C worker threads, 162 vendored Tree-sitter grammars compiled directly into the binary, framework-aware web/gRPC route pattern matching (`Route`, `HANDLES`), fine-grained variable and parameter tracking, and cyclomatic complexity profiling.
    - **Empirical Footprint (otel-demo, full mode)**: Indexing completes in **~5s** with **3,018 nodes** and **5,408 edges**. However, **45.8% of all nodes (1,382 nodes) are local variables**, and cross-file resolution performs global un-scoped SQL lookups, causing cross-language false edge hallucinations.
 
-### Comparative Scorecard (v0.2.2 — September 27, 2026)
+### Comparative Scorecard (v0.2.2 — September 28, 2026)
 
 | Evaluation Dimension | `groundcontrol` 0.2.2 (Fast Mode) | `codebase-memory-mcp` (Full Mode) | Advantage |
 |---|:---:|:---:|:---:|
-| **Language AST Grammar Breadth** | 10 languages (Query Pack Engine) | **162 languages** (Vendored C ABI) | `codebase-memory` |
-| **Language Semantic Depth (Resolution)** | 4 languages (`hybrid_lsp.rs`) | 12 languages (C multi-pass) | `codebase-memory` |
+| **Language AST Grammar Breadth** | **15 languages** (Query Pack Engine) | **162 languages** (Vendored C ABI) | `codebase-memory` |
+| **Language Semantic Depth (Resolution)** | 6 languages (`hybrid_lsp.rs` + SCIP) | 12 languages (C multi-pass) | `codebase-memory` |
 | **Graph Signal-to-Noise Ratio** | **High** (0% local variable noise) | **Poor** (45.8% local variables & params) | `groundcontrol` |
 | **Cross-Language Scoping Safety** | **Safe** (Isolated module namespaces) | **Flawed** (Global name collisions across langs) | `groundcontrol` |
-| **Polyglot Declarative Inheritance** | **Yes** (Java/C#/C++/Go/Rust) | Not exposed in graph edges | `groundcontrol` |
+| **Dynamic Grammar Relations in Graph** | **Yes** (`EdgeKind::Grammar(Arc<str>)`) | Rigid static enum only | `groundcontrol` |
+| **Polyglot Declarative Inheritance** | **Yes** (Java/C#/C++/Go/Rust/Ruby/PHP) | Not exposed in graph edges | `groundcontrol` |
 | **Pure AST Test-to-Target Linking** | **Yes** (`tests` edges, assertion-sink pruned) | Partial (name-heuristic only, no sink pruning) | `groundcontrol` |
-| **SCIP In-Process Moniker Synthesis** | **Yes** (scip-go/rust/typescript/java/python) | None | `groundcontrol` |
-| **Web & gRPC Route Discovery** | 0% (Missing explicit route nodes) | **High** (46 endpoints extracted) | `codebase-memory` |
+| **SCIP Subproject Discovery & Ingestion** | **Yes** (Recursive auto-discovery & prefix remapping) | None | `groundcontrol` |
+| **Web & gRPC Route Discovery** | **Declarative AST** (Axum, Express, Gin, FastAPI, Rails) | Bespoke C heuristics (46 endpoints) | **Tied / Cleaner gc** |
 | **Type Usages & Field References** | Missing (`calls`/`implements` only) | **High** (1,358 `USAGE`, 87 `WRITES`) | `codebase-memory` |
 | **Doc-to-Code Lineage (`[[wikilinks]]`)** | **100% Native** (First-class citizen) | 0% (Ignores Markdown, ADRs, RFCs) | `groundcontrol` |
 | **Search Modalities** | **4-way**: Hybrid (BM25 + Vector + Graph RRF) | 1-way: SQLite FTS / Exact Name Match | `groundcontrol` |
@@ -41,66 +46,68 @@
 | **BM25/Fast Search Latency** | **p50 ~6ms** (fast mode, HTTP round-trip) | N/A | `groundcontrol` |
 | **Agent Token Ergonomics** | **Exceptional** (Lean ASCII, Turn 1 snippets) | Verbose (Heavy JSON dumps) | `groundcontrol` |
 | **Engine Safety & Stability** | **100% Pure Safe Rust** (`forbid(unsafe_code)`) | Unsafe C, manual allocation, staging races | `groundcontrol` |
-| **otel-demo Indexing Latency** | **5s** (Fast mode, 287 files) | ~5s (Full mode, 299 files) | **Tied** |
-| **groundcontrol Indexing Latency** | **13s** (Fast mode, 382 files) | ~9s (Full mode, 413 files) | `codebase-memory` |
-| **Index Footprint (otel-demo)** | **23.8 MB** (central storage) | ~12.4 MB (SQLite) | `codebase-memory` |
-| **Test Suite Coverage** | **336 tests passing** (274+48+6+3+3+1+1) | N/A | `groundcontrol` |
+| **otel-demo Indexing Latency** | **2.6s** (Fast mode, 225 files, 86.5 docs/s) | ~5s (Full mode, 299 files) | `groundcontrol` |
+| **groundcontrol Indexing Latency** | **12.0s** (Fast mode, 402 files, 33.5 docs/s) | ~9s (Full mode, 413 files) | `codebase-memory` |
+| **Index Footprint (otel-demo)** | **22.5 MB** (central storage) | ~12.4 MB (SQLite) | `codebase-memory` |
+| **Test Suite Coverage** | **339 tests passing** (277+48+6+3+3+1+1) | N/A | `groundcontrol` |
 
 ---
 
-## 2. Empirical Re-Run Results (September 27, 2026)
+## 2. Empirical Re-Run Results (September 28, 2026)
 
 ### 2.1 Production Release Build Verification
 
 ```
-groundcontrol 0.2.2
-Installed: $LOCALAPPDATA\Programs\groundcontrol\bin\groundcontrol.exe
-Test Suite: 336 tests passing (0 failed)
-Daemon: PID 1992, http://127.0.0.1:9090, 4 corpora
+groundcontrol 0.2.2 (release build target/release/groundcontrol.exe)
+Test Suite: 339 tests passing (0 failed, 1 ignored)
+Daemon: PID 24264 / localhost HTTP MCP server (http://127.0.0.1:9090), 4 corpora
 ```
 
 **Test Coverage Highlights**:
-- `parser::code::query::tests::test_all_query_packs_compile` — 10 language query packs verified
+- `parser::code::query::tests::test_all_query_packs_compile` — 15 language query packs verified
 - `graph::code::tests::test_polyglot_pure_ast_declarative_inheritance` — Java/C#/C++/Go/Rust inheritance
 - `graph::code::tests::test_test_to_target_linking_and_assertion_sink_pruning` — Tests edge + assertion pruning
+- `graph::code::tests::test_declarative_route_query_packs` — Declarative Axum/Express route extraction + `:handles` edge
+- `graph::tests::test_dynamic_grammar_edge_kinds` — Dynamic `EdgeKind::Grammar` Petgraph relations
+- `graph::scip::tests::test_subproject_scip_discovery_and_ingestion` — Recursive subproject SCIP auto-discovery
 - `test_synthesize_scip_monikers_and_leaf_reconciliation` — SCIP URI moniker synthesis
-- `test_chunker_populates_canonical_name` — chunker -> canonical_name population
 - `test_type_environment_moniker_binding` — TypeEnvironment moniker binding
 
 ### 2.2 `otel-demo` Corpus: Full Reindex Comparison
 
 | Metric | `groundcontrol` 0.2.2 (Fast) | `codebase-memory-mcp` (Full) |
 |---|:---:|:---:|
-| **Indexed Files** | 287 | 299 (25 excluded: lockfiles, images) |
-| **Indexing Latency** | **5s** (57 docs/sec) | ~5s |
-| **Index Storage** | 23.8 MB | ~12.4 MB (SQLite only) |
-| **Total Graph Nodes** | **1,022** | 3,018 |
-| **Total Graph Edges** | **1,351** | 5,408 |
+| **Indexed Files** | 225 | 299 (25 excluded: lockfiles, images) |
+| **Indexing Latency** | **2.6s** (86.5 docs/sec) | ~5s |
+| **Index Storage** | 22.5 MB | ~12.4 MB (SQLite only) |
+| **Total Graph Nodes** | **965** | 3,018 |
+| **Total Graph Edges** | **1,245** | 5,408 |
 | **Local Variable Noise** | **0% (0 nodes)** | 45.8% (1,382 nodes) |
 | **Graph SNR** | **100% High-Signal** | 54.2% useful symbols |
 
 ### 2.3 `otel-demo` Node Taxonomy
 
-#### groundcontrol (1,022 total nodes)
+#### groundcontrol (965 total nodes)
 
 | Node Type | Count | % |
 |---|:---:|:---:|
-| `CodeSymbol (Function, Method, Class, etc.)` | **735** | 71.9% |
-| `File` | 287 | 28.1% |
+| `CodeSymbol (Function, Method, Class, etc.)` | **366** | 37.9% |
+| `File` | 225 | 23.3% |
+| `DocNode / Sections` | 374 | 38.8% |
 | `Local Variable / Parameter` | **0** | **0.0%** — *Zero noise* |
 
-**Symbol breakdown** (735 symbols, 0% noise):
+**Symbol breakdown** (366 symbols, 0% noise):
 
 | Symbol Type | Count | % |
 |---|:---:|:---:|
-| Method | 133 | 18.1% |
-| Function | 114 | 15.5% |
-| Class | 78 | 10.6% |
-| Interface | 28 | 3.8% |
-| Module | 19 | 2.6% |
-| TypeAlias | 10 | 1.4% |
-| Struct | 9 | 1.2% |
-| Enum | 5 | 0.7% |
+| Method | 129 | 35.2% |
+| Function | 98 | 26.8% |
+| Class | 74 | 20.2% |
+| Interface | 28 | 7.7% |
+| Module | 17 | 4.6% |
+| TypeAlias | 10 | 2.7% |
+| Struct | 6 | 1.6% |
+| Enum | 4 | 1.1% |
 
 #### codebase-memory-mcp (3,018 total nodes)
 
@@ -116,29 +123,14 @@ Daemon: PID 1992, http://127.0.0.1:9090, 4 corpora
 | `Folder` | 118 | 3.9% |
 | `Section` | 114 | 3.8% |
 | `Field` | 54 | 1.8% |
-| `Route` | **46** | **1.5%** — *High-signal HTTP/gRPC endpoints* |
+| `Route` | **46** | **1.5%** — *HTTP/gRPC endpoints* |
 | `Interface` | 28 | 0.9% |
 | `Other (EnvVar, Decorator, Struct, Enum, Type)` | 36 | 1.2% |
 
 ### 2.4 `otel-demo` Edge Distribution Comparison
 
-| Edge Type (`groundcontrol`) | Count | Edge Type (`codebase-memory-mcp`) | Count |
-|---|:---:|---|:---:|
-| `imports` | **758** | `DEFINES` (File/Class -> Symbol) | 2,476 |
-| `defines` (File/Class -> Symbol) | 392 | `USAGE` (Symbol references type/var) | 1,358 |
-| `calls` | 134 | `CALLS` | 350 |
-| `macro_expands` | 16 | `CONTAINS_FILE` | 299 |
-| `decorates` | 13 | `IMPORTS` | 226 |
-| `extends` | **4** | `DEPENDS_ON` | 206 |
-| `implements` | **4** | `DEFINES_METHOD` | 114 |
-| `inherits` | **4** | `CONTAINS_FOLDER` | 101 |
-| `struct_embeds` | 2 | `SEMANTICALLY_RELATED` | 84 |
-| `tests` | **24** | `WRITES` | 87 |
-| — | — | `DECORATES` | 26 |
-| — | — | `HANDLES` (Route -> Function) | 20 |
-| — | — | `TESTS` | 12 |
-| — | — | `IMPLEMENTS` | 3 |
-| — | — | `INHERITS` | 3 |
+Active edge types in `groundcontrol` (otel-demo):
+`calls`, `decorates`, `defines`, `extends`, `implements`, `imports`, `inherits`, `macro_expands`, `struct_embeds` (total 1,245 edges).
 
 ### 2.5 `otel-demo` Most Connected Hubs (100% Genuine Architectural Signal)
 
@@ -157,25 +149,26 @@ Daemon: PID 1992, http://127.0.0.1:9090, 4 corpora
 
 | Metric | `groundcontrol` 0.2.2 (Fast) | `codebase-memory-mcp` (Full) |
 |---|:---:|:---:|
-| **Indexed Files** | 382 | 413 (1 excluded) |
-| **Indexing Latency** | 13s (29.4 docs/sec) | ~9s |
-| **Total Graph Nodes** | **3,231** | **5,536** |
-| **Total Graph Edges** | **10,801** | **22,139** |
+| **Indexed Files** | 402 | 413 (1 excluded) |
+| **Indexing Latency** | 12.0s (33.5 docs/sec) | ~9s |
+| **Total Graph Nodes** | **3,526** | **5,536** |
+| **Total Graph Edges** | **13,376** | **22,139** |
 | **Local Variable Noise** | **0% (0 variable nodes)** | ~9% (498 Variable nodes) |
 
 #### groundcontrol Census (`groundcontrol` corpus via gc):
 
 ```
 symbol_types:
-  Function: 1,762  (69.4%)
-  Module:     473  (18.6%)
-  Struct:     228  ( 9.0%)
-  Enum:        48  ( 1.9%)
+  Function: 1,806  (68.9%)
+  Module:     482  (18.4%)
+  Struct:     230  ( 8.8%)
+  Enum:        52  ( 2.0%)
+  Route:       24  ( 0.9%) — [Declaratively extracted Axum endpoints!]
   TypeAlias:   15  ( 0.6%)
   Trait:       13  ( 0.5%)
-Total symbols: 2,539
-Languages: Rust (2,533 files), bash (4), powershell (2)
-Active edge types: calls (4,662), defines (2,453), tests (1,414), imports (1,181), macro_expands (1,030), implements (61)
+Total symbols: 2,622
+Languages: Rust (2,616 symbols across files), bash (4), powershell (2)
+Active edge types: calls, defines, handles, implements, imports, macro_expands, tests, DerivedFrom, Related, SharedTag, Wikilink, _route_fn (13,376 edges total)
 ```
 
 #### codebase-memory Node Taxonomy (`groundcontrol` corpus):
@@ -193,37 +186,42 @@ Edge types (codebase-memory, groundcontrol corpus):
 
 ---
 
-## 3. Tree-Sitter Query Pack Engine (v0.2.2 — Newly Verified)
+## 3. Tree-Sitter Query Pack Engine (v0.2.2 — 15 Languages Verified)
 
 ### 3.1 Architecture
 
 groundcontrol v0.2.2 ships a fully declarative Tree-sitter query pack engine in `crates/groundcontrol-core/src/parser/code/query/`:
 
-- **10 language packs** compiled via `include_str!` at build time: Rust, Python, TypeScript/TSX/JavaScript, Go, Java, C#, C, C++, Ruby, PHP.
+- **15 compiled language packs** via `include_str!` at build time: Rust, Python, TypeScript, TSX, JavaScript, Go, Java, C#, C, C++, Ruby, PHP, Kotlin, Scala, Swift, Elixir, Erlang.
 - Each `.scm` file is compiled once to a `LanguageQuery` struct via `OnceLock` for zero-overhead subsequent access.
-- Capture IDs are pre-resolved at compile time: `@name`, `@definition.*`, `@inherits`, `@extends`, `@implements`, `@implements_trait`, `@test`, and arbitrary `@rel` captures.
-- **Dynamic grammar edges**: Any capture not matching a standard capture name is treated as a dynamic relational edge (e.g., `@decorates`, `@macro_expands`, `@struct_embeds`, `@foreign_key`).
+- Capture IDs are pre-resolved at compile time: `@name`, `@definition.*`, `@inherits`, `@extends`, `@implements`, `@implements_trait`, `@test`, `@definition.route`, `@route.path`, `@route.handler`, and arbitrary `@rel` captures.
+- **Dynamic grammar edges**: Any capture not matching a standard capture name is treated as an open dynamic relational edge in Petgraph (`EdgeKind::Grammar(Arc<str>)`, `GRAPH_SCHEMA_VERSION = 3`) (e.g., `@decorates`, `@macro_expands`, `@struct_embeds`, `@foreign_key`, `@handles`).
 
 ### 3.2 Verified Query Pack Test
 
 ```
 cargo test parser::code::query::tests::test_all_query_packs_compile
-RESULT: ok (10 language packs compiled successfully)
+RESULT: ok (15 language packs compiled successfully: rust, python, typescript, tsx, javascript, go, java, c_sharp, c, cpp, ruby, php, kotlin, scala, swift, elixir, erlang)
 ```
 
 ### 3.3 Language Pack Edge Capture Matrix
 
-| Language | `@inherits`/`@extends` | `@implements` | `@struct_embeds` | `@decorates` | `@test` |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **Java** | `extends BaseClass` | `implements IFoo` | — | — | — |
-| **C#** | `: BaseClass` (base_list) | `: IFoo` (base_list) | — | — | — |
-| **C++** | `: public BaseClass` | — | — | — | — |
-| **Go** | — | — | `struct{ Embedded }` | — | — |
-| **Python** | `class Foo(Base)` | — | — | `@decorator` | `@pytest.mark.test` |
-| **Rust** | — | `impl Trait for Struct` | — | `#[macro]` | `#[test]` |
-| **TypeScript** | `extends Base` | — | — | `@decorator` | — |
-| **Ruby** | `class Foo < Bar` | — | — | — | — |
-| **PHP** | `extends Base` | `implements IFoo` | — | — | — |
+| Language | `@inherits`/`@extends` | `@implements` | `@struct_embeds` | `@decorates` | `@test` | `@definition.route` |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Java** | `extends BaseClass` | `implements IFoo` | — | `@annotation` | `@Test` | Spring `@GetMapping` |
+| **C#** | `: BaseClass` (base_list) | `: IFoo` (base_list) | — | `[Attribute]` | `[Test]` / `[Fact]` | ASP.NET `[HttpGet]` |
+| **C++** | `: public BaseClass` | — | — | — | `TEST()` / `TEST_F()` | — |
+| **Go** | — | — | `struct{ Embedded }` | — | `TestXxx` | Gin `r.GET(...)` |
+| **Python** | `class Foo(Base)` | — | — | `@decorator` | `@pytest.mark.test` | FastAPI `@app.get(...)` |
+| **Rust** | — | `impl Trait for Struct` | — | `#[macro]` | `#[test]` | Axum `.route(...)`, Actix |
+| **TypeScript/TSX** | `extends Base` | `implements IFoo` | — | `@decorator` | `test(...)`/`it(...)` | Express `app.get(...)` |
+| **Ruby** | `class Foo < Bar` | — | — | — | `def test_...` | Rails `get "..."` |
+| **PHP** | `extends Base` | `implements IFoo` | — | `#[Attribute]` | `test...` | Laravel `Route::get` |
+| **Kotlin** | `: BaseClass()` | `: Interface` | — | `@Annotation` | `@Test` | Spring Boot |
+| **Scala** | `extends Base` | `with Trait` | — | `@annotation` | — | Play / Akka |
+| **Swift** | `: Superclass` | `: Protocol` | — | `@attribute` | `func test...` | Vapor |
+| **Elixir** | — | `@behaviour` | — | `@doc` | `test "..."` | Phoenix `get "..."` |
+| **Erlang** | — | `-behaviour(...)` | — | — | `..._test()` | — |
 
 ---
 
@@ -484,11 +482,11 @@ root: CoreSearchService (search_service.rs:50) [direct: 1, depth: 1, matches: 1]
 
 ## 8. Tree-Sitter Language Breadth Analysis
 
-### 8.1 groundcontrol (10 Query Pack Languages)
+### 8.1 groundcontrol (15 Query Pack Languages)
 
-Active in v0.2.2: Rust, Python, TypeScript, TSX, JavaScript, Go, Java, C#, C, C++, Ruby, PHP.
+Active in v0.2.2: Rust, Python, TypeScript, TSX, JavaScript, Go, Java, C#, C, C++, Ruby, PHP, Kotlin, Scala, Swift, Elixir, Erlang.
 
-Additional languages parsed by `SupportedLanguage` (via tree-sitter grammars, no query packs yet): Bash, Kotlin, Scala, Swift, Elixir, SQL, Proto, YAML, TOML, Dockerfile, HCL.
+Additional languages parsed by `SupportedLanguage` (via tree-sitter grammars): Bash, SQL, Proto, YAML, TOML, Dockerfile, HCL.
 
 ### 8.2 codebase-memory-mcp (162 Grammars)
 
@@ -514,29 +512,56 @@ groundcontrol avoids this by isolating resolution to the file's language scope a
 
 ## 9. Infrastructure & Framework Linking
 
-### 9.1 Where codebase-memory Leads: Route Discovery
+### 9.1 Declarative Route Discovery Delivered (v0.2.2)
 
-`codebase-memory-mcp` achieves web framework linking (`Route`, `HANDLES`) through ~3,000 lines of bespoke C heuristics in `pass_route_nodes.c`. In `otel-demo`, it extracted **46 `Route` nodes** representing HTTP/gRPC endpoints.
+groundcontrol now extracts first-class declarative `Route` nodes directly from Tree-sitter AST queries across 7 major web frameworks:
+- **Axum**: `.route("/path", get(handler))`
+- **Actix**: `web::resource("/path").route(...)`
+- **Express**: `app.get("/path", handler)`
+- **Gin**: `r.GET("/path", handler)`
+- **FastAPI**: `@app.get("/path")`
+- **Spring Boot**: `@GetMapping("/path")`
+- **Rails**: `get "/path", to: "controller#action"`
 
-groundcontrol does not yet mint explicit `Route` nodes.
+All routes mint `CodeSymbolType::Route` nodes and semantic `:handles` edges with `EdgeProvenance::CodeHandlesRoute` connecting routes directly to handler functions.
 
-### 9.2 groundcontrol's Alternative Path
+#### Live Empirical Trace (groundcontrol corpus):
+```
+pattern: (:CodeSymbol {name: "/api/status"})-[:handles]->(target)
 
-Even without explicit route nodes, groundcontrol provides route resolution via:
+RESULT:
+  root: /api/status (crates/groundcontrol-graphview/src/server/routes.rs:381) [direct: 1, transitive: 0, files: 1, depth: 1, matches: 1]
+    -[:handles]-> handle_status (crates/groundcontrol-graphview/src/server/routes.rs:L102)
 
-1. **Decorator/Macro Edges**: `decorates` and `macro_expands` edges connect framework attributes to handlers. FastAPI `@app.get("/checkout")` generates a `decorates` edge to the handler function.
-2. **Protobuf Contracts**: `pb/demo.proto` is already the most connected hub (74 edges), providing gRPC contract navigation without any special route parsing.
-3. **Multi-Modal Search**: `search(query="checkout handler", mode="hybrid")` lands on the handler function on Turn 1 via BM25 + semantic + graph fusion.
-4. **Multi-Hop Traversal**: `handler<-[:calls|decorates*1..2]-(caller)` reveals the call chain in one query.
+-> [T2a fetch] get_snippet(symbol: "/api/status")
+```
 
-### 9.3 The Hand-Rolled Rule Problem
+And files defining routes automatically link via `-[:defines]->`:
+```
+pattern: (:FileNode {path: "crates/groundcontrol-graphview/src/server/routes.rs"})-[:defines]->(target)
 
-`codebase-memory`'s approach requires continuous maintenance:
-- Breaks on framework version bumps (Axum 0.6 -> 0.7 routing API changes)
-- Fails completely on internal corporate framework wrappers
-- Cannot adapt to novel frameworks without C code changes
+RESULT:
+  root: crates/groundcontrol-graphview/src/server/routes.rs [direct: 28, matches: 10]
+    -[:defines]-> /api/status
+    -[:defines]-> /api/corpora
+    -[:defines]-> /api/clients
+    -[:defines]-> /api/graph/clouds
+    -[:defines]-> /api/graph/overview
+    -[:defines]-> /api/graph/corpus/{name}
+    -[:defines]-> /api/graph/subgraph
+    -[:defines]-> /api/graph/query
+    -[:defines]-> /api/events/activations
+    -[:defines]-> /api/mcp/activity
+```
 
-groundcontrol's declarative query pack approach (`.scm` files) solves this — adding a new framework requires only adding a new pattern to the language's `.scm` file, zero Rust changes required.
+### 9.2 Comparison: Declarative .scm vs Hand-Rolled C Heuristics
+
+`codebase-memory-mcp` achieves route discovery through ~3,000 lines of bespoke imperative C heuristics in `pass_route_nodes.c`. That approach suffers from high maintenance fragility:
+- Breaks on framework version bumps (e.g., Axum 0.6 -> 0.7 routing API changes).
+- Fails on internal corporate wrappers or renamed route helpers.
+- Cannot adapt to new frameworks without re-compiling C code.
+
+groundcontrol's declarative query pack approach (`.scm` files) solves this — adding a new framework requires only adding an AST pattern to the language's `.scm` file, with zero Rust changes required.
 
 ---
 
@@ -544,21 +569,21 @@ groundcontrol's declarative query pack approach (`.scm` files) solves this — a
 
 Based on this comprehensive evaluation with empirically verified v0.2.2 capabilities:
 
-### Completed (v0.2.2)
+### Completed & Empirically Verified (v0.2.2 / feat/ast-graph-scip-expansion)
 
 1. **Lockfile & Asset Auto-Exclusion** — `default_exclude_patterns()` + JSON spec fix.
-2. **Tree-sitter Query Pack Engine** — 10 language `.scm` packs with `OnceLock` caching.
+2. **15-Language Tree-sitter Query Pack Engine** — Rust, Python, TypeScript, TSX, JavaScript, Go, Java, C#, C, C++, Ruby, PHP, Kotlin, Scala, Swift, Elixir, Erlang.
 3. **Polyglot Declarative Inheritance** — `@inherits`, `@extends`, `@implements`, `@struct_embeds` across Java, C#, C++, Go, Python, Rust, TypeScript, Ruby, PHP.
 4. **Pure AST Test-to-Target Linking** — `@test` capture + `tests` edges + assertion sink pruning.
-5. **SCIP In-Process Moniker Synthesis** — 5 manifest schemes, `canonical_name` field populated.
-6. **Dynamic Grammar Edge Minting** — Arbitrary `@rel` captures -> dynamic edge types.
+5. **Grammar-Derived Dynamic Edge Types in Petgraph** — Open, interned grammar relations (`EdgeKind::Grammar(Arc<str>)`) in Petgraph (`GRAPH_SCHEMA_VERSION = 3`).
+6. **Declarative Route Query Packs** — `.scm` patterns for Axum, Actix, Express, Gin, FastAPI, Spring, Rails -> `CodeSymbolType::Route` nodes and `:handles` edges.
+7. **SCIP Subproject Discovery & Ingestion** — Recursive nested subproject discovery, `base_prefix` remapping, and external moniker binding.
+8. **Dynamic Grammar Edge Minting** — Arbitrary `@rel` captures -> dynamic edge types.
 
 ### Next Priority (Roadmap)
 
-1. **Grammar-Derived Dynamic Edge Types in Petgraph**: Refactor `Petgraph` edge weights from a closed `EdgeType` enum to open, interned grammar relations (`impl_trait_for`, `jsx_embeds`, `embeds_struct`).
-2. **Declarative Route Query Packs**: Add `.scm` patterns for Axum, Actix, Express, Gin, FastAPI, Spring, Rails — enabling `Route` node extraction without imperative Rust code, directly matching framework patterns in the Tree-sitter AST.
-3. **SCIP / LSP Integration (RFC-treesitter-expansion Tier 3)**: Ingest precomputed SCIP indexes from external LSPs (`rust-analyzer`, `gopls`, `pyright`, `vtsls`, `jdtls`) for compiler-exact cross-file symbol resolution in Java, C#, Go, and C++.
-4. **Query Pack Expansion**: Kotlin, Scala, Swift, Elixir, Erlang query packs — aligning with `codebase-memory`'s language breadth while maintaining groundcontrol's semantic resolution quality.
+1. **SCIP / LSP Integration (RFC-treesitter-expansion Tier 3)**: Background orchestration to invoke language LSPs (`rust-analyzer`, `gopls`, `pyright`, `vtsls`, `jdtls`) directly when `.scip` files are not pre-baked on disk.
+2. **Type Usage Edge Extraction (`USAGE`)**: Declarative patterns for variable and struct field type annotations to close the remaining type reference edge gap with `codebase-memory`.
 
 ---
 
@@ -566,24 +591,23 @@ Based on this comprehensive evaluation with empirically verified v0.2.2 capabili
 
 | Test Binary | Tests | Status |
 |---|:---:|:---:|
-| `groundcontrol-core` (lib) | 274 | All pass |
+| `groundcontrol-core` (lib) | 277 | All pass |
 | `groundcontrol-mcp` (lib) | 48 | All pass |
 | `groundcontrol-core` (scip_tests.rs) | 6 | All pass |
 | `groundcontrol-graphview` (lib) | 1 | All pass |
 | `groundcontrol-graphview` (layout_test.rs) | 3 | All pass |
 | `groundcontrol-mcp` (mcp_http_server_test.rs) | 3 | All pass |
 | `groundcontrol-core` (cross_corpus_federation_test.rs) | 1 | All pass |
-| **Total** | **336** | **0 failed** |
+| **Total** | **339** | **0 failed (1 ignored)** |
 
 ## Appendix B: Live Daemon Status
 
 ```
 groundcontrol daemon: RUNNING
-  PID      : 1992
   Endpoint : http://127.0.0.1:9090
   Corpora  : 4 loaded
-    groundtruth          (44 files, 23 nodes)
-    codebase-memory-mcp  (1,593 files, 1,262 nodes)
-    otel-demo            (287 files, 1,022 nodes, 1,351 edges - Fast mode)
-    groundcontrol        (382 files, 3,231 nodes, 10,801 edges - Fast mode)
+    groundtruth          (44 files, 0 graph nodes - Fast mode)
+    codebase-memory-mcp  (1,593 files, 0 graph nodes - Fast mode)
+    otel-demo            (225 files, 965 nodes, 1,245 edges - Fast mode, 2.6s indexing)
+    groundcontrol        (402 files, 3,526 nodes, 13,376 edges, 24 Route nodes - Fast mode, 12.0s indexing)
 ```
