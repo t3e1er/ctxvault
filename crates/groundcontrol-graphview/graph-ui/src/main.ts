@@ -137,18 +137,7 @@ class GraphViewApp {
       this.scene.setAutoRotate(true, speed);
     };
 
-    let clusterDistScale = 1.0;
-    let nodeDispScale = 1.0;
 
-    this.filterPanel.onClusterDistChange = (val) => {
-      clusterDistScale = val / 10.0;
-      this.scene.updateClusterScales(clusterDistScale, nodeDispScale);
-    };
-
-    this.filterPanel.onNodeDispChange = (val) => {
-      nodeDispScale = val / 10.0;
-      this.scene.updateClusterScales(clusterDistScale, nodeDispScale);
-    };
 
     this.filterPanel.onLabelSizeChange = (val) => {
       this.scene.corpusLabels.setSize(val);
@@ -540,6 +529,22 @@ class GraphViewApp {
       const buffer = await res.arrayBuffer();
       const payload = decodeBinaryGraph(buffer);
       payload.corpus = this.activeCorpus;
+
+      if (this.activeCorpus === 'all' || this.activeCorpus === 'overview') {
+        for (const node of payload.nodes) {
+          const cIdx = Math.floor(node.community / 1000) - 1;
+          if (cIdx >= 0 && cIdx < this.corpora.length) {
+            node.corpus = this.corpora[cIdx].name;
+          } else {
+            node.corpus = 'default';
+          }
+        }
+      } else {
+        for (const node of payload.nodes) {
+          node.corpus = this.activeCorpus;
+        }
+      }
+
       this.currentPayload = payload;
 
       this.scene.setData(payload, this.corpora, this.currentViewMode);

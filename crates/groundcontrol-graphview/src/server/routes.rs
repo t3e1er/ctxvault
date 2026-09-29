@@ -139,10 +139,12 @@ fn format_layout_response(layout: &GraphLayout, format: Option<&str>) -> Respons
 /// Server status probe handler.
 pub async fn handle_status(State(state): State<ServerState>) -> Json<Value> {
     let catalog = state.catalog.read().await;
+    let centers = compute_corpus_centers(&catalog);
     let corpora: Vec<Value> = catalog
         .corpus_names()
         .iter()
         .map(|name| {
+            let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
             if let Some(snap) = catalog.get_corpus(name) {
                 let mtime_secs = snap
                     .graph_mtime
@@ -154,9 +156,13 @@ pub async fn handle_status(State(state): State<ServerState>) -> Json<Value> {
                     "nodes": snap.graph.node_count(),
                     "edges": snap.graph.edge_count(),
                     "graph_mtime": mtime_secs,
+                    "center": [center[0], center[1], center[2]],
                 })
             } else {
-                serde_json::json!({ "name": name })
+                serde_json::json!({
+                    "name": name,
+                    "center": [center[0], center[1], center[2]],
+                })
             }
         })
         .collect();

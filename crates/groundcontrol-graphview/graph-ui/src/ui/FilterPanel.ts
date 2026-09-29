@@ -12,8 +12,6 @@ export class FilterPanel {
   public onEdgeDensityChange?: (val: number) => void;
   public onExposureChange?: (val: number) => void;
   public onGradientContrastToggle?: (enabled: boolean) => void;
-  public onClusterDistChange?: (val: number) => void;
-  public onNodeDispChange?: (val: number) => void;
   public onAutoOrbitToggle?: (enabled: boolean) => void;
   public onOrbitSpeedChange?: (speed: number) => void;
   public onLabelSizeChange?: (val: number) => void;
@@ -23,7 +21,11 @@ export class FilterPanel {
   public onInterCorpusAttractionChange?: (val: number) => void;
 
   private selectedEntity: string = 'all';
-  private visualControlsCollapsed: boolean = true;
+  private entityCollapsed: boolean = false;
+  private edgeClassCollapsed: boolean = false;
+  private edgeTypeCollapsed: boolean = false;
+  private visualControlsCollapsed: boolean = false;
+
   private autoOrbitState: boolean = true;
   private orbitSpeedState: number = 8;
   private exposureState: number = 110;
@@ -156,52 +158,82 @@ export class FilterPanel {
 
     this.container.innerHTML = `
       <div class="filter-panel glass-panel">
-        <!-- Entity Classes -->
-        <div class="panel-section">
-          <div class="section-title">ENTITY CLASSES</div>
-          <div class="chips-container scrollable" id="entity-chips" style="max-height: 120px;">
-            ${entityChipsHtml}
-          </div>
-        </div>
-
-        <!-- Edge Classes -->
-        <div class="panel-section">
-          <div class="section-title">EDGE CLASSES</div>
-          <div class="chips-container" id="class-chips">
-            ${classChipsHtml}
-          </div>
-        </div>
-
-        <!-- Edge Types -->
-        <div class="panel-section" style="flex: 1 1 auto; min-height: 60px; max-height: 140px; overflow: hidden; display: flex; flex-direction: column;">
-          <div class="section-title">EDGE TYPES</div>
-          <div class="chips-container scrollable" id="type-chips" style="flex: 1 1 auto;">
-            ${typeChipsHtml}
-          </div>
-        </div>
-
-        <!-- Collapsible Visual Controls Panel -->
-        <div class="visual-controls-panel ${this.visualControlsCollapsed ? 'collapsed' : ''}" id="visual-controls-panel" style="flex-shrink: 0;">
-          <div class="visual-controls-header" id="visual-controls-header" title="Toggle Visual Controls">
-            <div class="section-title" style="margin: 0;">VISUAL CONTROLS</div>
+        <!-- Section 1: Entity Classes -->
+        <div class="panel-section ${this.entityCollapsed ? 'collapsed' : ''}" id="section-entity">
+          <div class="panel-section-header" id="header-entity" title="Toggle Entity Classes">
+            <span class="section-title">ENTITY CLASSES</span>
             <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 10px; color: var(--text-muted)">Physics & Light</span>
-              <svg class="visual-controls-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <span style="font-size: 10px; color: var(--text-muted)">(${nodes.length})</span>
+              <svg class="panel-section-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
           </div>
-          <div class="visual-controls-body" id="visual-controls-body">
+          <div class="panel-section-body">
+            <div class="chips-container scrollable" id="entity-chips" style="max-height: 120px;">
+              ${entityChipsHtml}
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 2: Edge Classes -->
+        <div class="panel-section ${this.edgeClassCollapsed ? 'collapsed' : ''}" id="section-class">
+          <div class="panel-section-header" id="header-class" title="Toggle Edge Classes">
+            <span class="section-title">EDGE CLASSES</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 10px; color: var(--text-muted)">(${edges.length})</span>
+              <svg class="panel-section-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+          </div>
+          <div class="panel-section-body">
+            <div class="chips-container" id="class-chips">
+              ${classChipsHtml}
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 3: Edge Types -->
+        <div class="panel-section ${this.edgeTypeCollapsed ? 'collapsed' : ''}" id="section-type">
+          <div class="panel-section-header" id="header-type" title="Toggle Edge Types">
+            <span class="section-title">EDGE TYPES</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 10px; color: var(--text-muted)">(${sortedTypes.length})</span>
+              <svg class="panel-section-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+          </div>
+          <div class="panel-section-body">
+            <div class="chips-container scrollable" id="type-chips" style="max-height: 130px;">
+              ${typeChipsHtml}
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 4: Collapsible Visual & Physics Controls -->
+        <div class="panel-section ${this.visualControlsCollapsed ? 'collapsed' : ''}" id="section-visual" style="flex-shrink: 0;">
+          <div class="panel-section-header" id="header-visual" title="Toggle Visual & Physics Controls">
+            <span class="section-title">VISUAL CONTROLS</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 10px; color: var(--text-muted)">Physics & Light</span>
+              <svg class="panel-section-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+          </div>
+          <div class="panel-section-body" id="visual-controls-body">
             <div class="slider-row">
               <span>Particle Size</span>
               <input type="range" id="size-slider" min="1" max="15" value="6">
             </div>
             <div class="slider-row">
-              <span>Bloom Intensity</span>
+              <span>Bloom Glow</span>
               <input type="range" id="bloom-slider" min="0" max="30" value="12">
             </div>
             <div class="slider-row">
-              <span>Glow Threshold</span>
+              <span>Glow Cutoff</span>
               <input type="range" id="bloom-threshold-slider" min="10" max="95" value="48" title="Cutoff luminance for glow (higher = less blowout)">
             </div>
             <div class="slider-row">
@@ -209,16 +241,8 @@ export class FilterPanel {
               <input type="range" id="exposure-slider" min="30" max="220" value="${this.exposureState}" title="Scene exposure/brightness level">
             </div>
             <div class="slider-row">
-              <span>Edge Density</span>
+              <span>Edge Opacity</span>
               <input type="range" id="edge-slider" min="0" max="100" value="70">
-            </div>
-            <div class="slider-row">
-              <span>Cluster Spacing</span>
-              <input type="range" id="cluster-dist-slider" min="1" max="40" value="10" title="Adjust distance between community clusters">
-            </div>
-            <div class="slider-row">
-              <span>Node Spread</span>
-              <input type="range" id="node-disp-slider" min="1" max="30" value="10" title="Adjust local dispersion of nodes">
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <span>Label Size</span>
@@ -230,11 +254,11 @@ export class FilterPanel {
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <span>Comm Gravity</span>
-              <input type="range" id="community-gravity-slider" min="30" max="250" value="${this.communityGravityState}" title="Gravitational pull of nodes toward community centroid">
+              <input type="range" id="community-gravity-slider" min="30" max="250" value="${this.communityGravityState}" title="Inward gravitational pull of nodes toward community centroid">
             </div>
             <div class="slider-row">
               <span>Corpus Gravity</span>
-              <input type="range" id="corpus-gravity-slider" min="30" max="250" value="${this.corpusGravityState}" title="Radial pull of community clusters toward corpus center">
+              <input type="range" id="corpus-gravity-slider" min="30" max="250" value="${this.corpusGravityState}" title="Radial pull of community clusters toward corpus sphere mantle">
             </div>
             <div class="slider-row">
               <span>Inter-Corpus Pull</span>
@@ -293,12 +317,36 @@ export class FilterPanel {
       });
     });
 
-    // Wire Visual Controls accordion
-    const vcHeader = this.container.querySelector('#visual-controls-header') as HTMLElement;
-    const vcPanel = this.container.querySelector('#visual-controls-panel') as HTMLElement;
-    vcHeader.addEventListener('click', () => {
+    // Wire Section 1 Collapse
+    const headerEntity = this.container.querySelector('#header-entity');
+    const sectionEntity = this.container.querySelector('#section-entity');
+    headerEntity?.addEventListener('click', () => {
+      this.entityCollapsed = !this.entityCollapsed;
+      sectionEntity?.classList.toggle('collapsed', this.entityCollapsed);
+    });
+
+    // Wire Section 2 Collapse
+    const headerClass = this.container.querySelector('#header-class');
+    const sectionClass = this.container.querySelector('#section-class');
+    headerClass?.addEventListener('click', () => {
+      this.edgeClassCollapsed = !this.edgeClassCollapsed;
+      sectionClass?.classList.toggle('collapsed', this.edgeClassCollapsed);
+    });
+
+    // Wire Section 3 Collapse
+    const headerType = this.container.querySelector('#header-type');
+    const sectionType = this.container.querySelector('#section-type');
+    headerType?.addEventListener('click', () => {
+      this.edgeTypeCollapsed = !this.edgeTypeCollapsed;
+      sectionType?.classList.toggle('collapsed', this.edgeTypeCollapsed);
+    });
+
+    // Wire Section 4 Collapse
+    const headerVisual = this.container.querySelector('#header-visual');
+    const sectionVisual = this.container.querySelector('#section-visual');
+    headerVisual?.addEventListener('click', () => {
       this.visualControlsCollapsed = !this.visualControlsCollapsed;
-      vcPanel.classList.toggle('collapsed', this.visualControlsCollapsed);
+      sectionVisual?.classList.toggle('collapsed', this.visualControlsCollapsed);
     });
 
     // Wire sliders
@@ -326,16 +374,6 @@ export class FilterPanel {
     const edgeSlider = this.container.querySelector('#edge-slider') as HTMLInputElement;
     edgeSlider?.addEventListener('input', () => {
       this.onEdgeDensityChange?.(parseFloat(edgeSlider.value));
-    });
-
-    const clusterDistSlider = this.container.querySelector('#cluster-dist-slider') as HTMLInputElement;
-    clusterDistSlider?.addEventListener('input', () => {
-      this.onClusterDistChange?.(parseFloat(clusterDistSlider.value));
-    });
-
-    const nodeDispSlider = this.container.querySelector('#node-disp-slider') as HTMLInputElement;
-    nodeDispSlider?.addEventListener('input', () => {
-      this.onNodeDispChange?.(parseFloat(nodeDispSlider.value));
     });
 
     const labelSizeSlider = this.container.querySelector('#label-size-slider') as HTMLInputElement;

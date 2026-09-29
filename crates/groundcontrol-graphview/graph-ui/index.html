@@ -263,7 +263,49 @@
       font-weight: 700;
       color: var(--text-muted);
       letter-spacing: 0.08em;
-      margin-bottom: 8px;
+    }
+
+    .panel-section {
+      background: rgba(15, 23, 42, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: all 0.22s ease;
+    }
+
+    .panel-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      padding: 7px 10px;
+      user-select: none;
+      background: rgba(15, 23, 42, 0.4);
+      transition: background 0.15s ease;
+    }
+
+    .panel-section-header:hover {
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .panel-section-chevron {
+      transition: transform 0.22s ease;
+      color: var(--text-muted);
+    }
+
+    .panel-section.collapsed .panel-section-chevron {
+      transform: rotate(-90deg);
+    }
+
+    .panel-section.collapsed .panel-section-body {
+      display: none !important;
+    }
+
+    .panel-section-body {
+      padding: 8px;
     }
 
     .chips-container {

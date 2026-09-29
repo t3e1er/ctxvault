@@ -103,7 +103,7 @@ export class GraphScene {
   }
 
   public setData(payload: GraphPayload, corporaMeta: CorpusMetadata[], mode: ViewMode = 'entity') {
-    this.nodeCloud.setNodes(payload.nodes, mode);
+    this.nodeCloud.setNodes(payload.nodes, mode, corporaMeta, payload.corpus);
     this.edgeLines.setData(payload.nodes, payload.edges);
     this.flowParticles.setEdges(payload.nodes, payload.edges);
 
@@ -113,22 +113,15 @@ export class GraphScene {
     this.bloomPass.radius = bloom.radius;
     this.bloomPass.threshold = bloom.threshold;
 
-    // Calculate corpus centers for floating labels in gravity center
-    const centers = this.calculateCorpusCenters(payload.nodes);
+    // Position floating labels at the exact space center (center of sphere), not density centroid
     if (payload.corpus === 'all' || payload.corpus === 'overview') {
-      for (const meta of corporaMeta) {
-        if (centers.has(meta.name)) {
-          meta.center = centers.get(meta.name);
-        }
-      }
       this.corpusLabels.setCorpora(corporaMeta);
     } else {
-      const center = centers.get(payload.corpus) || (centers.size > 0 ? centers.values().next().value : [0, 0, 0]);
       const singleMeta: CorpusMetadata = {
         name: payload.corpus,
         nodes: payload.nodes.length,
         edges: payload.edges.length,
-        center: center,
+        center: [0, 0, 0], // Space center of single corpus sphere is origin
       };
       this.corpusLabels.setCorpora([singleMeta]);
     }
@@ -181,27 +174,6 @@ export class GraphScene {
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.density = Math.max(0.000008, Math.min(0.0001, 0.35 / fitDistance));
     }
-  }
-
-  private calculateCorpusCenters(nodes: NodeData[]): Map<string, [number, number, number]> {
-    const sums = new Map<string, [number, number, number, number]>();
-    for (const n of nodes) {
-      const c = n.corpus || 'default';
-      const entry = sums.get(c) || [0, 0, 0, 0];
-      entry[0] += n.position[0];
-      entry[1] += n.position[1];
-      entry[2] += n.position[2];
-      entry[3] += 1;
-      sums.set(c, entry);
-    }
-
-    const centers = new Map<string, [number, number, number]>();
-    for (const [c, val] of sums.entries()) {
-      if (val[3] > 0) {
-        centers.set(c, [val[0] / val[3], val[1] / val[3], val[2] / val[3]]);
-      }
-    }
-    return centers;
   }
 
   public flyTo(target: [number, number, number], distance: number = 400) {
@@ -272,16 +244,10 @@ export class GraphScene {
     communityGravity?: number;
     corpusGravity?: number;
     interCorpusAttraction?: number;
-    clusterDistScale?: number;
-    nodeDispScale?: number;
   }) {
     const res = this.nodeCloud.updateGravityAndScales(params);
     this.edgeLines.updatePositions(res.nodePositions);
     this.corpusLabels.updatePositions(res.corpusCenters);
-  }
-
-  public updateClusterScales(clusterDistScale: number, nodeDispScale: number) {
-    this.updateGravity({ clusterDistScale, nodeDispScale });
   }
 
   private onResize = () => {
