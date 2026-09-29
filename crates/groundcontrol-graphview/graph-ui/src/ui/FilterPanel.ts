@@ -16,6 +16,11 @@ export class FilterPanel {
   public onNodeDispChange?: (val: number) => void;
   public onAutoOrbitToggle?: (enabled: boolean) => void;
   public onOrbitSpeedChange?: (speed: number) => void;
+  public onLabelSizeChange?: (val: number) => void;
+  public onLabelBrightnessChange?: (val: number) => void;
+  public onCommunityGravityChange?: (val: number) => void;
+  public onCorpusGravityChange?: (val: number) => void;
+  public onInterCorpusAttractionChange?: (val: number) => void;
 
   private selectedEntity: string = 'all';
   private visualControlsCollapsed: boolean = true;
@@ -23,6 +28,11 @@ export class FilterPanel {
   private orbitSpeedState: number = 8;
   private exposureState: number = 110;
   private gradientContrastState: boolean = true;
+  private labelSizeState: number = 100;
+  private labelBrightnessState: number = 85;
+  private communityGravityState: number = 100;
+  private corpusGravityState: number = 100;
+  private interCorpusAttractionState: number = 100;
 
   private classStates: Map<EdgeClass, boolean> = new Map([
     [EdgeClass.Structural, true],
@@ -211,6 +221,26 @@ export class FilterPanel {
               <input type="range" id="node-disp-slider" min="1" max="30" value="10" title="Adjust local dispersion of nodes">
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
+              <span>Label Size</span>
+              <input type="range" id="label-size-slider" min="30" max="250" value="${this.labelSizeState}" title="Adjust size of floating corpus labels">
+            </div>
+            <div class="slider-row">
+              <span>Label Brightness</span>
+              <input type="range" id="label-brightness-slider" min="10" max="100" value="${this.labelBrightnessState}" title="Adjust opacity and brightness of floating corpus labels">
+            </div>
+            <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
+              <span>Comm Gravity</span>
+              <input type="range" id="community-gravity-slider" min="30" max="250" value="${this.communityGravityState}" title="Gravitational pull of nodes toward community centroid">
+            </div>
+            <div class="slider-row">
+              <span>Corpus Gravity</span>
+              <input type="range" id="corpus-gravity-slider" min="30" max="250" value="${this.corpusGravityState}" title="Radial pull of community clusters toward corpus center">
+            </div>
+            <div class="slider-row">
+              <span>Inter-Corpus Pull</span>
+              <input type="range" id="inter-corpus-slider" min="30" max="250" value="${this.interCorpusAttractionState}" title="Attraction force pulling linked corpora closer in Galaxy view">
+            </div>
+            <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Attenuates dense clusters and boosts sparse nodes">
                 <input type="checkbox" id="gradient-contrast-toggle" ${this.gradientContrastState ? 'checked' : ''} style="accent-color: var(--neon-purple);">
                 <span>Gradient Contrast</span>
@@ -306,6 +336,36 @@ export class FilterPanel {
     const nodeDispSlider = this.container.querySelector('#node-disp-slider') as HTMLInputElement;
     nodeDispSlider?.addEventListener('input', () => {
       this.onNodeDispChange?.(parseFloat(nodeDispSlider.value));
+    });
+
+    const labelSizeSlider = this.container.querySelector('#label-size-slider') as HTMLInputElement;
+    labelSizeSlider?.addEventListener('input', () => {
+      this.labelSizeState = parseFloat(labelSizeSlider.value);
+      this.onLabelSizeChange?.(this.labelSizeState / 100.0);
+    });
+
+    const labelBrightSlider = this.container.querySelector('#label-brightness-slider') as HTMLInputElement;
+    labelBrightSlider?.addEventListener('input', () => {
+      this.labelBrightnessState = parseFloat(labelBrightSlider.value);
+      this.onLabelBrightnessChange?.(this.labelBrightnessState / 100.0);
+    });
+
+    const commGravSlider = this.container.querySelector('#community-gravity-slider') as HTMLInputElement;
+    commGravSlider?.addEventListener('input', () => {
+      this.communityGravityState = parseFloat(commGravSlider.value);
+      this.onCommunityGravityChange?.(this.communityGravityState / 100.0);
+    });
+
+    const corpGravSlider = this.container.querySelector('#corpus-gravity-slider') as HTMLInputElement;
+    corpGravSlider?.addEventListener('input', () => {
+      this.corpusGravityState = parseFloat(corpGravSlider.value);
+      this.onCorpusGravityChange?.(this.corpusGravityState / 100.0);
+    });
+
+    const interCorpusSlider = this.container.querySelector('#inter-corpus-slider') as HTMLInputElement;
+    interCorpusSlider?.addEventListener('input', () => {
+      this.interCorpusAttractionState = parseFloat(interCorpusSlider.value);
+      this.onInterCorpusAttractionChange?.(this.interCorpusAttractionState / 100.0);
     });
 
     const gradToggle = this.container.querySelector('#gradient-contrast-toggle') as HTMLInputElement;

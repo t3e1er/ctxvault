@@ -60,8 +60,9 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
     // If 2 corpora:
     if num_corpora == 2 {
         let links = inter_links.get(&(0, 1)).copied().unwrap_or(0);
-        // If cojoining edges exist, pull closer (1800 units total distance), else separate (2800 units)
-        let sep = if links > 0 { 900.0 } else { 1400.0 };
+        // Proportional proximity scaling: stronger cross-corpus links pull corpora closer (min 850, default 1400)
+        let link_factor = if links > 0 { (links as f32).ln_1p() } else { 0.0 };
+        let sep = (1400.0 - 550.0 * (link_factor / (link_factor + 2.5))).max(850.0);
         positions.push([-sep, 0.0, 0.0]);
         positions.push([sep, 0.0, 0.0]);
     } else {
@@ -114,15 +115,16 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
                     forces[j][1] += ny * rep;
                     forces[j][2] += nz * rep;
 
-                    // Attraction along cojoining edges
+                    // Attraction along cojoining edges: stronger links pull closer toward min_sep
                     let key = (i, j);
                     let links = inter_links.get(&key).copied().unwrap_or(0);
                     if links > 0 {
-                        let target_dist = 1800.0_f32;
+                        let link_factor = (links as f32).ln_1p();
+                        let target_dist =
+                            (2000.0 - 450.0 * (link_factor / (link_factor + 2.5))).max(min_sep);
                         if dist > target_dist {
-                            let pull = ((dist - target_dist)
-                                * (0.04 + 0.02 * (links as f32).ln_1p()))
-                            .min(180.0);
+                            let pull =
+                                ((dist - target_dist) * (0.05 + 0.03 * link_factor)).min(220.0);
                             forces[i][0] += nx * pull;
                             forces[i][1] += ny * pull;
                             forces[i][2] += nz * pull;

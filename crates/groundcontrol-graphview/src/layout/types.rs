@@ -14,7 +14,7 @@ pub enum ClusterMode {
 
 impl Default for ClusterMode {
     fn default() -> Self {
-        Self::Directory
+        Self::Community
     }
 }
 

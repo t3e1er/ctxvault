@@ -150,6 +150,26 @@ class GraphViewApp {
       this.scene.updateClusterScales(clusterDistScale, nodeDispScale);
     };
 
+    this.filterPanel.onLabelSizeChange = (val) => {
+      this.scene.corpusLabels.setSize(val);
+    };
+
+    this.filterPanel.onLabelBrightnessChange = (val) => {
+      this.scene.corpusLabels.setBrightness(val);
+    };
+
+    this.filterPanel.onCommunityGravityChange = (val) => {
+      this.scene.updateGravity({ communityGravity: val });
+    };
+
+    this.filterPanel.onCorpusGravityChange = (val) => {
+      this.scene.updateGravity({ corpusGravity: val });
+    };
+
+    this.filterPanel.onInterCorpusAttractionChange = (val) => {
+      this.scene.updateGravity({ interCorpusAttraction: val });
+    };
+
     // 3. Scene Interaction
     this.scene.onNodeClick = (node: NodeData) => {
       this.inspector.showNode(node, this.isEgoFocused);

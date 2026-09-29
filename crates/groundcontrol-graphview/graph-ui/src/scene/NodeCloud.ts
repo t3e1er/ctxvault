@@ -20,6 +20,13 @@ export class NodeCloud {
   private basePositions: Float32Array = new Float32Array(0);
   private currentPositions: Map<number, [number, number, number]> = new Map();
   private commCentroids: Map<number, { count: number; cx: number; cy: number; cz: number }> = new Map();
+  private corpusCentroids: Map<string, { count: number; cx: number; cy: number; cz: number }> = new Map();
+  private commToCorpus: Map<number, string> = new Map();
+  private communityGravityState: number = 1.0;
+  private corpusGravityState: number = 1.0;
+  private interCorpusAttractionState: number = 1.0;
+  private clusterDistScaleState: number = 1.0;
+  private nodeDispScaleState: number = 1.0;
   private nodeFlashes: Map<number, { color: THREE.Color; endTime: number; duration: number }> = new Map();
 
   constructor() {
@@ -45,8 +52,10 @@ export class NodeCloud {
     this.basePositions = new Float32Array(count * 3);
     this.currentPositions.clear();
     this.commCentroids.clear();
+    this.corpusCentroids.clear();
+    this.commToCorpus.clear();
 
-    // 1. Record base positions & compute community centroids
+    // 1. Record base positions & compute community and corpus centroids
     for (let i = 0; i < count; i++) {
       const n = nodes[i];
       this.basePositions[i * 3] = n.position[0];
@@ -55,16 +64,33 @@ export class NodeCloud {
       this.currentPositions.set(n.id, [n.position[0], n.position[1], n.position[2]]);
 
       const comm = n.community;
-      const c = this.commCentroids.get(comm) || { count: 0, cx: 0, cy: 0, cz: 0 };
-      c.count++;
-      c.cx += n.position[0];
-      c.cy += n.position[1];
-      c.cz += n.position[2];
-      this.commCentroids.set(comm, c);
+      const corpus = n.corpus || 'default';
+      this.commToCorpus.set(comm, corpus);
+
+      const cc = this.commCentroids.get(comm) || { count: 0, cx: 0, cy: 0, cz: 0 };
+      cc.count++;
+      cc.cx += n.position[0];
+      cc.cy += n.position[1];
+      cc.cz += n.position[2];
+      this.commCentroids.set(comm, cc);
+
+      const kc = this.corpusCentroids.get(corpus) || { count: 0, cx: 0, cy: 0, cz: 0 };
+      kc.count++;
+      kc.cx += n.position[0];
+      kc.cy += n.position[1];
+      kc.cz += n.position[2];
+      this.corpusCentroids.set(corpus, kc);
     }
 
     // Average centroids
     for (const entry of this.commCentroids.values()) {
+      if (entry.count > 0) {
+        entry.cx /= entry.count;
+        entry.cy /= entry.count;
+        entry.cz /= entry.count;
+      }
+    }
+    for (const entry of this.corpusCentroids.values()) {
       if (entry.count > 0) {
         entry.cx /= entry.count;
         entry.cy /= entry.count;
@@ -167,30 +193,76 @@ export class NodeCloud {
     this.group.add(this.pointsMesh);
   }
 
-  public updateClusterScales(
-    clusterDistScale: number,
-    nodeDispScale: number
-  ): Map<number, [number, number, number]> {
+  public updateGravityAndScales(params: {
+    communityGravity?: number;
+    corpusGravity?: number;
+    interCorpusAttraction?: number;
+    clusterDistScale?: number;
+    nodeDispScale?: number;
+  }): {
+    nodePositions: Map<number, [number, number, number]>;
+    corpusCenters: Map<string, [number, number, number]>;
+  } {
+    if (params.communityGravity !== undefined) this.communityGravityState = params.communityGravity;
+    if (params.corpusGravity !== undefined) this.corpusGravityState = params.corpusGravity;
+    if (params.interCorpusAttraction !== undefined) this.interCorpusAttractionState = params.interCorpusAttraction;
+    if (params.clusterDistScale !== undefined) this.clusterDistScaleState = params.clusterDistScale;
+    if (params.nodeDispScale !== undefined) this.nodeDispScaleState = params.nodeDispScale;
+
+    const commGrav = Math.max(0.1, this.communityGravityState);
+    const corpGrav = Math.max(0.1, this.corpusGravityState);
+    const interAttr = Math.max(0.1, this.interCorpusAttractionState);
+    const clusterDist = this.clusterDistScaleState;
+    const nodeDisp = this.nodeDispScaleState;
+
+    const updatedCorpusCenters = new Map<string, [number, number, number]>();
+
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      const c = this.commCentroids.get(node.community) || { cx: 0, cy: 0, cz: 0 };
+      const corpus = node.corpus || 'default';
+      const corpCent = this.corpusCentroids.get(corpus) || { cx: 0, cy: 0, cz: 0 };
+      const commCent = this.commCentroids.get(node.community) || { cx: 0, cy: 0, cz: 0 };
+
+      // 1. Inter-corpus gravity center position (linked galaxy proximity pull)
+      const effKx = (corpCent.cx * clusterDist) / interAttr;
+      const effKy = (corpCent.cy * clusterDist) / interAttr;
+      const effKz = (corpCent.cz * clusterDist) / interAttr;
+      if (!updatedCorpusCenters.has(corpus)) {
+        updatedCorpusCenters.set(corpus, [effKx, effKy, effKz]);
+      }
+
+      // 2. Corpus gravity pull on community mantle
+      const commRelX = (commCent.cx - corpCent.cx) / corpGrav;
+      const commRelY = (commCent.cy - corpCent.cy) / corpGrav;
+      const commRelZ = (commCent.cz - corpCent.cz) / corpGrav;
+
+      // 3. Community gravity pull on local node cluster
       const bx = this.basePositions[i * 3];
       const by = this.basePositions[i * 3 + 1];
       const bz = this.basePositions[i * 3 + 2];
+      const nodeRelX = ((bx - commCent.cx) * nodeDisp) / commGrav;
+      const nodeRelY = ((by - commCent.cy) * nodeDisp) / commGrav;
+      const nodeRelZ = ((bz - commCent.cz) * nodeDisp) / commGrav;
 
-      const dx = bx - c.cx;
-      const dy = by - c.cy;
-      const dz = bz - c.cz;
-
-      const nx = c.cx * clusterDistScale + dx * nodeDispScale;
-      const ny = c.cy * clusterDistScale + dy * nodeDispScale;
-      const nz = c.cz * clusterDistScale + dz * nodeDispScale;
+      const nx = effKx + commRelX + nodeRelX;
+      const ny = effKy + commRelY + nodeRelY;
+      const nz = effKz + commRelZ + nodeRelZ;
 
       this.currentPositions.set(node.id, [nx, ny, nz]);
     }
 
     this.updateScalesAndPositions();
-    return this.currentPositions;
+    return {
+      nodePositions: this.currentPositions,
+      corpusCenters: updatedCorpusCenters,
+    };
+  }
+
+  public updateClusterScales(
+    clusterDistScale: number,
+    nodeDispScale: number
+  ): Map<number, [number, number, number]> {
+    return this.updateGravityAndScales({ clusterDistScale, nodeDispScale }).nodePositions;
   }
 
   private resolveColor(node: NodeData, mode: ViewMode, outColor: THREE.Color) {

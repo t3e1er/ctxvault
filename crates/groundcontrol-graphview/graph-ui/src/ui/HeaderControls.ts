@@ -122,18 +122,6 @@ export class HeaderControls {
         </div>
 
         <div class="header-right">
-          <div class="pill-group" id="view-mode-pills">
-            <button class="pill-btn ${currentViewMode === 'entity' ? 'active' : ''}" data-mode="entity">
-              Entity Type
-            </button>
-            <button class="pill-btn ${currentViewMode === 'degree' ? 'active' : ''}" data-mode="degree">
-              Degree
-            </button>
-            <button class="pill-btn ${currentViewMode === 'community' ? 'active' : ''}" data-mode="community">
-              Community
-            </button>
-          </div>
-
           <div class="stats-badge">
             <span class="stat-highlight">${nodeCount.toLocaleString()}</span> nodes
             <span class="stat-sep" style="color: rgba(255,255,255,0.2); margin: 0 4px;">/</span>
@@ -204,16 +192,6 @@ export class HeaderControls {
         }
       });
     }
-
-    const viewPills = this.container.querySelectorAll('#view-mode-pills .pill-btn');
-    viewPills.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const mode = btn.getAttribute('data-mode') as ViewMode;
-        viewPills.forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.onViewModeChange?.(mode);
-      });
-    });
   }
 
   public setQueryStatus(status: 'idle' | 'matched' | 'nomatch') {

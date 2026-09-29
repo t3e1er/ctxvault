@@ -113,9 +113,9 @@ export class GraphScene {
     this.bloomPass.radius = bloom.radius;
     this.bloomPass.threshold = bloom.threshold;
 
-    // Calculate corpus centers for floating labels if needed
+    // Calculate corpus centers for floating labels in gravity center
+    const centers = this.calculateCorpusCenters(payload.nodes);
     if (payload.corpus === 'all' || payload.corpus === 'overview') {
-      const centers = this.calculateCorpusCenters(payload.nodes);
       for (const meta of corporaMeta) {
         if (centers.has(meta.name)) {
           meta.center = centers.get(meta.name);
@@ -123,7 +123,14 @@ export class GraphScene {
       }
       this.corpusLabels.setCorpora(corporaMeta);
     } else {
-      this.corpusLabels.clear();
+      const center = centers.get(payload.corpus) || (centers.size > 0 ? centers.values().next().value : [0, 0, 0]);
+      const singleMeta: CorpusMetadata = {
+        name: payload.corpus,
+        nodes: payload.nodes.length,
+        edges: payload.edges.length,
+        center: center,
+      };
+      this.corpusLabels.setCorpora([singleMeta]);
     }
 
     // Automatically frame all items on first load / data update
@@ -261,9 +268,20 @@ export class GraphScene {
     this.nodeCloud.setEntityFilter(category);
   }
 
+  public updateGravity(params: {
+    communityGravity?: number;
+    corpusGravity?: number;
+    interCorpusAttraction?: number;
+    clusterDistScale?: number;
+    nodeDispScale?: number;
+  }) {
+    const res = this.nodeCloud.updateGravityAndScales(params);
+    this.edgeLines.updatePositions(res.nodePositions);
+    this.corpusLabels.updatePositions(res.corpusCenters);
+  }
+
   public updateClusterScales(clusterDistScale: number, nodeDispScale: number) {
-    const updatedPositions = this.nodeCloud.updateClusterScales(clusterDistScale, nodeDispScale);
-    this.edgeLines.updatePositions(updatedPositions);
+    this.updateGravity({ clusterDistScale, nodeDispScale });
   }
 
   private onResize = () => {

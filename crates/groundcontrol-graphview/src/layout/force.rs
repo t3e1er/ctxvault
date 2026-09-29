@@ -70,7 +70,7 @@ pub fn compute_cluster_anchors(
             let num_comms = distinct_comms.len().max(1);
             let mut comm_centers: HashMap<u32, [f32; 3]> = HashMap::with_capacity(num_comms);
 
-            // Volumetric Fibonacci distribution for community centroids across 3D space
+            // Distribute community centroids across the outer perimeter / mantle of the corpus sphere
             for (c_idx, &c) in distinct_comms.iter().enumerate() {
                 let c_f = c_idx as f32;
                 let n_f = num_comms as f32;
@@ -80,9 +80,10 @@ pub fn compute_cluster_anchors(
                 let theta = 2.399_963_2 * c_f; // Golden angle: pi * (3 - sqrt(5))
                 let x = theta.cos() * radius_at_y;
                 let z = theta.sin() * radius_at_y;
-                // Volumetric scaling (cube root) so centroids occupy volume rather than just a hollow shell
-                let vol_scale = 0.35 + 0.65 * ((c_f + 0.5) / n_f).cbrt();
-                let r = base_radius * vol_scale;
+                // Push community clusters to the outer mantle of the corpus sphere:
+                // Shell radius between 0.92 * base_radius and 1.04 * base_radius, leaving the interior hollow
+                let jitter = (((c.wrapping_mul(2654435761)) & 0xFF) as f32) / 255.0;
+                let r = base_radius * (0.92 + 0.12 * jitter);
                 comm_centers.insert(c, [x * r, y * r, z * r]);
             }
 
@@ -91,12 +92,12 @@ pub fn compute_cluster_anchors(
                 let center = comm_centers.get(&c).copied().unwrap_or([0.0, 0.0, 0.0]);
                 let m = member_indices.len();
                 let m_f = m as f32;
-                // Volumetric radius for this community cluster based on member count
-                let cluster_r = (m_f).cbrt() * 28.0 + 35.0;
+                // Tight volumetric radius for this community cluster based on member count
+                let cluster_r = (m_f).cbrt() * 20.0 + 22.0;
 
                 for (rank, &node_idx) in member_indices.iter().enumerate() {
                     let r_f = rank as f32;
-                    // Spherical Fibonacci lattice distribution within the cluster volume
+                    // Spherical Fibonacci lattice distribution within the community cluster volume
                     let y = if m > 1 { 1.0 - ((r_f + 0.5) / m_f) * 2.0 } else { 0.0 };
                     let rad_y = (1.0 - y * y).max(0.0).sqrt();
                     let theta = 2.399_963_2 * r_f;
@@ -214,9 +215,25 @@ pub fn compute_force_layout(
             let v = &mut velocities[i];
             let f = forces[i];
 
-            let gx = -p[0] * config.center_gravity;
-            let gy = -p[1] * config.center_gravity;
-            let gz = -p[2] * config.center_gravity;
+            let (gx, gy, gz) = if config.cluster_mode == ClusterMode::Community {
+                let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2] + 1.0).sqrt();
+                if r > base_radius * 1.25 {
+                    let over = r - base_radius * 1.25;
+                    (-p[0] / r * over * 0.015, -p[1] / r * over * 0.015, -p[2] / r * over * 0.015)
+                } else if r < base_radius * 0.50 {
+                    // Push out gently from hollow core to preserve floating label visibility
+                    let under = base_radius * 0.50 - r;
+                    (p[0] / r * under * 0.025, p[1] / r * under * 0.025, p[2] / r * under * 0.025)
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
+            } else {
+                (
+                    -p[0] * config.center_gravity,
+                    -p[1] * config.center_gravity,
+                    -p[2] * config.center_gravity,
+                )
+            };
 
             v[0] = (v[0] + (f[0] + gx) * dt) * config.damping;
             v[1] = (v[1] + (f[1] + gy) * dt) * config.damping;
