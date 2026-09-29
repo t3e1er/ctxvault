@@ -54,13 +54,19 @@ impl CorpusSnapshot {
                 &meta_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             ) {
-                if let Ok(mut stmt) = conn.prepare("SELECT value FROM corpus_config WHERE key = 'corpus_config'") {
+                if let Ok(mut stmt) =
+                    conn.prepare("SELECT value FROM corpus_config WHERE key = 'corpus_config'")
+                {
                     if let Ok(mut rows) = stmt.query([]) {
                         if let Ok(Some(row)) = rows.next() {
                             if let Ok(val_str) = row.get::<_, String>(0) {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val_str) {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<serde_json::Value>(&val_str)
+                                {
                                     if let Some(p) = parsed.get("path").and_then(|v| v.as_str()) {
-                                        let clean = p.trim_start_matches("//?/").trim_start_matches(r"\\?\");
+                                        let clean = p
+                                            .trim_start_matches("//?/")
+                                            .trim_start_matches(r"\\?\");
                                         root_dir = Some(PathBuf::from(clean));
                                     }
                                 }

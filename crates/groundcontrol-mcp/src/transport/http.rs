@@ -405,7 +405,7 @@ async fn handle_jsonrpc_multi(
                 }
 
                 if let Some(activation) =
-                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                    extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients)
                 {
                     let _ = state.activations.send(activation);
                 }
@@ -441,7 +441,7 @@ async fn handle_jsonrpc_multi(
                 }
 
                 if let Some(activation) =
-                    extract_activation(&req, &res, elapsed_ms, resolved_client)
+                    extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients)
                 {
                     let _ = state.activations.send(activation);
                 }
@@ -498,7 +498,9 @@ async fn handle_jsonrpc_multi(
             }
         }
 
-        if let Some(activation) = extract_activation(&req, &res, elapsed_ms, resolved_client) {
+        if let Some(activation) =
+            extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients)
+        {
             let _ = state.activations.send(activation);
         }
 
@@ -554,6 +556,7 @@ fn extract_activation(
     res: &Result<Value>,
     duration_ms: f64,
     client: Option<&groundcontrol_common::ClientEntry>,
+    clients: &groundcontrol_common::ClientsRegistry,
 ) -> Option<AgentActivation> {
     if req.method != "tools/call" {
         return None;
@@ -562,8 +565,18 @@ fn extract_activation(
     let tool = params.get("name")?.as_str()?.to_string();
     let args = params.get("arguments");
 
+    let client_arg = args.and_then(|a| {
+        a.get("client_id")
+            .or_else(|| a.get("client"))
+            .or_else(|| a.get("agent"))
+            .and_then(|c| c.as_str())
+    });
+    let effective_client = client.or_else(|| client_arg.and_then(|id| clients.find_by_id(id)));
+
     let corpus = args.and_then(|a| a.get("corpus").and_then(|c| c.as_str()).map(String::from));
-    let query = args.and_then(|a| a.get("query").and_then(|q| q.as_str()).map(String::from));
+    let query = args.and_then(|a| {
+        a.get("query").or_else(|| a.get("pattern")).and_then(|q| q.as_str()).map(String::from)
+    });
     let mut paths = Vec::new();
 
     if let Some(a) = args {
@@ -592,6 +605,32 @@ fn extract_activation(
             if !paths.contains(&p.to_string()) {
                 paths.push(p.to_string());
             }
+        }
+        // graph_match traversal tree & root
+        if let Some(r) = val.get("root").and_then(|r| r.as_str()) {
+            if !paths.contains(&r.to_string()) {
+                paths.push(r.to_string());
+            }
+        }
+        if let Some(f) = val.get("file").and_then(|f| f.as_str()) {
+            if !paths.contains(&f.to_string()) {
+                paths.push(f.to_string());
+            }
+        }
+        if let Some(tree) = val.get("tree").and_then(|t| t.as_array()) {
+            fn extract_tree_nodes(nodes: &[Value], paths: &mut Vec<String>) {
+                for n in nodes {
+                    if let Some(name) = n.get("node").and_then(|v| v.as_str()) {
+                        if !paths.contains(&name.to_string()) && paths.len() < 30 {
+                            paths.push(name.to_string());
+                        }
+                    }
+                    if let Some(children) = n.get("children").and_then(|c| c.as_array()) {
+                        extract_tree_nodes(children, paths);
+                    }
+                }
+            }
+            extract_tree_nodes(tree, &mut paths);
         }
         // Traditional hits array
         if let Some(hits) = val.get("hits").and_then(|h| h.as_array()) {
@@ -646,9 +685,9 @@ fn extract_activation(
     Some(AgentActivation {
         timestamp: current_timestamp_secs() * 1000,
         tool,
-        client_id: client.map(|c| c.id.clone()),
-        client_name: client.map(|c| c.name.clone()),
-        client_color: client.map(|c| c.color.clone()),
+        client_id: effective_client.map(|c| c.id.clone()),
+        client_name: effective_client.map(|c| c.name.clone()),
+        client_color: effective_client.map(|c| c.color.clone()),
         corpus,
         query,
         paths,
@@ -677,7 +716,13 @@ pub async fn handle_sse(
     state.active_sessions.fetch_add(1, Ordering::SeqCst);
     state.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
     info!("[SSE] --> Client opened SSE event stream handshake");
-    let session_event = Event::default().event("endpoint").data("/mcp");
+    let endpoint_path = if !params.is_empty() {
+        let q: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        format!("/mcp?{}", q.join("&"))
+    } else {
+        "/mcp".to_string()
+    };
+    let session_event = Event::default().event("endpoint").data(endpoint_path);
 
     let stream = stream::once(async move { Ok::<Event, Infallible>(session_event) })
         .chain(stream::pending());

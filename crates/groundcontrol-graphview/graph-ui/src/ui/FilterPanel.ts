@@ -149,7 +149,7 @@ export class FilterPanel {
         <!-- Entity Classes -->
         <div class="panel-section">
           <div class="section-title">ENTITY CLASSES</div>
-          <div class="chips-container scrollable" id="entity-chips" style="max-height: 160px;">
+          <div class="chips-container scrollable" id="entity-chips" style="max-height: 120px;">
             ${entityChipsHtml}
           </div>
         </div>
@@ -163,7 +163,7 @@ export class FilterPanel {
         </div>
 
         <!-- Edge Types -->
-        <div class="panel-section" style="flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column;">
+        <div class="panel-section" style="flex: 1 1 auto; min-height: 60px; max-height: 140px; overflow: hidden; display: flex; flex-direction: column;">
           <div class="section-title">EDGE TYPES</div>
           <div class="chips-container scrollable" id="type-chips" style="flex: 1 1 auto;">
             ${typeChipsHtml}
@@ -171,7 +171,7 @@ export class FilterPanel {
         </div>
 
         <!-- Collapsible Visual Controls Panel -->
-        <div class="visual-controls-panel ${this.visualControlsCollapsed ? 'collapsed' : ''}" id="visual-controls-panel">
+        <div class="visual-controls-panel ${this.visualControlsCollapsed ? 'collapsed' : ''}" id="visual-controls-panel" style="flex-shrink: 0;">
           <div class="visual-controls-header" id="visual-controls-header" title="Toggle Visual Controls">
             <div class="section-title" style="margin: 0;">VISUAL CONTROLS</div>
             <div style="display: flex; align-items: center; gap: 6px;">

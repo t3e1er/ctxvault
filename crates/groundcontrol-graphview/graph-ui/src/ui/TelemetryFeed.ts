@@ -7,6 +7,7 @@ export class TelemetryFeed {
   public onActivation?: (act: AgentActivation) => void;
   public onSelectPaths?: (paths: string[]) => void;
   public onSelectActivation?: (act: AgentActivation) => void;
+  public onCollapseToggle?: (collapsed: boolean) => void;
   private isCollapsed: boolean = false;
 
   constructor(container: HTMLElement) {
@@ -96,9 +97,8 @@ export class TelemetryFeed {
     // Wire collapse toggle
     const collapseBtn = this.container.querySelector('#hud-collapse-btn');
     collapseBtn?.addEventListener('click', () => {
-      this.isCollapsed = !this.isCollapsed;
-      const hud = this.container.querySelector('#agent-hud');
-      hud?.classList.toggle('collapsed', this.isCollapsed);
+      this.setCollapsed(!this.isCollapsed);
+      this.onCollapseToggle?.(this.isCollapsed);
     });
 
     // Wire card clicks
@@ -114,6 +114,13 @@ export class TelemetryFeed {
         }
       });
     });
+  }
+
+  public setCollapsed(collapsed: boolean) {
+    this.isCollapsed = collapsed;
+    const hud = this.container.querySelector('#agent-hud');
+    hud?.classList.toggle('collapsed', this.isCollapsed);
+    this.container.classList.toggle('collapsed', this.isCollapsed);
   }
 
   public destroy() {

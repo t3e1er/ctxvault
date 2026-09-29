@@ -83,3 +83,37 @@ export const CATEGORY_COLORS: Record<string, number> = {
 export function getCategoryColor(cat: string): number {
   return CATEGORY_COLORS[cat] ?? 0x64748b;
 }
+
+export interface AgentVisualProfile {
+  id: string;
+  name: string;
+  color: string;
+  colorHex: number;
+}
+
+export const AGENT_PROFILES: Record<string, AgentVisualProfile> = {
+  antigravity: { id: 'antigravity', name: 'Antigravity Agent', color: '#38bdf8', colorHex: 0x38bdf8 },
+  claude: { id: 'claude', name: 'Claude Desktop', color: '#f97316', colorHex: 0xf97316 },
+  gemini: { id: 'gemini', name: 'Gemini CLI', color: '#ec4899', colorHex: 0xec4899 },
+  cursor: { id: 'cursor', name: 'Cursor', color: '#f59e0b', colorHex: 0xf59e0b },
+  roo: { id: 'roo', name: 'Roo Code', color: '#10b981', colorHex: 0x10b981 },
+  user: { id: 'user', name: 'User', color: '#38bdf8', colorHex: 0x38bdf8 },
+  default: { id: 'default', name: 'Anonymous Agent', color: '#a855f7', colorHex: 0xa855f7 },
+};
+
+export function resolveAgentVisual(act: {
+  client_id?: string;
+  client_name?: string;
+  client_color?: string;
+}): { name: string; color: string; colorHex: number } {
+  const idLower = (act.client_id || '').toLowerCase();
+  const profile = AGENT_PROFILES[idLower] || AGENT_PROFILES.default;
+  const name = act.client_name || profile.name;
+  const color = act.client_color || profile.color;
+  let colorHex = profile.colorHex;
+  if (act.client_color && act.client_color.startsWith('#')) {
+    const parsed = parseInt(act.client_color.slice(1), 16);
+    if (!isNaN(parsed)) colorHex = parsed;
+  }
+  return { name, color, colorHex };
+}

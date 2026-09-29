@@ -20,6 +20,7 @@ export class NodeCloud {
   private basePositions: Float32Array = new Float32Array(0);
   private currentPositions: Map<number, [number, number, number]> = new Map();
   private commCentroids: Map<number, { count: number; cx: number; cy: number; cz: number }> = new Map();
+  private nodeFlashes: Map<number, { color: THREE.Color; endTime: number; duration: number }> = new Map();
 
   constructor() {
     this.group = new THREE.Group();
@@ -193,6 +194,20 @@ export class NodeCloud {
   }
 
   private resolveColor(node: NodeData, mode: ViewMode, outColor: THREE.Color) {
+    // 0. Active Agent Activation Flash
+    const flash = this.nodeFlashes.get(node.id);
+    if (flash) {
+      const remaining = flash.endTime - performance.now();
+      if (remaining > 0) {
+        const factor = Math.min(1.0, remaining / flash.duration);
+        // Emissive radiant flash in agent's distinct theme color
+        outColor.copy(flash.color).multiplyScalar(1.6 + factor * 2.5);
+        return;
+      } else {
+        this.nodeFlashes.delete(node.id);
+      }
+    }
+
     // 1. Search filtering
     if (this.searchMatchIds !== null) {
       if (this.searchMatchIds.has(node.id)) {
@@ -241,6 +256,32 @@ export class NodeCloud {
       const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.35);
       outColor.multiplyScalar(0.75 + 0.25 * falloff);
     }
+  }
+
+  public flashNodes(nodeIds: number[], color: THREE.Color, durationMs: number = 2200) {
+    const now = performance.now();
+    for (const id of nodeIds) {
+      this.nodeFlashes.set(id, {
+        color: color.clone(),
+        endTime: now + durationMs,
+        duration: durationMs,
+      });
+    }
+    this.refreshColors();
+  }
+
+  public update(dt: number) {
+    if (this.nodeFlashes.size === 0) return;
+    const now = performance.now();
+    let hasActive = false;
+    for (const [id, flash] of this.nodeFlashes.entries()) {
+      if (now > flash.endTime) {
+        this.nodeFlashes.delete(id);
+      } else {
+        hasActive = true;
+      }
+    }
+    this.refreshColors();
   }
 
   public setViewMode(mode: ViewMode) {

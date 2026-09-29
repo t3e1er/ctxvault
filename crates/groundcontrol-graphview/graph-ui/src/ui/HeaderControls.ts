@@ -11,7 +11,11 @@ export class HeaderControls {
   public onQuerySubmit?: (query: string) => void;
   public onSearchModeChange?: (mode: SearchMode) => void;
   public onUnfocus?: () => void;
+  public onToggleLeftSidebar?: (open: boolean) => void;
+  public onToggleRightSidebar?: (open: boolean) => void;
   public currentSearchMode: SearchMode = 'symbol';
+  public leftSidebarOpen: boolean = true;
+  public rightSidebarOpen: boolean = true;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -60,6 +64,14 @@ export class HeaderControls {
     this.container.innerHTML = `
       <header class="hud-header glass-panel">
         <div class="header-left">
+          <button id="toggle-left-btn" class="hamburger-btn ${this.leftSidebarOpen ? 'active' : ''}" title="Toggle Filter & Visual Controls (Left Sidebar)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+
           <div class="brand">
             <svg class="brand-icon" viewBox="0 0 32 32" width="22" height="22">
               <circle cx="16" cy="16" r="14" fill="none" stroke="#38bdf8" stroke-width="2"/>
@@ -127,11 +139,33 @@ export class HeaderControls {
             <span class="stat-sep" style="color: rgba(255,255,255,0.2); margin: 0 4px;">/</span>
             <span class="stat-highlight">${edgeCount.toLocaleString()}</span> edges
           </div>
+
+          <button id="toggle-right-btn" class="hamburger-btn ${this.rightSidebarOpen ? 'active' : ''}" title="Toggle Multi-Agent Activations (Right Sidebar)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
         </div>
       </header>
     `;
 
     // Wire events
+    const toggleLeftBtn = this.container.querySelector('#toggle-left-btn') as HTMLButtonElement;
+    toggleLeftBtn?.addEventListener('click', () => {
+      this.leftSidebarOpen = !this.leftSidebarOpen;
+      toggleLeftBtn.classList.toggle('active', this.leftSidebarOpen);
+      this.onToggleLeftSidebar?.(this.leftSidebarOpen);
+    });
+
+    const toggleRightBtn = this.container.querySelector('#toggle-right-btn') as HTMLButtonElement;
+    toggleRightBtn?.addEventListener('click', () => {
+      this.rightSidebarOpen = !this.rightSidebarOpen;
+      toggleRightBtn.classList.toggle('active', this.rightSidebarOpen);
+      this.onToggleRightSidebar?.(this.rightSidebarOpen);
+    });
+
     const select = this.container.querySelector('#corpus-select') as HTMLSelectElement;
     select.addEventListener('change', () => {
       this.onCorpusChange?.(select.value);
@@ -195,5 +229,17 @@ export class HeaderControls {
       box.style.borderColor = '';
       box.style.boxShadow = '';
     }
+  }
+
+  public setLeftSidebarState(open: boolean) {
+    this.leftSidebarOpen = open;
+    const btn = this.container.querySelector('#toggle-left-btn');
+    btn?.classList.toggle('active', open);
+  }
+
+  public setRightSidebarState(open: boolean) {
+    this.rightSidebarOpen = open;
+    const btn = this.container.querySelector('#toggle-right-btn');
+    btn?.classList.toggle('active', open);
   }
 }

@@ -4,11 +4,13 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
-import { CorpusMetadata, EdgeData, GraphPayload, NodeData, ViewMode } from '../types.ts';
+import { CorpusMetadata, EdgeData, GraphPayload, NodeData, ViewMode, AgentActivation } from '../types.ts';
 import { NodeCloud } from './NodeCloud.ts';
 import { EdgeLines } from './EdgeLines.ts';
 import { FlowParticles } from './FlowParticles.ts';
 import { CorpusLabels } from './CorpusLabels.ts';
+import { ActivationEffects } from './ActivationEffects.ts';
+import { resolveAgentVisual } from '../lib/colors.ts';
 import { calcBloomStrength } from '../lib/density.ts';
 
 export class GraphScene {
@@ -23,6 +25,7 @@ export class GraphScene {
   public edgeLines: EdgeLines;
   public flowParticles: FlowParticles;
   public corpusLabels: CorpusLabels;
+  public activationEffects: ActivationEffects;
 
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2(-1000, -1000);
@@ -82,11 +85,13 @@ export class GraphScene {
     this.edgeLines = new EdgeLines();
     this.flowParticles = new FlowParticles();
     this.corpusLabels = new CorpusLabels();
+    this.activationEffects = new ActivationEffects();
 
     this.scene.add(this.nodeCloud.group);
     this.scene.add(this.edgeLines.group);
     this.scene.add(this.flowParticles.group);
     this.scene.add(this.corpusLabels.group);
+    this.scene.add(this.activationEffects.group);
 
     // 7. Event listeners
     window.addEventListener('resize', this.onResize);
@@ -305,8 +310,21 @@ export class GraphScene {
     // Update animated edge particle flows
     this.flowParticles.update(dt);
 
+    // Update agent activation animations & node glow decays
+    this.activationEffects.update(dt, this.camera);
+    this.nodeCloud.update(dt);
+
     this.composer.render();
   };
+
+  public triggerActivationEffect(act: AgentActivation, nodes: NodeData[]) {
+    const visual = resolveAgentVisual(act);
+    const color = new THREE.Color(visual.colorHex);
+    this.activationEffects.triggerActivation(act, nodes);
+    if (nodes.length > 0) {
+      this.nodeCloud.flashNodes(nodes.map((n) => n.id), color, 2500);
+    }
+  }
 
   public destroy() {
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);

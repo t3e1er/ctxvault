@@ -413,18 +413,24 @@ pub async fn handle_query(
 
     // Broadcast search activation to multi-agent telemetry stream
     if !matched_paths.is_empty() {
-        state.telemetry.publish(AgentActivation {
-            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
-            tool: tool_name.into(),
-            client_id: Some("user".into()),
-            client_name: Some("User".into()),
-            client_color: Some(if is_graph_mode { "#10b981".into() } else { "#38bdf8".into() }),
-            corpus: req.corpus.clone(),
-            query: Some(req.query.clone()),
-            paths: matched_paths.iter().take(15).cloned().collect(),
-            duration_ms: elapsed,
-            success: true,
-        }).await;
+        state
+            .telemetry
+            .publish(AgentActivation {
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                tool: tool_name.into(),
+                client_id: Some("user".into()),
+                client_name: Some("User".into()),
+                client_color: Some(if is_graph_mode { "#10b981".into() } else { "#38bdf8".into() }),
+                corpus: req.corpus.clone(),
+                query: Some(req.query.clone()),
+                paths: matched_paths.iter().take(15).cloned().collect(),
+                duration_ms: elapsed,
+                success: true,
+            })
+            .await;
     }
 
     Json(SearchQueryResponse { matched_paths, matched_ids: Vec::new() })
@@ -446,44 +452,40 @@ pub async fn handle_read(
         catalog.corpus_names()
     };
 
-    let target_str = q
-        .path
-        .as_deref()
-        .or(q.symbol.as_deref())
-        .unwrap_or_default()
-        .trim();
+    let target_str = q.path.as_deref().or(q.symbol.as_deref()).unwrap_or_default().trim();
 
     let mut found_content: Option<ReadNodeResponse> = None;
 
-    let resolve_file = |raw_p: &str, snap: &crate::loader::CorpusSnapshot| -> Option<std::path::PathBuf> {
-        let mut candidates = vec![std::path::PathBuf::from(raw_p)];
-        if raw_p.ends_with(".rs") {
-            let without = &raw_p[..raw_p.len() - 3];
-            candidates.push(std::path::PathBuf::from(without).join("mod.rs"));
-        }
+    let resolve_file =
+        |raw_p: &str, snap: &crate::loader::CorpusSnapshot| -> Option<std::path::PathBuf> {
+            let mut candidates = vec![std::path::PathBuf::from(raw_p)];
+            if raw_p.ends_with(".rs") {
+                let without = &raw_p[..raw_p.len() - 3];
+                candidates.push(std::path::PathBuf::from(without).join("mod.rs"));
+            }
 
-        for cand in candidates {
-            if cand.is_absolute() && cand.exists() {
-                return Some(cand);
-            }
-            if let Some(ref root) = snap.root_dir {
-                let joined = root.join(&cand);
-                if joined.exists() {
-                    return Some(joined);
+            for cand in candidates {
+                if cand.is_absolute() && cand.exists() {
+                    return Some(cand);
+                }
+                if let Some(ref root) = snap.root_dir {
+                    let joined = root.join(&cand);
+                    if joined.exists() {
+                        return Some(joined);
+                    }
+                }
+                if cand.exists() {
+                    return Some(cand);
+                }
+                if let Ok(cur) = std::env::current_dir() {
+                    let joined = cur.join(&cand);
+                    if joined.exists() {
+                        return Some(joined);
+                    }
                 }
             }
-            if cand.exists() {
-                return Some(cand);
-            }
-            if let Ok(cur) = std::env::current_dir() {
-                let joined = cur.join(&cand);
-                if joined.exists() {
-                    return Some(joined);
-                }
-            }
-        }
-        None
-    };
+            None
+        };
 
     for name in target_corpora {
         let Some(snap) = catalog.get_corpus(&name) else { continue };
@@ -511,7 +513,10 @@ pub async fn handle_read(
                         start_line: Some(s + 1),
                         end_line: Some(q.end_line.unwrap_or(lines.len())),
                         content,
-                        language: direct_path.extension().and_then(|e| e.to_str()).map(|s| s.to_string()),
+                        language: direct_path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_string()),
                         error: None,
                     });
                     break;
@@ -535,7 +540,9 @@ pub async fn handle_read(
                 let like_path = format!("%{}", clean_name);
 
                 if let Ok(mut stmt) = conn.prepare(sql) {
-                    if let Ok(mut rows) = stmt.query(rusqlite::params![clean_name, query_name, clean_name, like_path, target_str]) {
+                    if let Ok(mut rows) = stmt.query(rusqlite::params![
+                        clean_name, query_name, clean_name, like_path, target_str
+                    ]) {
                         if let Ok(Some(row)) = rows.next() {
                             let file_path: String = row.get(0).unwrap_or_default();
                             let start_line = row.get::<_, i64>(1).unwrap_or(1) as usize;
@@ -551,17 +558,24 @@ pub async fn handle_read(
                                         if s < actual_e {
                                             lines[s..actual_e].join("\n")
                                         } else {
-                                            lines[s..s.saturating_add(1).min(lines.len())].join("\n")
+                                            lines[s..s.saturating_add(1).min(lines.len())]
+                                                .join("\n")
                                         }
                                     } else {
                                         let max_lines = lines.len().min(80);
                                         lines[..max_lines].join("\n")
                                     }
                                 } else {
-                                    format!("// Source file exists at {} (lines {}-{})", file_path, start_line, end_line)
+                                    format!(
+                                        "// Source file exists at {} (lines {}-{})",
+                                        file_path, start_line, end_line
+                                    )
                                 }
                             } else {
-                                format!("// Symbol: {}\n// File: {} (lines {}-{})", target_str, file_path, start_line, end_line)
+                                format!(
+                                    "// Symbol: {}\n// File: {} (lines {}-{})",
+                                    target_str, file_path, start_line, end_line
+                                )
                             };
 
                             found_content = Some(ReadNodeResponse {
@@ -592,18 +606,24 @@ pub async fn handle_read(
     });
 
     // Record synthetic read_file activation in telemetry
-    state.telemetry.publish(AgentActivation {
-        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
-        tool: "read_file".into(),
-        client_id: Some("user".into()),
-        client_name: Some("User".into()),
-        client_color: Some("#ec4899".into()),
-        corpus: q.corpus.clone(),
-        query: Some(format!("read:{}", target_str)),
-        paths: vec![target_str.to_string()],
-        duration_ms: 1.5,
-        success: true,
-    }).await;
+    state
+        .telemetry
+        .publish(AgentActivation {
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            tool: "read_file".into(),
+            client_id: Some("user".into()),
+            client_name: Some("User".into()),
+            client_color: Some("#ec4899".into()),
+            corpus: q.corpus.clone(),
+            query: Some(format!("read:{}", target_str)),
+            paths: vec![target_str.to_string()],
+            duration_ms: 1.5,
+            success: true,
+        })
+        .await;
 
     Json(resp)
 }

@@ -73,6 +73,17 @@ class GraphViewApp {
       this.performSearchSubmit(query);
     };
 
+    this.header.onToggleLeftSidebar = (open) => {
+      const mount = document.getElementById('filter-mount');
+      mount?.classList.toggle('collapsed', !open);
+      document.body.classList.toggle('left-sidebar-collapsed', !open);
+    };
+
+    this.header.onToggleRightSidebar = (open) => {
+      this.telemetry.setCollapsed(!open);
+      document.body.classList.toggle('right-sidebar-collapsed', !open);
+    };
+
     this.header.onSearchModeChange = (mode) => {
       this.currentSearchMode = mode;
       const queryInput = document.getElementById('query-input') as HTMLInputElement;
@@ -174,13 +185,17 @@ class GraphViewApp {
 
     // 4. Telemetry Stream
     this.telemetry.onActivation = (act) => {
-      if (this.currentPayload && act.paths.length > 0) {
-        const touchedPaths = new Set(act.paths.map((p) => p.replace(/\\/g, '/')));
-        const match = this.currentPayload.nodes.find((n) => touchedPaths.has(n.path.replace(/\\/g, '/')));
-        if (match) {
-          this.scene.nodeCloud.setHoveredId(match.id);
-        }
+      if (!this.currentPayload) return;
+      const matched = this.findMatchingNodes(act.paths);
+      this.scene.triggerActivationEffect(act, matched);
+      if (matched.length > 0) {
+        this.scene.nodeCloud.setHoveredId(matched[0].id);
       }
+    };
+
+    this.telemetry.onCollapseToggle = (collapsed) => {
+      this.header.setRightSidebarState(!collapsed);
+      document.body.classList.toggle('right-sidebar-collapsed', collapsed);
     };
 
     this.telemetry.onSelectActivation = (act) => {
@@ -189,12 +204,12 @@ class GraphViewApp {
 
     this.telemetry.onSelectPaths = (paths) => {
       if (!this.currentPayload || paths.length === 0) return;
-      const targetPaths = new Set(paths.map((p) => p.replace(/\\/g, '/')));
-      const match = this.currentPayload.nodes.find((n) => targetPaths.has(n.path.replace(/\\/g, '/')));
-      if (match) {
-        this.scene.nodeCloud.setSelectedId(match.id);
-        this.scene.flyTo(match.position, 220);
-        this.inspector.showNode(match);
+      const matched = this.findMatchingNodes(paths);
+      if (matched.length > 0) {
+        const primary = matched[0];
+        this.scene.nodeCloud.setSelectedId(primary.id);
+        this.scene.flyTo(primary.position, 220);
+        this.inspector.showNode(primary);
       }
     };
   }
@@ -377,11 +392,11 @@ class GraphViewApp {
       this.header.setSearchQuery(act.query, false);
     }
 
-    // Match nodes by path
-    const targetPaths = new Set((act.paths || []).map((p) => p.replace(/\\/g, '/')));
-    const matchedNodes = this.currentPayload.nodes.filter((n) =>
-      targetPaths.has(n.path.replace(/\\/g, '/'))
-    );
+    // Match nodes by path using robust matching
+    const matchedNodes = this.findMatchingNodes(act.paths);
+
+    // Trigger rich 3D animation (pulse / explosion / traversal / scanner)
+    this.scene.triggerActivationEffect(act, matchedNodes);
 
     if (matchedNodes.length > 0) {
       const matchIds = new Set(matchedNodes.map((n) => n.id));
@@ -400,7 +415,7 @@ class GraphViewApp {
       cy /= matchedNodes.length;
       cz /= matchedNodes.length;
 
-      this.scene.flyTo([cx, cy, cz], matchedNodes.length > 1 ? 400 : 220);
+      this.scene.flyTo([cx, cy, cz], matchedNodes.length > 1 ? 380 : 220);
       this.scene.nodeCloud.setSelectedId(matchedNodes[0].id);
       this.inspector.showNode(matchedNodes[0]);
     }
@@ -565,6 +580,49 @@ class GraphViewApp {
       console.error('Error loading ego subgraph:', err);
       this.hideLoading();
     }
+  }
+
+  private findMatchingNodes(paths: string[]): NodeData[] {
+    if (!this.currentPayload || !paths || paths.length === 0) return [];
+    const normalizedTargets = paths.map((p) => p.replace(/\\/g, '/').toLowerCase().trim());
+    const results: NodeData[] = [];
+    const seen = new Set<number>();
+
+    for (const target of normalizedTargets) {
+      const targetBase = target.split('/').pop() || target;
+      for (const node of this.currentPayload.nodes) {
+        if (seen.has(node.id)) continue;
+        const nPath = node.path.replace(/\\/g, '/').toLowerCase();
+        const nName = node.name.toLowerCase();
+        if (
+          nPath === target ||
+          nPath.endsWith(target) ||
+          target.endsWith(nPath) ||
+          nName === target ||
+          nName === targetBase
+        ) {
+          seen.add(node.id);
+          results.push(node);
+        }
+      }
+    }
+
+    if (results.length === 0) {
+      for (const target of normalizedTargets) {
+        const targetBase = target.split('/').pop() || target;
+        for (const node of this.currentPayload.nodes) {
+          if (seen.has(node.id)) continue;
+          const nPath = node.path.replace(/\\/g, '/').toLowerCase();
+          if (nPath.includes(targetBase) || target.includes(node.name.toLowerCase())) {
+            seen.add(node.id);
+            results.push(node);
+            if (results.length >= 8) break;
+          }
+        }
+      }
+    }
+
+    return results;
   }
 }
 

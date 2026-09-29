@@ -199,9 +199,17 @@
       position: absolute;
       top: 76px;
       left: 14px;
-      bottom: 60px;
+      bottom: 24px;
       width: 260px;
       z-index: 10;
+      pointer-events: none;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    }
+
+    #filter-mount.collapsed,
+    body.left-sidebar-collapsed #filter-mount {
+      transform: translateX(calc(-100% - 20px));
+      opacity: 0;
       pointer-events: none;
     }
 
@@ -211,7 +219,24 @@
       display: flex;
       flex-direction: column;
       padding: 14px;
-      gap: 16px;
+      gap: 12px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(56, 189, 248, 0.25) transparent;
+    }
+
+    .filter-panel::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .filter-panel::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .filter-panel::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.25);
+      border-radius: 4px;
     }
 
     .search-box {
@@ -319,13 +344,44 @@
       box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
     }
 
+    /* Hamburger Toggle Button */
+    .hamburger-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.18s ease;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .hamburger-btn:hover {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--text-main);
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+
+    .hamburger-btn.active {
+      background: rgba(56, 189, 248, 0.18);
+      color: var(--neon-blue);
+      border-color: rgba(56, 189, 248, 0.45);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.22);
+    }
+
     /* Visual Controls Section Docked Inside Sidebar */
     .visual-controls-panel {
       border-top: 1px solid rgba(255, 255, 255, 0.08);
-      padding-top: 10px;
+      padding-top: 8px;
       margin-top: auto;
       display: flex;
       flex-direction: column;
+      flex-shrink: 0;
     }
 
     .visual-controls-header {
@@ -333,7 +389,7 @@
       justify-content: space-between;
       align-items: center;
       cursor: pointer;
-      padding: 6px 4px;
+      padding: 5px 4px;
       border-radius: 6px;
       transition: background 0.15s ease;
     }
@@ -354,8 +410,8 @@
     .visual-controls-body {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      padding: 10px 4px 4px 4px;
+      gap: 7px;
+      padding: 8px 2px 2px 2px;
     }
 
     .visual-controls-panel.collapsed .visual-controls-body {
@@ -368,6 +424,7 @@
       align-items: center;
       font-size: 11px;
       color: var(--text-muted);
+      min-height: 20px;
     }
 
     .slider-row input[type="range"] {
@@ -385,6 +442,15 @@
       width: 310px;
       z-index: 10;
       pointer-events: none;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    }
+
+    #telemetry-mount.collapsed,
+    body.right-sidebar-collapsed #telemetry-mount,
+    .agent-hud.collapsed {
+      transform: translateX(calc(100% + 20px));
+      opacity: 0;
+      pointer-events: none;
     }
 
     .agent-hud {
@@ -395,12 +461,6 @@
       padding: 14px;
       gap: 12px;
       transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
-    }
-
-    .agent-hud.collapsed {
-      transform: translateX(calc(100% + 20px));
-      opacity: 0;
-      pointer-events: none;
     }
 
     .agent-hud-header {
@@ -521,6 +581,15 @@
       z-index: 15;
       display: none;
       pointer-events: none;
+      transition: left 0.3s cubic-bezier(0.16, 1, 0.3, 1), right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    body.left-sidebar-collapsed #inspector-mount {
+      left: 20px;
+    }
+
+    body.right-sidebar-collapsed #inspector-mount {
+      right: 20px;
     }
 
     .inspector-panel {
