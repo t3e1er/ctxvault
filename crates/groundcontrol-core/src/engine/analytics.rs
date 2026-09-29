@@ -97,8 +97,7 @@ impl Engine {
             return Ok(0);
         }
 
-        let symbol_index =
-            crate::graph::code::CodeGraphExtractor::build_symbol_index(&all_symbols);
+        let symbol_index = crate::graph::code::CodeGraphExtractor::build_symbol_index(&all_symbols);
         let pending_refs = std::mem::take(&mut self.external_refs);
         let mut remaining_refs = Vec::with_capacity(pending_refs.len());
         let mut edges_added = 0usize;
@@ -127,10 +126,7 @@ impl Engine {
                             Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new(""))
                                 == caller_dir
                         }) {
-                            (
-                                **dir_match,
-                                groundcontrol_common::types::ResolutionConfidence::Medium,
-                            )
+                            (**dir_match, groundcontrol_common::types::ResolutionConfidence::Medium)
                         } else {
                             (
                                 *cross_candidates[0],
@@ -164,7 +160,8 @@ impl Engine {
                                     target: target_sym.scope_path.clone(),
                                     edge_type: "tests".to_string(),
                                     weight: 0.9,
-                                    provenance: groundcontrol_common::types::EdgeProvenance::CodeTests,
+                                    provenance:
+                                        groundcontrol_common::types::EdgeProvenance::CodeTests,
                                     target_corpus: None,
                                     confidence: Some(confidence),
                                     target_path: None,
