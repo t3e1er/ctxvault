@@ -228,19 +228,19 @@ export class FilterPanel {
           <div class="panel-section-body" id="visual-controls-body">
             <div class="slider-row">
               <span>Particle Size</span>
-              <input type="range" id="size-slider" min="1" max="15" value="6">
+              <input type="range" id="size-slider" min="1" max="45" value="6">
             </div>
             <div class="slider-row">
               <span>Bloom Glow</span>
-              <input type="range" id="bloom-slider" min="0" max="30" value="12">
+              <input type="range" id="bloom-slider" min="0" max="60" value="12">
             </div>
             <div class="slider-row">
               <span>Glow Cutoff</span>
-              <input type="range" id="bloom-threshold-slider" min="10" max="95" value="48" title="Cutoff luminance for glow (higher = less blowout)">
+              <input type="range" id="bloom-threshold-slider" min="0" max="100" value="48" title="Cutoff luminance for glow (higher = less blowout)">
             </div>
             <div class="slider-row">
               <span>Brightness</span>
-              <input type="range" id="exposure-slider" min="30" max="220" value="${this.exposureState}" title="Scene exposure/brightness level">
+              <input type="range" id="exposure-slider" min="10" max="350" value="${this.exposureState}" title="Scene exposure/brightness level">
             </div>
             <div class="slider-row">
               <span>Edge Opacity</span>
@@ -248,27 +248,27 @@ export class FilterPanel {
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <span>Label Size</span>
-              <input type="range" id="label-size-slider" min="30" max="250" value="${this.labelSizeState}" title="Adjust size of floating corpus labels">
+              <input type="range" id="label-size-slider" min="20" max="500" value="${this.labelSizeState}" title="Adjust size of floating corpus labels">
             </div>
             <div class="slider-row">
               <span>Label Brightness</span>
-              <input type="range" id="label-brightness-slider" min="10" max="100" value="${this.labelBrightnessState}" title="Adjust opacity and brightness of floating corpus labels">
+              <input type="range" id="label-brightness-slider" min="10" max="200" value="${this.labelBrightnessState}" title="Adjust opacity and brightness of floating corpus labels">
             </div>
             <div class="slider-row">
               <span>Activation Size</span>
-              <input type="range" id="activation-size-slider" min="30" max="300" value="${this.activationSizeState}" title="Adjust size, radiance, and pulse duration of agent activations">
+              <input type="range" id="activation-size-slider" min="20" max="600" value="${this.activationSizeState}" title="Adjust size, radiance, and pulse duration of agent activations">
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <span>Comm Gravity</span>
-              <input type="range" id="community-gravity-slider" min="30" max="250" value="${this.communityGravityState}" title="Inward gravitational pull of nodes toward community centroid">
+              <input type="range" id="community-gravity-slider" min="10" max="450" value="${this.communityGravityState}" title="Inward gravitational pull of nodes toward community centroid">
             </div>
             <div class="slider-row">
               <span>Corpus Gravity</span>
-              <input type="range" id="corpus-gravity-slider" min="30" max="250" value="${this.corpusGravityState}" title="Radial pull of community clusters toward corpus sphere mantle">
+              <input type="range" id="corpus-gravity-slider" min="10" max="450" value="${this.corpusGravityState}" title="Radial pull of community clusters toward corpus sphere mantle">
             </div>
             <div class="slider-row">
               <span>Inter-Corpus Pull</span>
-              <input type="range" id="inter-corpus-slider" min="30" max="250" value="${this.interCorpusAttractionState}" title="Attraction force pulling linked corpora closer in Galaxy view">
+              <input type="range" id="inter-corpus-slider" min="10" max="450" value="${this.interCorpusAttractionState}" title="Attraction force pulling linked corpora closer in Galaxy view">
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Attenuates dense clusters and boosts sparse nodes">
@@ -281,7 +281,7 @@ export class FilterPanel {
                 <input type="checkbox" id="auto-orbit-toggle" ${this.autoOrbitState ? 'checked' : ''} style="accent-color: var(--neon-blue);">
                 <span>Auto Orbit</span>
               </label>
-              <input type="range" id="orbit-speed-slider" min="1" max="30" value="${this.orbitSpeedState}" style="width: 75px;">
+              <input type="range" id="orbit-speed-slider" min="1" max="60" value="${this.orbitSpeedState}" style="width: 75px;">
             </div>
           </div>
         </div>

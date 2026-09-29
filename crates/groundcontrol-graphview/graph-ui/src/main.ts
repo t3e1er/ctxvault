@@ -199,19 +199,38 @@ class GraphViewApp {
     // 4. Telemetry Stream
     this.telemetry.onActivation = (act) => {
       if (!this.currentPayload) return;
-      const matched = this.findMatchingNodes(act.paths || []);
+      let matched = this.findMatchingNodes(act.paths || []);
+
+      // If paths yielded no direct matches, attempt keyword matching on query terms
+      if (matched.length === 0 && act.query) {
+        const queryTerms = act.query
+          .replace(/[:"'{}\[\]()=]/g, ' ')
+          .split(/\s+/)
+          .filter(
+            (t) =>
+              t.length >= 3 &&
+              !['search', 'match', 'graph', 'corpus', 'mode', 'calls', 'defines', 'imports', 'implements'].includes(
+                t.toLowerCase()
+              )
+          );
+        if (queryTerms.length > 0) {
+          matched = this.findMatchingNodes(queryTerms);
+        }
+      }
+
       let fallbackPos: [number, number, number] | undefined = undefined;
-      if (matched.length === 0 && act.corpus) {
+      if (matched.length === 0 && act.corpus && act.corpus !== 'all') {
         const corpMeta = this.corpora.find((c) => c.name === act.corpus);
         if (corpMeta && corpMeta.center) {
           fallbackPos = corpMeta.center;
-        } else if (this.activeCorpus === act.corpus) {
-          fallbackPos = [0, 0, 0];
         }
       }
-      this.scene.triggerActivationEffect(act, matched, fallbackPos);
-      if (matched.length > 0) {
-        this.scene.nodeCloud.setHoveredId(matched[0].id);
+
+      if (matched.length > 0 || fallbackPos) {
+        this.scene.triggerActivationEffect(act, matched, fallbackPos);
+        if (matched.length > 0) {
+          this.scene.nodeCloud.setHoveredId(matched[0].id);
+        }
       }
     };
 
@@ -622,7 +641,18 @@ class GraphViewApp {
 
   private findMatchingNodes(paths: string[]): NodeData[] {
     if (!this.currentPayload || !paths || paths.length === 0) return [];
-    const normalizedTargets = paths.map((p) => p.replace(/\\/g, '/').toLowerCase().trim());
+    const normalizedTargets: string[] = [];
+    for (const p of paths) {
+      if (!p) continue;
+      let clean = p.replace(/\\/g, '/').toLowerCase().trim();
+      clean = clean.replace(/[:#]l?\d+.*$/i, '').trim();
+      if (clean) normalizedTargets.push(clean);
+      if (clean.includes('#')) {
+        const parts = clean.split('#');
+        if (parts[0]) normalizedTargets.push(parts[0]);
+        if (parts[1]) normalizedTargets.push(parts[1]);
+      }
+    }
     const results: NodeData[] = [];
     const seen = new Set<number>();
 

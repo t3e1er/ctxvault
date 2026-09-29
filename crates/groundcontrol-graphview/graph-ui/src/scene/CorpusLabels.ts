@@ -21,10 +21,12 @@ export class CorpusLabels {
   }
 
   public setBrightness(brightness: number) {
-    this.brightness = Math.max(0.1, Math.min(1.0, brightness));
+    this.brightness = Math.max(0.1, brightness);
     for (const sprite of this.sprites) {
       const mat = sprite.material as THREE.SpriteMaterial;
-      mat.opacity = this.brightness;
+      mat.opacity = Math.min(1.0, this.brightness);
+      const intensity = Math.max(1.0, this.brightness);
+      mat.color.setRGB(intensity, intensity, intensity);
     }
   }
 

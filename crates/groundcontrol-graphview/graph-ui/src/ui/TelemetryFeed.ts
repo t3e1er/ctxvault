@@ -55,8 +55,8 @@ export class TelemetryFeed {
 
   /** Recompute how many cards fit in the available panel height. */
   private recomputeMax() {
-    const available = this.container.clientHeight - HEADER_HEIGHT_PX;
-    const newMax = Math.max(2, Math.min(30, Math.floor(available / CARD_HEIGHT_PX)));
+    const available = Math.max(0, this.container.clientHeight - HEADER_HEIGHT_PX - 24);
+    const newMax = Math.max(1, Math.min(30, Math.floor(available / 72)));
     if (newMax !== this.maxActivations) {
       this.maxActivations = newMax;
       while (this.activations.length > this.maxActivations) {
@@ -112,7 +112,7 @@ export class TelemetryFeed {
             <span style="font-size: 10px; color: var(--text-muted); font-weight: 500;">(${this.activations.length})</span>
           </div>
         </div>
-        <div class="telemetry-stream" style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 8px;">
+        <div class="telemetry-stream" style="flex: 1 1 0%; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 8px;">
           ${cardsHtml}
         </div>
       </div>
