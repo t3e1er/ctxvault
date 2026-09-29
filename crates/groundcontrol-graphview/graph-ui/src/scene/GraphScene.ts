@@ -33,6 +33,11 @@ export class GraphScene {
   private animationFrameId: number | null = null;
   private lastTime = performance.now();
 
+  /** The "calm" bloom strength set by the slider / data-driven logic. */
+  private bloomBaseStrength: number = 0.38;
+  /** Extra bloom added by activation bursts; decays exponentially each frame. */
+  private bloomBoostCurrent: number = 0.0;
+
   public onNodeHover?: (node: NodeData | null) => void;
   public onNodeClick?: (node: NodeData) => void;
   public onBackgroundClick?: () => void;
@@ -87,6 +92,11 @@ export class GraphScene {
     this.corpusLabels = new CorpusLabels();
     this.activationEffects = new ActivationEffects();
 
+    // Wire bloom surge from activation effects
+    this.activationEffects.onBloomSurge = (magnitude: number) => {
+      this.bloomBoostCurrent = Math.max(this.bloomBoostCurrent, magnitude);
+    };
+
     this.scene.add(this.nodeCloud.group);
     this.scene.add(this.edgeLines.group);
     this.scene.add(this.flowParticles.group);
@@ -109,6 +119,7 @@ export class GraphScene {
 
     // Update Bloom strength dynamically based on node count
     const bloom = calcBloomStrength(payload.nodes.length);
+    this.bloomBaseStrength = bloom.strength;
     this.bloomPass.strength = bloom.strength;
     this.bloomPass.radius = bloom.radius;
     this.bloomPass.threshold = bloom.threshold;
@@ -230,7 +241,13 @@ export class GraphScene {
   }
 
   public setBloomStrength(val: number) {
-    this.bloomPass.strength = val / 30.0;
+    this.bloomBaseStrength = val / 30.0;
+    this.bloomPass.strength = this.bloomBaseStrength + this.bloomBoostCurrent;
+  }
+
+  /** Spike bloom up; decays automatically in the render loop. */
+  public triggerBloomSurge(boost: number) {
+    this.bloomBoostCurrent = Math.max(this.bloomBoostCurrent, boost);
   }
 
   public setBloomThreshold(val: number) {
@@ -322,6 +339,11 @@ export class GraphScene {
     // Update agent activation animations & node glow decays
     this.activationEffects.update(dt, this.camera);
     this.nodeCloud.update(dt);
+
+    // Exponential decay of activation bloom boost (~95% per frame at 60fps ≈ 0.5s half-life)
+    this.bloomBoostCurrent *= 0.962;
+    if (this.bloomBoostCurrent < 0.005) this.bloomBoostCurrent = 0;
+    this.bloomPass.strength = this.bloomBaseStrength + this.bloomBoostCurrent;
 
     this.composer.render();
   };

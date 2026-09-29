@@ -1,5 +1,10 @@
 import { AgentActivation } from '../types.ts';
 
+/** Estimated height of a single session card + gap in pixels. */
+const CARD_HEIGHT_PX = 76;
+/** Height of the panel header in pixels. */
+const HEADER_HEIGHT_PX = 46;
+
 export class TelemetryFeed {
   private container: HTMLElement;
   private eventSource: EventSource | null = null;
@@ -9,8 +14,10 @@ export class TelemetryFeed {
   public onSelectActivation?: (act: AgentActivation) => void;
   public onCollapseToggle?: (collapsed: boolean) => void;
   private isCollapsed: boolean = false;
+  private resizeObserver: ResizeObserver | null = null;
 
-  private maxActivations: number = 7;
+  /** Dynamically computed from container height; never hardcoded. */
+  private maxActivations: number = 5;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -36,6 +43,27 @@ export class TelemetryFeed {
     });
 
     this.render();
+
+    // Observe container size and recompute card cap dynamically
+    this.resizeObserver = new ResizeObserver(() => {
+      this.recomputeMax();
+    });
+    this.resizeObserver.observe(this.container);
+    // Initial measurement
+    this.recomputeMax();
+  }
+
+  /** Recompute how many cards fit in the available panel height. */
+  private recomputeMax() {
+    const available = this.container.clientHeight - HEADER_HEIGHT_PX;
+    const newMax = Math.max(2, Math.min(30, Math.floor(available / CARD_HEIGHT_PX)));
+    if (newMax !== this.maxActivations) {
+      this.maxActivations = newMax;
+      while (this.activations.length > this.maxActivations) {
+        this.activations.pop();
+      }
+      this.render();
+    }
   }
 
   private addActivation(act: AgentActivation) {
@@ -117,5 +145,7 @@ export class TelemetryFeed {
       this.eventSource.close();
       this.eventSource = null;
     }
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
   }
 }
