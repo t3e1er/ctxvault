@@ -550,7 +550,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -842,7 +842,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1383,7 +1383,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "toml",
 ]
 
@@ -1419,7 +1419,7 @@ dependencies = [
  "tantivy",
  "tar",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokenizers",
  "tokio",
  "toml",
@@ -1491,7 +1491,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -1514,7 +1514,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -2125,7 +2125,7 @@ dependencies = [
  "rayon",
  "sha2",
  "stringprep",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "weezl",
 ]
 
@@ -2307,7 +2307,7 @@ dependencies = [
  "mach2",
  "nix",
  "sysctl",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "widestring",
  "windows 0.48.0",
 ]
@@ -3012,7 +3012,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "web-time",
@@ -3034,7 +3034,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "web-time",
@@ -3270,7 +3270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3869,7 +3869,7 @@ dependencies = [
  "tantivy-stacker",
  "tantivy-tokenizer-api",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "time",
  "typetag",
  "uuid",
@@ -4021,11 +4021,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl 2.0.20",
+ "thiserror-impl 2.0.21",
 ]
 
 [[package]]
@@ -4041,9 +4041,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4132,7 +4132,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spm_precompiled",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "unicode-normalization-alignments",
  "unicode-segmentation",
  "unicode_categories",
@@ -5731,7 +5731,7 @@ dependencies = [
  "flate2",
  "indexmap",
  "memchr",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "zopfli",
 ]
 
