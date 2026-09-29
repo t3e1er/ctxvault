@@ -23,11 +23,13 @@ export class HeaderControls {
     return 'Search symbols, paths, types...';
   }
 
-  public setSearchQuery(query: string) {
+  public setSearchQuery(query: string, triggerQuery: boolean = true) {
     const input = this.container.querySelector('#query-input') as HTMLInputElement;
     if (input) {
       input.value = query;
-      this.onQuery?.(query);
+      if (triggerQuery) {
+        this.onQuery?.(query);
+      }
     }
   }
 

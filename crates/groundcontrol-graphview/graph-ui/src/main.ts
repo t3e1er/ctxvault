@@ -21,6 +21,7 @@ class GraphViewApp {
   private currentSearchMode: SearchMode = 'symbol';
   private currentPayload: GraphPayload | null = null;
   private currentSearchMatches: Set<number> | null = null;
+  private searchDebounceTimer: number | null = null;
 
   constructor() {
     const canvasContainer = document.getElementById('canvas-container')!;
@@ -198,7 +199,12 @@ class GraphViewApp {
     };
   }
 
-  private async performSearch(rawQuery: string) {
+  private async performSearch(rawQuery: string, triggerTelemetry: boolean = true) {
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+      this.searchDebounceTimer = null;
+    }
+
     const q = (rawQuery || '').trim();
     if (!q || !this.currentPayload) {
       this.currentSearchMatches = null;
@@ -207,6 +213,7 @@ class GraphViewApp {
       return;
     }
 
+    const startTime = performance.now();
     const qLower = q.toLowerCase();
 
     // Auto-detect mode if query has syntax prefix
@@ -278,14 +285,45 @@ class GraphViewApp {
     } else {
       this.header.setQueryStatus('nomatch');
     }
+
+    if (triggerTelemetry) {
+      this.searchDebounceTimer = window.setTimeout(() => {
+        this.searchDebounceTimer = null;
+        if (!this.currentPayload) return;
+
+        const matchedNodes = this.currentPayload.nodes.filter((n) =>
+          matches.has(n.id)
+        );
+        const matchedPaths = matchedNodes.map((n) => n.path);
+        const elapsed = Math.round(performance.now() - startTime);
+
+        this.telemetry.recordActivation({
+          timestamp: Date.now(),
+          tool: mode === 'graph' ? 'graph_match' : 'search',
+          client_id: 'user',
+          client_name: 'Search',
+          client_color: mode === 'graph' ? '#10b981' : '#38bdf8',
+          corpus: this.activeCorpus,
+          query: q,
+          paths: matchedPaths.slice(0, 15),
+          duration_ms: elapsed,
+          success: matches.size > 0,
+        });
+      }, 450);
+    }
   }
 
   private async performSearchSubmit(rawQuery: string) {
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+      this.searchDebounceTimer = null;
+    }
+
     const q = (rawQuery || '').trim();
     if (!q || !this.currentPayload) return;
 
     const startTime = performance.now();
-    await this.performSearch(q);
+    await this.performSearch(q, false);
 
     const qLower = q.toLowerCase();
     const isRead =
@@ -334,9 +372,9 @@ class GraphViewApp {
   private async handleActivationSelect(act: AgentActivation) {
     if (!this.currentPayload) return;
 
-    // Update search input if query was recorded
+    // Update search input if query was recorded without retriggering search query event
     if (act.query) {
-      this.header.setSearchQuery(act.query);
+      this.header.setSearchQuery(act.query, false);
     }
 
     // Match nodes by path
@@ -445,6 +483,10 @@ class GraphViewApp {
   }
 
   private async loadGraph() {
+    if (this.searchDebounceTimer) {
+      clearTimeout(this.searchDebounceTimer);
+      this.searchDebounceTimer = null;
+    }
     if (this.activeCorpus !== 'ego') {
       this.isEgoFocused = false;
     }
