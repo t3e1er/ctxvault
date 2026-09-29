@@ -25,6 +25,7 @@ export class NodeCloud {
   private communityGravityState: number = 1.0;
   private corpusGravityState: number = 1.0;
   private interCorpusAttractionState: number = 1.0;
+  private activationScale: number = 1.0;
   private nodeFlashes: Map<number, { color: THREE.Color; endTime: number; duration: number }> = new Map();
 
   constructor() {
@@ -271,7 +272,7 @@ export class NodeCloud {
       if (remaining > 0) {
         const factor = Math.min(1.0, remaining / flash.duration);
         // Emissive radiant flash in agent's distinct theme color
-        outColor.copy(flash.color).multiplyScalar(1.6 + factor * 2.5);
+        outColor.copy(flash.color).multiplyScalar((2.2 + factor * 4.5) * this.activationScale);
         return;
       } else {
         this.nodeFlashes.delete(node.id);
@@ -328,7 +329,7 @@ export class NodeCloud {
     }
   }
 
-  public flashNodes(nodeIds: number[], color: THREE.Color, durationMs: number = 2200) {
+  public flashNodes(nodeIds: number[], color: THREE.Color, durationMs: number = 4200) {
     const now = performance.now();
     for (const id of nodeIds) {
       this.nodeFlashes.set(id, {
@@ -338,20 +339,31 @@ export class NodeCloud {
       });
     }
     this.refreshColors();
+    this.updateScalesAndPositions();
   }
 
   public update(dt: number) {
     if (this.nodeFlashes.size === 0) return;
     const now = performance.now();
-    let hasActive = false;
+    let hadExpired = false;
     for (const [id, flash] of this.nodeFlashes.entries()) {
       if (now > flash.endTime) {
         this.nodeFlashes.delete(id);
-      } else {
-        hasActive = true;
+        hadExpired = true;
       }
     }
     this.refreshColors();
+    if (hadExpired) {
+      this.updateScalesAndPositions();
+    }
+  }
+
+  public setActivationScale(scale: number) {
+    this.activationScale = Math.max(0.2, scale);
+    if (this.nodeFlashes.size > 0) {
+      this.refreshColors();
+      this.updateScalesAndPositions();
+    }
   }
 
   public setViewMode(mode: ViewMode) {
@@ -396,7 +408,9 @@ export class NodeCloud {
       for (let i = 0; i < this.nodes.length; i++) {
         const node = this.nodes[i];
         let s = Math.max(1.2, node.size * 0.45 * this.particleScale);
-        if (this.searchMatchIds !== null) {
+        if (this.nodeFlashes.has(node.id)) {
+          s *= 3.5 * this.activationScale;
+        } else if (this.searchMatchIds !== null) {
           if (this.searchMatchIds.has(node.id)) {
             s *= 1.8;
           } else {

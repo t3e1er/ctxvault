@@ -147,6 +147,10 @@ class GraphViewApp {
       this.scene.corpusLabels.setBrightness(val);
     };
 
+    this.filterPanel.onActivationSizeChange = (val) => {
+      this.scene.setActivationScale(val);
+    };
+
     this.filterPanel.onCommunityGravityChange = (val) => {
       this.scene.updateGravity({ communityGravity: val });
     };
@@ -195,8 +199,17 @@ class GraphViewApp {
     // 4. Telemetry Stream
     this.telemetry.onActivation = (act) => {
       if (!this.currentPayload) return;
-      const matched = this.findMatchingNodes(act.paths);
-      this.scene.triggerActivationEffect(act, matched);
+      const matched = this.findMatchingNodes(act.paths || []);
+      let fallbackPos: [number, number, number] | undefined = undefined;
+      if (matched.length === 0 && act.corpus) {
+        const corpMeta = this.corpora.find((c) => c.name === act.corpus);
+        if (corpMeta && corpMeta.center) {
+          fallbackPos = corpMeta.center;
+        } else if (this.activeCorpus === act.corpus) {
+          fallbackPos = [0, 0, 0];
+        }
+      }
+      this.scene.triggerActivationEffect(act, matched, fallbackPos);
       if (matched.length > 0) {
         this.scene.nodeCloud.setHoveredId(matched[0].id);
       }
@@ -615,16 +628,23 @@ class GraphViewApp {
 
     for (const target of normalizedTargets) {
       const targetBase = target.split('/').pop() || target;
+      const targetSym = target.split('#').pop() || targetBase;
       for (const node of this.currentPayload.nodes) {
         if (seen.has(node.id)) continue;
-        const nPath = node.path.replace(/\\/g, '/').toLowerCase();
-        const nName = node.name.toLowerCase();
+        const nPath = (node.path || '').replace(/\\/g, '/').toLowerCase();
+        const nTitle = (node.title || '').toLowerCase();
+        const nBase = nPath.split('/').pop() || nPath;
+        const nSym = nPath.split('#').pop() || nBase;
+
         if (
           nPath === target ||
           nPath.endsWith(target) ||
           target.endsWith(nPath) ||
-          nName === target ||
-          nName === targetBase
+          nTitle === target ||
+          nTitle === targetBase ||
+          nTitle === targetSym ||
+          nSym === targetSym ||
+          nBase === targetBase
         ) {
           seen.add(node.id);
           results.push(node);
@@ -635,13 +655,19 @@ class GraphViewApp {
     if (results.length === 0) {
       for (const target of normalizedTargets) {
         const targetBase = target.split('/').pop() || target;
+        const targetSym = target.split('#').pop() || targetBase;
         for (const node of this.currentPayload.nodes) {
           if (seen.has(node.id)) continue;
-          const nPath = node.path.replace(/\\/g, '/').toLowerCase();
-          if (nPath.includes(targetBase) || target.includes(node.name.toLowerCase())) {
+          const nPath = (node.path || '').replace(/\\/g, '/').toLowerCase();
+          const nTitle = (node.title || '').toLowerCase();
+          if (
+            nPath.includes(targetBase) ||
+            nPath.includes(targetSym) ||
+            (nTitle && (target.includes(nTitle) || nTitle.includes(targetSym)))
+          ) {
             seen.add(node.id);
             results.push(node);
-            if (results.length >= 8) break;
+            if (results.length >= 12) break;
           }
         }
       }

@@ -38,6 +38,7 @@ interface ActiveTraversal {
 
 export class ActivationEffects {
   public group: THREE.Group;
+  public activationScale: number = 1.0;
   private shockwaves: ActiveShockwave[] = [];
   private traversals: ActiveTraversal[] = [];
   private sparks: SparkParticle[] = [];
@@ -46,7 +47,7 @@ export class ActivationEffects {
   private sparkPoints: THREE.Points | null = null;
   private sparkGeometry: THREE.BufferGeometry | null = null;
   private sparkMaterial: THREE.PointsMaterial | null = null;
-  private maxSparks = 2000;
+  private maxSparks = 3000;
   private sparkPositions: Float32Array;
   private sparkColors: Float32Array;
 
@@ -84,7 +85,7 @@ export class ActivationEffects {
     const texture = new THREE.CanvasTexture(canvas);
 
     this.sparkMaterial = new THREE.PointsMaterial({
-      size: 9.0,
+      size: 16.0,
       map: texture,
       vertexColors: true,
       transparent: true,
@@ -94,7 +95,15 @@ export class ActivationEffects {
     });
 
     this.sparkPoints = new THREE.Points(this.sparkGeometry, this.sparkMaterial);
+    this.sparkPoints.renderOrder = 9999;
     this.group.add(this.sparkPoints);
+  }
+
+  public setActivationScale(scale: number) {
+    this.activationScale = Math.max(0.2, scale);
+    if (this.sparkMaterial) {
+      this.sparkMaterial.size = 16.0 * this.activationScale;
+    }
   }
 
   /**
@@ -146,19 +155,20 @@ export class ActivationEffects {
    * Search Match Explosion: shockwave halo + sparkling velocity explosion.
    */
   public triggerMatchExplosion(position: THREE.Vector3, color: THREE.Color, agentName: string) {
+    const s = this.activationScale;
     // 1. Expanding shockwave ring
-    this.createShockwave(position, color, 4.0, 70.0, 1.2);
+    this.createShockwave(position, color, 12.0 * s, 220.0 * s, 2.5);
 
     // 2. High-energy wireframe sphere pulse
-    this.createSpherePulse(position, color, 3.0, 45.0, 0.9);
+    this.createSpherePulse(position, color, 8.0 * s, 150.0 * s, 2.0);
 
-    // 3. Particle sparks explosion (30 particles)
-    const count = 30;
+    // 3. Particle sparks explosion (50 particles)
+    const count = Math.min(80, Math.floor(45 * s));
     for (let i = 0; i < count; i++) {
       if (this.sparks.length >= this.maxSparks) break;
       const phi = Math.random() * Math.PI * 2;
       const theta = Math.acos(Math.random() * 2 - 1);
-      const speed = 40.0 + Math.random() * 90.0;
+      const speed = (60.0 + Math.random() * 140.0) * s;
 
       const vel = new THREE.Vector3(
         Math.sin(theta) * Math.cos(phi) * speed,
@@ -170,9 +180,9 @@ export class ActivationEffects {
         position: position.clone(),
         velocity: vel,
         life: 0,
-        maxLife: 0.9 + Math.random() * 0.6,
-        color: color.clone().multiplyScalar(1.8),
-        size: 7.0 + Math.random() * 5.0,
+        maxLife: 1.8 + Math.random() * 1.0,
+        color: color.clone().multiplyScalar(2.6),
+        size: (18.0 + Math.random() * 14.0) * s,
       });
     }
   }
@@ -182,6 +192,7 @@ export class ActivationEffects {
    */
   public triggerTraversalSequence(positions: THREE.Vector3[], color: THREE.Color, agentName: string) {
     if (positions.length === 0) return;
+    const s = this.activationScale;
 
     if (positions.length === 1) {
       // Single node traversal match: intense pulse
@@ -193,36 +204,37 @@ export class ActivationEffects {
     const rest = positions.slice(1);
 
     // Initial pulse on start node
-    this.createShockwave(startPos, color, 3.0, 40.0, 0.8);
-    this.createSpherePulse(startPos, color, 2.0, 25.0, 0.7);
+    this.createShockwave(startPos, color, 10.0 * s, 160.0 * s, 1.8);
+    this.createSpherePulse(startPos, color, 6.0 * s, 100.0 * s, 1.5);
 
     // Create traversal tracer from startPos to rest[0]
     const nextTarget = rest[0];
     const remainingSteps = rest.slice(1);
 
     const tracerMat = new THREE.MeshBasicMaterial({
-      color: color.clone().multiplyScalar(2.5),
+      color: color.clone().multiplyScalar(3.0),
       transparent: true,
       opacity: 1.0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     const tracerMesh = new THREE.Mesh(this.sphereGeometry, tracerMat);
-    tracerMesh.scale.set(4.5, 4.5, 4.5);
+    tracerMesh.renderOrder = 9999;
+    tracerMesh.scale.set(12.0 * s, 12.0 * s, 12.0 * s);
     tracerMesh.position.copy(startPos);
     this.group.add(tracerMesh);
 
     // Glowing trail line geometry
     const lineGeo = new THREE.BufferGeometry().setFromPoints([startPos.clone(), startPos.clone()]);
     const lineMat = new THREE.LineBasicMaterial({
-      color: color.clone().multiplyScalar(2.0),
+      color: color.clone().multiplyScalar(2.5),
       transparent: true,
       opacity: 0.95,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      linewidth: 2,
     });
     const trailLine = new THREE.Line(lineGeo, lineMat);
+    trailLine.renderOrder = 9999;
     this.group.add(trailLine);
 
     this.traversals.push({
@@ -230,7 +242,7 @@ export class ActivationEffects {
       endPos: nextTarget.clone(),
       currentPos: startPos.clone(),
       progress: 0,
-      duration: 0.85,
+      duration: 1.1,
       color,
       agentName,
       tracerMesh,
@@ -244,19 +256,20 @@ export class ActivationEffects {
    * Read Scanner Pulse: 3 concentric ripples expanding like sonar waves + vertical beacon flare.
    */
   public triggerScannerPulse(position: THREE.Vector3, color: THREE.Color, agentName: string) {
+    const s = this.activationScale;
     // 3 successive concentric shockwaves
-    this.createShockwave(position, color, 3.0, 55.0, 1.3);
+    this.createShockwave(position, color, 10.0 * s, 180.0 * s, 2.2);
     setTimeout(() => {
-      this.createShockwave(position, color, 3.0, 50.0, 1.2);
+      this.createShockwave(position, color, 10.0 * s, 150.0 * s, 2.0);
     }, 180);
     setTimeout(() => {
-      this.createShockwave(position, color, 3.0, 45.0, 1.1);
+      this.createShockwave(position, color, 10.0 * s, 120.0 * s, 1.8);
     }, 360);
 
     // Vertical beacon column (sparks floating upward)
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 35; i++) {
       if (this.sparks.length >= this.maxSparks) break;
-      const spread = 8.0;
+      const spread = 12.0 * s;
       const p = position.clone().add(
         new THREE.Vector3(
           (Math.random() - 0.5) * spread,
@@ -265,18 +278,18 @@ export class ActivationEffects {
         )
       );
       const vel = new THREE.Vector3(
-        (Math.random() - 0.5) * 8.0,
-        35.0 + Math.random() * 45.0,
-        (Math.random() - 0.5) * 8.0
+        (Math.random() - 0.5) * 12.0,
+        (45.0 + Math.random() * 85.0) * s,
+        (Math.random() - 0.5) * 12.0
       );
 
       this.sparks.push({
         position: p,
         velocity: vel,
         life: 0,
-        maxLife: 1.1 + Math.random() * 0.4,
-        color: color.clone().multiplyScalar(2.0),
-        size: 8.0,
+        maxLife: 1.8 + Math.random() * 0.8,
+        color: color.clone().multiplyScalar(2.6),
+        size: (18.0 + Math.random() * 8.0) * s,
       });
     }
   }
@@ -285,23 +298,24 @@ export class ActivationEffects {
    * Constructive burst for writes / note updates.
    */
   public triggerConstructiveBurst(position: THREE.Vector3, color: THREE.Color, agentName: string) {
-    this.createShockwave(position, color, 2.0, 60.0, 1.4);
-    for (let i = 0; i < 24; i++) {
+    const s = this.activationScale;
+    this.createShockwave(position, color, 8.0 * s, 190.0 * s, 2.2);
+    for (let i = 0; i < 35; i++) {
       if (this.sparks.length >= this.maxSparks) break;
       const angle = Math.random() * Math.PI * 2;
-      const r = 15.0 + Math.random() * 25.0;
+      const r = (20.0 + Math.random() * 40.0) * s;
       const vel = new THREE.Vector3(
         Math.cos(angle) * r,
-        20.0 + Math.random() * 30.0,
+        (30.0 + Math.random() * 50.0) * s,
         Math.sin(angle) * r
       );
       this.sparks.push({
         position: position.clone(),
         velocity: vel,
         life: 0,
-        maxLife: 1.2,
-        color: color.clone().multiplyScalar(2.2),
-        size: 7.5,
+        maxLife: 1.8,
+        color: color.clone().multiplyScalar(2.8),
+        size: (18.0 + Math.random() * 8.0) * s,
       });
     }
   }
@@ -314,7 +328,7 @@ export class ActivationEffects {
     duration: number
   ) {
     const mat = new THREE.MeshBasicMaterial({
-      color: color.clone().multiplyScalar(2.0),
+      color: color.clone().multiplyScalar(2.5),
       transparent: true,
       opacity: 0.95,
       blending: THREE.AdditiveBlending,
@@ -322,6 +336,7 @@ export class ActivationEffects {
       depthWrite: false,
     });
     const mesh = new THREE.Mesh(this.ringGeometry, mat);
+    mesh.renderOrder = 9999;
     mesh.position.copy(position);
     mesh.scale.set(startRadius, startRadius, startRadius);
     // Orient ring horizontally with slight dynamic tilt
@@ -348,14 +363,15 @@ export class ActivationEffects {
     duration: number
   ) {
     const mat = new THREE.MeshBasicMaterial({
-      color: color.clone().multiplyScalar(1.6),
+      color: color.clone().multiplyScalar(2.0),
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.88,
       wireframe: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     const mesh = new THREE.Mesh(this.sphereGeometry, mat);
+    mesh.renderOrder = 9999;
     mesh.position.copy(position);
     mesh.scale.set(startRadius, startRadius, startRadius);
     this.group.add(mesh);

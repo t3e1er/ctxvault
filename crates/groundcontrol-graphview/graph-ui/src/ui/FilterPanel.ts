@@ -16,6 +16,7 @@ export class FilterPanel {
   public onOrbitSpeedChange?: (speed: number) => void;
   public onLabelSizeChange?: (val: number) => void;
   public onLabelBrightnessChange?: (val: number) => void;
+  public onActivationSizeChange?: (val: number) => void;
   public onCommunityGravityChange?: (val: number) => void;
   public onCorpusGravityChange?: (val: number) => void;
   public onInterCorpusAttractionChange?: (val: number) => void;
@@ -32,6 +33,7 @@ export class FilterPanel {
   private gradientContrastState: boolean = true;
   private labelSizeState: number = 100;
   private labelBrightnessState: number = 85;
+  private activationSizeState: number = 100;
   private communityGravityState: number = 100;
   private corpusGravityState: number = 100;
   private interCorpusAttractionState: number = 100;
@@ -252,6 +254,10 @@ export class FilterPanel {
               <span>Label Brightness</span>
               <input type="range" id="label-brightness-slider" min="10" max="100" value="${this.labelBrightnessState}" title="Adjust opacity and brightness of floating corpus labels">
             </div>
+            <div class="slider-row">
+              <span>Activation Size</span>
+              <input type="range" id="activation-size-slider" min="30" max="300" value="${this.activationSizeState}" title="Adjust size, radiance, and pulse duration of agent activations">
+            </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
               <span>Comm Gravity</span>
               <input type="range" id="community-gravity-slider" min="30" max="250" value="${this.communityGravityState}" title="Inward gravitational pull of nodes toward community centroid">
@@ -386,6 +392,12 @@ export class FilterPanel {
     labelBrightSlider?.addEventListener('input', () => {
       this.labelBrightnessState = parseFloat(labelBrightSlider.value);
       this.onLabelBrightnessChange?.(this.labelBrightnessState / 100.0);
+    });
+
+    const actSizeSlider = this.container.querySelector('#activation-size-slider') as HTMLInputElement;
+    actSizeSlider?.addEventListener('input', () => {
+      this.activationSizeState = parseFloat(actSizeSlider.value);
+      this.onActivationSizeChange?.(this.activationSizeState / 100.0);
     });
 
     const commGravSlider = this.container.querySelector('#community-gravity-slider') as HTMLInputElement;

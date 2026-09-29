@@ -326,12 +326,21 @@ export class GraphScene {
     this.composer.render();
   };
 
-  public triggerActivationEffect(act: AgentActivation, nodes: NodeData[]) {
+  public setActivationScale(scale: number) {
+    this.activationEffects.setActivationScale(scale);
+    this.nodeCloud.setActivationScale(scale);
+  }
+
+  public triggerActivationEffect(
+    act: AgentActivation,
+    nodes: NodeData[],
+    fallbackPosition?: [number, number, number]
+  ) {
     const visual = resolveAgentVisual(act);
     const color = new THREE.Color(visual.colorHex);
-    this.activationEffects.triggerActivation(act, nodes);
+    this.activationEffects.triggerActivation(act, nodes, fallbackPosition);
     if (nodes.length > 0) {
-      this.nodeCloud.flashNodes(nodes.map((n) => n.id), color, 2500);
+      this.nodeCloud.flashNodes(nodes.map((n) => n.id), color, 4200);
     }
   }
 

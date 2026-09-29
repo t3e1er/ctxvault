@@ -668,13 +668,34 @@
     }
 
     .telemetry-card {
-      background: rgba(15, 23, 42, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 8px;
       padding: 10px;
       display: flex;
       flex-direction: column;
       gap: 6px;
+      animation: telemetry-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.18s ease;
+      flex-shrink: 0;
+    }
+
+    .telemetry-card:hover {
+      background: rgba(15, 23, 42, 0.95);
+      border-color: rgba(56, 189, 248, 0.45);
+      transform: translateX(-2px);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
+    }
+
+    @keyframes telemetry-enter {
+      from {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.97);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
     }
 
     .telemetry-card-top {

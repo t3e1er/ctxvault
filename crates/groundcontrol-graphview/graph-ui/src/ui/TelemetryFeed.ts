@@ -10,6 +10,8 @@ export class TelemetryFeed {
   public onCollapseToggle?: (collapsed: boolean) => void;
   private isCollapsed: boolean = false;
 
+  private maxActivations: number = 7;
+
   constructor(container: HTMLElement) {
     this.container = container;
   }
@@ -38,7 +40,7 @@ export class TelemetryFeed {
 
   private addActivation(act: AgentActivation) {
     this.activations.unshift(act);
-    if (this.activations.length > 50) {
+    while (this.activations.length > this.maxActivations) {
       this.activations.pop();
     }
     this.render();
@@ -82,7 +84,7 @@ export class TelemetryFeed {
             <span style="font-size: 10px; color: var(--text-muted); font-weight: 500;">(${this.activations.length})</span>
           </div>
         </div>
-        <div class="telemetry-stream" style="flex: 1; max-height: unset; overflow-y: auto;">
+        <div class="telemetry-stream" style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 8px;">
           ${cardsHtml}
         </div>
       </div>
