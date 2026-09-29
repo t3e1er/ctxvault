@@ -1,0 +1,3 @@
+# Ensure deterministic LF line endings for web UI bundle and source files
+crates/groundcontrol-graphview/graph-ui/** text eol=lf
+crates/groundcontrol-graphview/src/embedded_dashboard.html text eol=lf
