@@ -1,10 +1,10 @@
 import { GraphScene } from './scene/GraphScene.ts';
 import { decodeBinaryGraph } from './wire/decoder.ts';
-import { HeaderControls } from './ui/HeaderControls.ts';
+import { HeaderControls, SearchMode } from './ui/HeaderControls.ts';
 import { FilterPanel } from './ui/FilterPanel.ts';
 import { Inspector } from './ui/Inspector.ts';
 import { TelemetryFeed } from './ui/TelemetryFeed.ts';
-import { CorpusMetadata, GraphPayload, NodeData, ViewMode } from './types.ts';
+import { AgentActivation, CorpusMetadata, GraphPayload, NodeData, ViewMode } from './types.ts';
 
 class GraphViewApp {
   private scene: GraphScene;
@@ -16,6 +16,7 @@ class GraphViewApp {
   private corpora: CorpusMetadata[] = [];
   private activeCorpus = 'all';
   private currentViewMode: ViewMode = 'entity';
+  private currentSearchMode: SearchMode = 'symbol';
   private currentPayload: GraphPayload | null = null;
   private currentSearchMatches: Set<number> | null = null;
 
@@ -63,6 +64,14 @@ class GraphViewApp {
       this.performSearchSubmit(query);
     };
 
+    this.header.onSearchModeChange = (mode) => {
+      this.currentSearchMode = mode;
+      const queryInput = document.getElementById('query-input') as HTMLInputElement;
+      if (queryInput && queryInput.value) {
+        this.performSearch(queryInput.value);
+      }
+    };
+
     // 2. FilterPanel Events
     this.filterPanel.onEntityFilter = (category) => {
       this.scene.setEntityFilter(category);
@@ -86,6 +95,14 @@ class GraphViewApp {
 
     this.filterPanel.onBloomThresholdChange = (val) => {
       this.scene.setBloomThreshold(val);
+    };
+
+    this.filterPanel.onExposureChange = (val) => {
+      this.scene.setExposure(val);
+    };
+
+    this.filterPanel.onGradientContrastToggle = (enabled) => {
+      this.scene.setGradientContrast(enabled);
     };
 
     this.filterPanel.onEdgeDensityChange = (val) => {
@@ -123,6 +140,10 @@ class GraphViewApp {
       this.loadEgoSubgraph(node.path);
     };
 
+    this.inspector.onReadSource = (node: NodeData) => {
+      this.readNodeSource(node.path);
+    };
+
     // 4. Telemetry Stream
     this.telemetry.onActivation = (act) => {
       if (this.currentPayload && act.paths.length > 0) {
@@ -132,6 +153,10 @@ class GraphViewApp {
           this.scene.nodeCloud.setHoveredId(match.id);
         }
       }
+    };
+
+    this.telemetry.onSelectActivation = (act) => {
+      this.handleActivationSelect(act);
     };
 
     this.telemetry.onSelectPaths = (paths) => {
@@ -146,8 +171,8 @@ class GraphViewApp {
     };
   }
 
-  private performSearch(rawQuery: string) {
-    const q = (rawQuery || '').trim().toLowerCase();
+  private async performSearch(rawQuery: string) {
+    const q = (rawQuery || '').trim();
     if (!q || !this.currentPayload) {
       this.currentSearchMatches = null;
       this.scene.setSearchMatches(null);
@@ -155,13 +180,66 @@ class GraphViewApp {
       return;
     }
 
+    const qLower = q.toLowerCase();
+
+    // Auto-detect mode if query has syntax prefix
+    let mode = this.currentSearchMode;
+    if (
+      qLower.startsWith('calls:') ||
+      qLower.startsWith('defines:') ||
+      qLower.startsWith('imports:') ||
+      qLower.startsWith('implements:') ||
+      qLower.startsWith('edge:')
+    ) {
+      mode = 'graph';
+      this.header.setSearchMode('graph');
+    } else if (qLower.startsWith('read:') || qLower.startsWith('/read')) {
+      mode = 'read';
+      this.header.setSearchMode('read');
+    }
+
     const matches = new Set<number>();
-    for (const node of this.currentPayload.nodes) {
-      const matchPath = node.path && node.path.toLowerCase().includes(q);
-      const matchTitle = node.title && node.title.toLowerCase().includes(q);
-      const matchType = node.entityType && node.entityType.toLowerCase().includes(q);
-      if (matchPath || matchTitle || matchType) {
-        matches.add(node.id);
+
+    if (mode === 'graph') {
+      // AST graph relation search across Petgraph edges
+      const edgeFilter = qLower.startsWith('calls:')
+        ? 'calls'
+        : qLower.startsWith('defines:')
+        ? 'defines'
+        : qLower.startsWith('imports:')
+        ? 'imports'
+        : qLower.startsWith('implements:')
+        ? 'implements'
+        : qLower.startsWith('edge:')
+        ? qLower.replace('edge:', '').trim()
+        : qLower;
+      const targetSub = qLower.includes(':') ? qLower.split(':')[1].trim() : '';
+
+      for (const edge of this.currentPayload.edges) {
+        if (edge.edgeType.toLowerCase().includes(edgeFilter)) {
+          const srcNode = this.currentPayload.nodes.find((n) => n.id === edge.source);
+          const tgtNode = this.currentPayload.nodes.find((n) => n.id === edge.target);
+          if (srcNode && tgtNode) {
+            if (
+              !targetSub ||
+              srcNode.path.toLowerCase().includes(targetSub) ||
+              tgtNode.path.toLowerCase().includes(targetSub)
+            ) {
+              matches.add(srcNode.id);
+              matches.add(tgtNode.id);
+            }
+          }
+        }
+      }
+    } else {
+      // Standard symbol / substring search
+      for (const node of this.currentPayload.nodes) {
+        const matchPath = node.path && node.path.toLowerCase().includes(qLower);
+        const matchTitle = node.title && node.title.toLowerCase().includes(qLower);
+        const matchType = node.entityType && node.entityType.toLowerCase().includes(qLower);
+        if (matchPath || matchTitle || matchType) {
+          matches.add(node.id);
+        }
       }
     }
 
@@ -175,16 +253,110 @@ class GraphViewApp {
     }
   }
 
-  private performSearchSubmit(rawQuery: string) {
-    this.performSearch(rawQuery);
-    if (!this.currentPayload || !this.currentSearchMatches || this.currentSearchMatches.size === 0) return;
+  private async performSearchSubmit(rawQuery: string) {
+    const q = (rawQuery || '').trim();
+    if (!q || !this.currentPayload) return;
 
-    // Find first matching node
-    const firstMatch = this.currentPayload.nodes.find((n) => this.currentSearchMatches!.has(n.id));
-    if (firstMatch) {
-      this.scene.nodeCloud.setSelectedId(firstMatch.id);
-      this.scene.flyTo(firstMatch.position, 250);
-      this.inspector.showNode(firstMatch);
+    const startTime = performance.now();
+    await this.performSearch(q);
+
+    const qLower = q.toLowerCase();
+    const isRead =
+      this.currentSearchMode === 'read' ||
+      qLower.startsWith('read:') ||
+      qLower.startsWith('/read');
+
+    if (isRead) {
+      const cleanPath = q.replace(/^read:|^[\/]read\s*/i, '').trim();
+      await this.readNodeSource(cleanPath);
+      return;
+    }
+
+    if (!this.currentSearchMatches || this.currentSearchMatches.size === 0) return;
+
+    // Collect matched nodes
+    const matchedNodes = this.currentPayload.nodes.filter((n) =>
+      this.currentSearchMatches!.has(n.id)
+    );
+    const matchedPaths = matchedNodes.map((n) => n.path);
+    const elapsed = Math.round(performance.now() - startTime);
+
+    // Record synthetic activation into Agent Activity Feed
+    this.telemetry.recordActivation({
+      timestamp: Date.now(),
+      tool: this.currentSearchMode === 'graph' ? 'graph_match' : 'search',
+      client_id: 'user',
+      client_name: 'Search',
+      client_color: this.currentSearchMode === 'graph' ? '#10b981' : '#38bdf8',
+      corpus: this.activeCorpus,
+      query: q,
+      paths: matchedPaths.slice(0, 15),
+      duration_ms: elapsed,
+      success: true,
+    });
+
+    // Fly to first match and inspect
+    if (matchedNodes.length > 0) {
+      const first = matchedNodes[0];
+      this.scene.nodeCloud.setSelectedId(first.id);
+      this.scene.flyTo(first.position, 220);
+      this.inspector.showNode(first);
+    }
+  }
+
+  private async handleActivationSelect(act: AgentActivation) {
+    if (!this.currentPayload) return;
+
+    // Update search input if query was recorded
+    if (act.query) {
+      this.header.setSearchQuery(act.query);
+    }
+
+    // Match nodes by path
+    const targetPaths = new Set((act.paths || []).map((p) => p.replace(/\\/g, '/')));
+    const matchedNodes = this.currentPayload.nodes.filter((n) =>
+      targetPaths.has(n.path.replace(/\\/g, '/'))
+    );
+
+    if (matchedNodes.length > 0) {
+      const matchIds = new Set(matchedNodes.map((n) => n.id));
+      this.currentSearchMatches = matchIds;
+      this.scene.setSearchMatches(matchIds);
+      this.header.setQueryStatus('matched');
+
+      // Compute centroid of matched nodes
+      let cx = 0, cy = 0, cz = 0;
+      for (const n of matchedNodes) {
+        cx += n.position[0];
+        cy += n.position[1];
+        cz += n.position[2];
+      }
+      cx /= matchedNodes.length;
+      cy /= matchedNodes.length;
+      cz /= matchedNodes.length;
+
+      this.scene.flyTo([cx, cy, cz], matchedNodes.length > 1 ? 400 : 220);
+      this.scene.nodeCloud.setSelectedId(matchedNodes[0].id);
+      this.inspector.showNode(matchedNodes[0]);
+    }
+  }
+
+  private async readNodeSource(path: string) {
+    try {
+      this.showLoading(`Reading ${path}...`);
+      const corpusScope = this.activeCorpus === 'all' || this.activeCorpus === 'overview' ? '' : this.activeCorpus;
+      const url = `/api/graph/read?path=${encodeURIComponent(path)}&corpus=${encodeURIComponent(corpusScope)}`;
+      const res = await fetch(url);
+      this.hideLoading();
+      if (!res.ok) {
+        console.error(`Failed to read node ${path}: HTTP ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+      this.inspector.showSourceCode(data.content, data.file_path, data.start_line);
+    } catch (err) {
+      this.hideLoading();
+      console.error('Error reading node source:', err);
     }
   }
 

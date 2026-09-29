@@ -15,6 +15,7 @@ export class NodeCloud {
   private particleScale: number = 1.0;
   private searchMatchIds: Set<number> | null = null;
   private entityFilter: string = 'all';
+  private gradientContrast: boolean = true;
 
   private basePositions: Float32Array = new Float32Array(0);
   private currentPositions: Map<number, [number, number, number]> = new Map();
@@ -23,6 +24,13 @@ export class NodeCloud {
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'NodeCloud';
+  }
+
+  public setGradientContrast(enabled: boolean) {
+    this.gradientContrast = enabled;
+    if (this.nodes.length > 0) {
+      this.setNodes(this.nodes, this.currentMode);
+    }
   }
 
   public setNodes(nodes: NodeData[], mode: ViewMode = 'entity') {
@@ -89,7 +97,7 @@ export class NodeCloud {
     const geometry = new THREE.SphereGeometry(1.0, 8, 6);
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
-      toneMapped: false,
+      toneMapped: true,
     });
 
     const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
@@ -99,12 +107,22 @@ export class NodeCloud {
       const node = nodes[i];
       const pos = this.currentPositions.get(node.id) || node.position;
       this.dummy.position.set(pos[0], pos[1], pos[2]);
-      const s = Math.max(1.2, node.size * 0.45 * this.particleScale);
-      this.dummy.scale.set(s, s, s);
-      this.dummy.updateMatrix();
-      mesh.setMatrixAt(i, this.dummy.matrix);
 
       this.resolveColor(node, mode, this.color);
+
+      if (this.gradientContrast) {
+        const deg = node.degree || 1;
+        const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.55);
+        this.color.multiplyScalar(0.45 + 0.55 * falloff);
+        const s = Math.max(0.9, (node.size * 0.45 * this.particleScale) * (0.55 + 0.45 * falloff));
+        this.dummy.scale.set(s, s, s);
+      } else {
+        const s = Math.max(1.2, node.size * 0.45 * this.particleScale);
+        this.dummy.scale.set(s, s, s);
+      }
+
+      this.dummy.updateMatrix();
+      mesh.setMatrixAt(i, this.dummy.matrix);
       mesh.setColorAt(i, this.color);
     }
 
@@ -128,6 +146,13 @@ export class NodeCloud {
       positions[i * 3 + 2] = pos[2];
 
       this.resolveColor(n, mode, this.color);
+
+      if (this.gradientContrast) {
+        const deg = n.degree || 1;
+        const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.55);
+        this.color.multiplyScalar(0.45 + 0.55 * falloff);
+      }
+
       colors[i * 3] = this.color.r;
       colors[i * 3 + 1] = this.color.g;
       colors[i * 3 + 2] = this.color.b;

@@ -1,5 +1,7 @@
 import { CorpusMetadata, ViewMode } from '../types.ts';
 
+export type SearchMode = 'symbol' | 'graph' | 'read';
+
 export class HeaderControls {
   private container: HTMLElement;
   public onViewModeChange?: (mode: ViewMode) => void;
@@ -7,9 +9,33 @@ export class HeaderControls {
   public onReload?: () => void;
   public onQuery?: (query: string) => void;
   public onQuerySubmit?: (query: string) => void;
+  public onSearchModeChange?: (mode: SearchMode) => void;
+  public currentSearchMode: SearchMode = 'symbol';
 
   constructor(container: HTMLElement) {
     this.container = container;
+  }
+
+  private getPlaceholder(): string {
+    if (this.currentSearchMode === 'graph') return 'Graph: calls:x, defines:y, edge:t...';
+    if (this.currentSearchMode === 'read') return 'Read: file path or symbol name...';
+    return 'Search symbols, paths, types...';
+  }
+
+  public setSearchQuery(query: string) {
+    const input = this.container.querySelector('#query-input') as HTMLInputElement;
+    if (input) {
+      input.value = query;
+      this.onQuery?.(query);
+    }
+  }
+
+  public setSearchMode(mode: SearchMode) {
+    this.currentSearchMode = mode;
+    const select = this.container.querySelector('#search-mode-select') as HTMLSelectElement;
+    if (select) select.value = mode;
+    const input = this.container.querySelector('#query-input') as HTMLInputElement;
+    if (input) input.placeholder = this.getPlaceholder();
   }
 
   public render(
@@ -52,13 +78,18 @@ export class HeaderControls {
             </button>
           </div>
 
-          <!-- Real Search Bar in Header (No Emojis) -->
+          <!-- Real Search Bar in Header with MCP Mode Selector -->
           <div class="header-search" id="header-search-box">
+            <select id="search-mode-select" class="search-mode-select" title="MCP Search Mode">
+              <option value="symbol" ${this.currentSearchMode === 'symbol' ? 'selected' : ''}>Symbol</option>
+              <option value="graph" ${this.currentSearchMode === 'graph' ? 'selected' : ''}>Graph</option>
+              <option value="read" ${this.currentSearchMode === 'read' ? 'selected' : ''}>Read</option>
+            </select>
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;">
               <circle cx="11" cy="11" r="8"/>
               <line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input type="text" id="query-input" placeholder="Search symbols, paths, types..." class="hud-input"/>
+            <input type="text" id="query-input" placeholder="${this.getPlaceholder()}" class="hud-input"/>
           </div>
         </div>
 
@@ -94,6 +125,15 @@ export class HeaderControls {
     reloadBtn.addEventListener('click', () => {
       this.onReload?.();
     });
+
+    const modeSelect = this.container.querySelector('#search-mode-select') as HTMLSelectElement;
+    if (modeSelect) {
+      modeSelect.addEventListener('change', () => {
+        this.currentSearchMode = modeSelect.value as SearchMode;
+        if (queryInput) queryInput.placeholder = this.getPlaceholder();
+        this.onSearchModeChange?.(this.currentSearchMode);
+      });
+    }
 
     const queryInput = this.container.querySelector('#query-input') as HTMLInputElement;
     if (queryInput) {

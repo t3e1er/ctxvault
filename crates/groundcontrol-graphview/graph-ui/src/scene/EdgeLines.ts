@@ -17,10 +17,16 @@ export class EdgeLines {
   ]);
   private hiddenTypes: Set<string> = new Set();
   private customOpacity: number | null = null;
+  private gradientContrast: boolean = true;
 
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'EdgeLines';
+  }
+
+  public setGradientContrast(enabled: boolean) {
+    this.gradientContrast = enabled;
+    this.rebuildGeometry();
   }
 
   public setOpacity(opacity: number) {
@@ -142,12 +148,13 @@ export class EdgeLines {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    const opacity = this.customOpacity !== null ? this.customOpacity : calcEdgeOpacity(count);
+    const baseOpacity = this.customOpacity !== null ? this.customOpacity : calcEdgeOpacity(count);
+    const opacity = this.gradientContrast ? Math.min(0.35, baseOpacity * 0.8) : baseOpacity;
     const material = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity,
-      blending: THREE.AdditiveBlending,
+      blending: this.gradientContrast ? THREE.NormalBlending : THREE.AdditiveBlending,
       depthWrite: false,
     });
 

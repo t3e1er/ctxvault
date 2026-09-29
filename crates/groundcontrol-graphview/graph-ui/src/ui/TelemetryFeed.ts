@@ -6,10 +6,15 @@ export class TelemetryFeed {
   private activations: AgentActivation[] = [];
   public onActivation?: (act: AgentActivation) => void;
   public onSelectPaths?: (paths: string[]) => void;
+  public onSelectActivation?: (act: AgentActivation) => void;
   private isCollapsed: boolean = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
+  }
+
+  public recordActivation(act: AgentActivation) {
+    this.addActivation(act);
   }
 
   public start() {
@@ -101,8 +106,11 @@ export class TelemetryFeed {
       card.addEventListener('click', () => {
         const idx = Number(card.getAttribute('data-idx'));
         const act = this.activations[idx];
-        if (act && act.paths.length > 0) {
-          this.onSelectPaths?.(act.paths);
+        if (act) {
+          this.onSelectActivation?.(act);
+          if (act.paths && act.paths.length > 0) {
+            this.onSelectPaths?.(act.paths);
+          }
         }
       });
     });

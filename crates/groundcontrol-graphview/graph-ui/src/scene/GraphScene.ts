@@ -60,14 +60,16 @@ export class GraphScene {
     this.controls.dampingFactor = 0.06;
     this.controls.maxDistance = 25000;
     this.controls.minDistance = 20;
+    this.controls.autoRotate = true;
+    this.controls.autoRotateSpeed = 1.0;
 
     // 5. Postprocessing (Bloom)
     const renderScene = new RenderPass(this.scene, this.camera);
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(container.clientWidth, container.clientHeight),
-      0.9,
-      0.4,
-      0.15
+      0.38,
+      0.30,
+      0.48
     );
 
     this.composer = new EffectComposer(this.renderer);
@@ -218,6 +220,15 @@ export class GraphScene {
 
   public setBloomThreshold(val: number) {
     this.bloomPass.threshold = val;
+  }
+
+  public setExposure(val: number) {
+    this.renderer.toneMappingExposure = val;
+  }
+
+  public setGradientContrast(enabled: boolean) {
+    this.nodeCloud.setGradientContrast(enabled);
+    this.edgeLines.setGradientContrast(enabled);
   }
 
   public setEdgeDensity(val: number) {

@@ -17,6 +17,8 @@ pub struct CorpusSnapshot {
     pub name: String,
     /// Absolute path to corpus index directory.
     pub index_dir: PathBuf,
+    /// Absolute path to the original source root directory on disk, if known.
+    pub root_dir: Option<PathBuf>,
     /// Loaded petgraph knowledge graph.
     pub graph: KnowledgeGraph,
     /// Authoritative AST-derived symbol types from meta.db (key -> symbol_type).
@@ -43,14 +45,30 @@ impl CorpusSnapshot {
         let graph = KnowledgeGraph::load(&graph_path)
             .map_err(|e| GraphViewError::GraphLoad(format!("{}: {}", name, e)))?;
 
-        // Extract AST-derived entity classes from SQLite catalog meta.db
+        // Extract AST-derived entity classes and source root from SQLite catalog meta.db
         let mut ast_types = HashMap::new();
+        let mut root_dir = None;
         let meta_path = index_dir.join("meta.db");
         if meta_path.exists() {
             if let Ok(conn) = rusqlite::Connection::open_with_flags(
                 &meta_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             ) {
+                if let Ok(mut stmt) = conn.prepare("SELECT value FROM corpus_config WHERE key = 'corpus_config'") {
+                    if let Ok(mut rows) = stmt.query([]) {
+                        if let Ok(Some(row)) = rows.next() {
+                            if let Ok(val_str) = row.get::<_, String>(0) {
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val_str) {
+                                    if let Some(p) = parsed.get("path").and_then(|v| v.as_str()) {
+                                        let clean = p.trim_start_matches("//?/").trim_start_matches(r"\\?\");
+                                        root_dir = Some(PathBuf::from(clean));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Ok(mut stmt) = conn
                     .prepare("SELECT name, scope_path, file_path, symbol_type FROM code_symbols")
                 {
@@ -124,6 +142,7 @@ impl CorpusSnapshot {
         Ok(Self {
             name: name.to_string(),
             index_dir: index_dir.to_path_buf(),
+            root_dir,
             graph,
             ast_types: Arc::new(ast_types),
             community_map: Arc::new(community_map),

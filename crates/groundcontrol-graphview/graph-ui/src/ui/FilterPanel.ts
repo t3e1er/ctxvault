@@ -10,6 +10,8 @@ export class FilterPanel {
   public onBloomChange?: (val: number) => void;
   public onBloomThresholdChange?: (val: number) => void;
   public onEdgeDensityChange?: (val: number) => void;
+  public onExposureChange?: (val: number) => void;
+  public onGradientContrastToggle?: (enabled: boolean) => void;
   public onClusterDistChange?: (val: number) => void;
   public onNodeDispChange?: (val: number) => void;
   public onAutoOrbitToggle?: (enabled: boolean) => void;
@@ -17,6 +19,10 @@ export class FilterPanel {
 
   private selectedEntity: string = 'all';
   private visualControlsCollapsed: boolean = true;
+  private autoOrbitState: boolean = true;
+  private orbitSpeedState: number = 8;
+  private exposureState: number = 110;
+  private gradientContrastState: boolean = true;
 
   private classStates: Map<EdgeClass, boolean> = new Map([
     [EdgeClass.Structural, true],
@@ -189,6 +195,10 @@ export class FilterPanel {
               <input type="range" id="bloom-threshold-slider" min="10" max="95" value="48" title="Cutoff luminance for glow (higher = less blowout)">
             </div>
             <div class="slider-row">
+              <span>Brightness</span>
+              <input type="range" id="exposure-slider" min="30" max="220" value="${this.exposureState}" title="Scene exposure/brightness level">
+            </div>
+            <div class="slider-row">
               <span>Edge Density</span>
               <input type="range" id="edge-slider" min="0" max="100" value="70">
             </div>
@@ -201,11 +211,17 @@ export class FilterPanel {
               <input type="range" id="node-disp-slider" min="1" max="30" value="10" title="Adjust local dispersion of nodes">
             </div>
             <div class="slider-row" style="padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Attenuates dense clusters and boosts sparse nodes">
+                <input type="checkbox" id="gradient-contrast-toggle" ${this.gradientContrastState ? 'checked' : ''} style="accent-color: var(--neon-purple);">
+                <span>Gradient Contrast</span>
+              </label>
+            </div>
+            <div class="slider-row">
               <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                <input type="checkbox" id="auto-orbit-toggle" checked style="accent-color: var(--neon-blue);">
+                <input type="checkbox" id="auto-orbit-toggle" ${this.autoOrbitState ? 'checked' : ''} style="accent-color: var(--neon-blue);">
                 <span>Auto Orbit</span>
               </label>
-              <input type="range" id="orbit-speed-slider" min="1" max="30" value="8" style="width: 75px;">
+              <input type="range" id="orbit-speed-slider" min="1" max="30" value="${this.orbitSpeedState}" style="width: 75px;">
             </div>
           </div>
         </div>
@@ -271,6 +287,12 @@ export class FilterPanel {
       this.onBloomThresholdChange?.(parseFloat(bloomThresholdSlider.value) / 100.0);
     });
 
+    const exposureSlider = this.container.querySelector('#exposure-slider') as HTMLInputElement;
+    exposureSlider?.addEventListener('input', () => {
+      this.exposureState = parseFloat(exposureSlider.value);
+      this.onExposureChange?.(this.exposureState / 100.0);
+    });
+
     const edgeSlider = this.container.querySelector('#edge-slider') as HTMLInputElement;
     edgeSlider?.addEventListener('input', () => {
       this.onEdgeDensityChange?.(parseFloat(edgeSlider.value));
@@ -286,14 +308,22 @@ export class FilterPanel {
       this.onNodeDispChange?.(parseFloat(nodeDispSlider.value));
     });
 
+    const gradToggle = this.container.querySelector('#gradient-contrast-toggle') as HTMLInputElement;
+    gradToggle?.addEventListener('change', () => {
+      this.gradientContrastState = gradToggle.checked;
+      this.onGradientContrastToggle?.(gradToggle.checked);
+    });
+
     const orbitToggle = this.container.querySelector('#auto-orbit-toggle') as HTMLInputElement;
     orbitToggle?.addEventListener('change', () => {
+      this.autoOrbitState = orbitToggle.checked;
       this.onAutoOrbitToggle?.(orbitToggle.checked);
     });
 
     const orbitSpeedSlider = this.container.querySelector('#orbit-speed-slider') as HTMLInputElement;
     orbitSpeedSlider?.addEventListener('input', () => {
-      this.onOrbitSpeedChange?.(parseFloat(orbitSpeedSlider.value));
+      this.orbitSpeedState = parseFloat(orbitSpeedSlider.value);
+      this.onOrbitSpeedChange?.(this.orbitSpeedState);
     });
   }
 }

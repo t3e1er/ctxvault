@@ -4,9 +4,17 @@ import { hexToCss } from '../lib/colors.ts';
 export class Inspector {
   private container: HTMLElement;
   public onFocusEgo?: (node: NodeData) => void;
+  public onReadSource?: (node: NodeData) => void;
 
   constructor(container: HTMLElement) {
     this.container = container;
+  }
+
+  public showSourceCode(content: string, filePath?: string, startLine?: number) {
+    const viewer = this.container.querySelector('#inspector-code-viewer') as HTMLElement;
+    if (!viewer) return;
+    viewer.style.display = 'block';
+    viewer.textContent = (filePath ? `// ${filePath}${startLine ? `:${startLine}` : ''}\n\n` : '') + content;
   }
 
   public showNode(node: NodeData | null) {
@@ -47,6 +55,15 @@ export class Inspector {
         </div>
 
         <div class="inspector-actions">
+          <button class="hud-action-btn" id="read-source-btn" title="Read source code or definition" style="display: flex; align-items: center; gap: 6px;">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+            <span>Read Source</span>
+          </button>
           <button class="hud-action-btn" id="focus-ego-btn" title="Focus 2-hop ego subgraph" style="display: flex; align-items: center; gap: 6px;">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"/>
@@ -61,6 +78,7 @@ export class Inspector {
             </svg>
           </button>
         </div>
+        <div id="inspector-code-viewer" class="inspector-code-viewer" style="display: none; width: 100%; margin-top: 10px; max-height: 220px; overflow: auto; background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; white-space: pre; color: #e2e8f0;"></div>
       </div>
     `;
 
@@ -72,6 +90,11 @@ export class Inspector {
     const egoBtn = this.container.querySelector('#focus-ego-btn') as HTMLButtonElement;
     egoBtn?.addEventListener('click', () => {
       this.onFocusEgo?.(node);
+    });
+
+    const readBtn = this.container.querySelector('#read-source-btn') as HTMLButtonElement;
+    readBtn?.addEventListener('click', () => {
+      this.onReadSource?.(node);
     });
   }
 }
