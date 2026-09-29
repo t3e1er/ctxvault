@@ -6,6 +6,7 @@
 //! - Edges:        16 bytes per edge (extended from 12B)
 //! - String Table: Length-prefixed UTF-8 strings
 //!
+//! ```text
 //! Edge record layout (16 bytes):
 //!   [0..4]   source        u32 LE
 //!   [4..8]   target        u32 LE
@@ -14,6 +15,7 @@
 //!   [12]     edge_class    u8      (0=Structural,1=Semantic,2=Code,3=CrossModal,4=Hybrid)
 //!   [13]     confidence    u8      (0=None,1=High,2=Medium,3=Speculative)
 //!   [14..16] padding               (reserved, zero)
+//! ```
 
 use std::collections::HashMap;
 
