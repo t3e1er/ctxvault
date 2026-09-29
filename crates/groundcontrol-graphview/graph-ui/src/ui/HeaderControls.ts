@@ -10,6 +10,7 @@ export class HeaderControls {
   public onQuery?: (query: string) => void;
   public onQuerySubmit?: (query: string) => void;
   public onSearchModeChange?: (mode: SearchMode) => void;
+  public onUnfocus?: () => void;
   public currentSearchMode: SearchMode = 'symbol';
 
   constructor(container: HTMLElement) {
@@ -76,6 +77,19 @@ export class HeaderControls {
                 <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
               </svg>
             </button>
+            ${
+              activeCorpus === 'ego'
+                ? `
+              <button id="header-unfocus-btn" class="hud-action-btn active" title="Exit ego subgraph and return to full graph" style="display: flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 11px; background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.45); color: #f87171;">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 14 4 9 9 4"></polyline>
+                  <path d="M20 20v-7a4 4 0 0 0-4-4H4"></path>
+                </svg>
+                <span>Unfocus</span>
+              </button>
+            `
+                : ''
+            }
           </div>
 
           <!-- Real Search Bar in Header with MCP Mode Selector -->
@@ -122,8 +136,13 @@ export class HeaderControls {
     });
 
     const reloadBtn = this.container.querySelector('#reload-btn') as HTMLButtonElement;
-    reloadBtn.addEventListener('click', () => {
+    reloadBtn?.addEventListener('click', () => {
       this.onReload?.();
+    });
+
+    const unfocusBtn = this.container.querySelector('#header-unfocus-btn') as HTMLButtonElement;
+    unfocusBtn?.addEventListener('click', () => {
+      this.onUnfocus?.();
     });
 
     const modeSelect = this.container.querySelector('#search-mode-select') as HTMLSelectElement;

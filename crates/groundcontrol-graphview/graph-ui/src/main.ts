@@ -15,6 +15,8 @@ class GraphViewApp {
 
   private corpora: CorpusMetadata[] = [];
   private activeCorpus = 'all';
+  private previousCorpus = 'all';
+  private isEgoFocused = false;
   private currentViewMode: ViewMode = 'entity';
   private currentSearchMode: SearchMode = 'symbol';
   private currentPayload: GraphPayload | null = null;
@@ -54,6 +56,10 @@ class GraphViewApp {
       } catch (err) {
         console.error('Failed to reload corpus:', err);
       }
+    };
+
+    this.header.onUnfocus = () => {
+      this.unfocusGraph();
     };
 
     this.header.onQuery = (query) => {
@@ -132,12 +138,31 @@ class GraphViewApp {
 
     // 3. Scene Interaction
     this.scene.onNodeClick = (node: NodeData) => {
-      this.inspector.showNode(node);
+      this.inspector.showNode(node, this.isEgoFocused);
       this.scene.flyTo(node.position, 200);
+    };
+
+    this.scene.onBackgroundClick = () => {
+      if (this.isEgoFocused) {
+        this.unfocusGraph();
+      } else {
+        this.scene.nodeCloud.setSelectedId(null);
+        this.inspector.showNode(null);
+      }
     };
 
     this.inspector.onFocusEgo = (node: NodeData) => {
       this.loadEgoSubgraph(node.path);
+    };
+
+    this.inspector.onUnfocus = () => {
+      this.unfocusGraph();
+    };
+
+    this.inspector.onClose = () => {
+      if (this.isEgoFocused) {
+        this.unfocusGraph();
+      }
     };
 
     this.inspector.onReadSource = (node: NodeData) => {
@@ -344,7 +369,10 @@ class GraphViewApp {
   private async readNodeSource(path: string) {
     try {
       this.showLoading(`Reading ${path}...`);
-      const corpusScope = this.activeCorpus === 'all' || this.activeCorpus === 'overview' ? '' : this.activeCorpus;
+      const corpusScope =
+        this.activeCorpus === 'all' || this.activeCorpus === 'overview' || this.activeCorpus === 'ego'
+          ? ''
+          : this.activeCorpus;
       const url = `/api/graph/read?path=${encodeURIComponent(path)}&corpus=${encodeURIComponent(corpusScope)}`;
       const res = await fetch(url);
       this.hideLoading();
@@ -353,7 +381,7 @@ class GraphViewApp {
         return;
       }
       const data = await res.json();
-      this.inspector.showSourceCode(data.content, data.file_path, data.start_line);
+      this.inspector.showSourceCode(data.content, data.file_path, data.start_line, data.language);
     } catch (err) {
       this.hideLoading();
       console.error('Error reading node source:', err);
@@ -406,7 +434,18 @@ class GraphViewApp {
     }
   }
 
+  private async unfocusGraph() {
+    this.isEgoFocused = false;
+    this.activeCorpus = this.previousCorpus === 'ego' ? 'all' : this.previousCorpus;
+    this.inspector.showNode(null);
+    this.scene.nodeCloud.setSelectedId(null);
+    await this.loadGraph();
+  }
+
   private async loadGraph() {
+    if (this.activeCorpus !== 'ego') {
+      this.isEgoFocused = false;
+    }
     const targetLabel = this.activeCorpus === 'all' ? 'All Corpora' : this.activeCorpus;
     this.showLoading(`Loading ${targetLabel}...`);
 
@@ -446,6 +485,10 @@ class GraphViewApp {
   }
 
   private async loadEgoSubgraph(centerPath: string) {
+    if (this.activeCorpus !== 'ego') {
+      this.previousCorpus = this.activeCorpus;
+    }
+    this.isEgoFocused = true;
     this.showLoading(`Extracting ego subgraph for ${centerPath}...`);
     try {
       const url = `/api/graph/subgraph?center=${encodeURIComponent(centerPath)}&hops=2&budget=120&cluster_mode=community`;
@@ -465,6 +508,15 @@ class GraphViewApp {
       this.header.render(this.corpora, 'ego', this.currentViewMode, payload.nodes.length, payload.edges.length);
       this.filterPanel.render(payload.nodes, payload.edges);
       this.hideLoading();
+
+      // Find center node in ego subgraph, select it and show in inspector with isEgoFocused = true
+      const normCenter = centerPath.replace(/\\/g, '/');
+      const centerNode = payload.nodes.find((n) => n.path.replace(/\\/g, '/') === normCenter);
+      if (centerNode) {
+        this.scene.nodeCloud.setSelectedId(centerNode.id);
+        this.inspector.showNode(centerNode, true);
+        this.scene.flyTo(centerNode.position, 220);
+      }
     } catch (err) {
       console.error('Error loading ego subgraph:', err);
       this.hideLoading();

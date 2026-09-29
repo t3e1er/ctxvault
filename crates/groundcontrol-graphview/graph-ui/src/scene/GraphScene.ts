@@ -32,6 +32,7 @@ export class GraphScene {
 
   public onNodeHover?: (node: NodeData | null) => void;
   public onNodeClick?: (node: NodeData) => void;
+  public onBackgroundClick?: () => void;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -276,6 +277,8 @@ export class GraphScene {
     if (hit) {
       this.nodeCloud.setSelectedId(hit.id);
       this.onNodeClick?.(hit);
+    } else {
+      this.onBackgroundClick?.();
     }
   };
 
