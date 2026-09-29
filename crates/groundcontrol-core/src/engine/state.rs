@@ -159,15 +159,27 @@ impl Engine {
         self.dense.as_ref()
     }
 
-    /// Broadcast a parsed artifact to all registered algorithms.
-    pub fn broadcast_artifact(&mut self, artifact: &ParsedArtifact) -> Result<()> {
+    /// Broadcast a parsed artifact to all registered algorithms using precomputed binary fingerprints.
+    pub fn broadcast_artifact_with_fingerprints(
+        &mut self,
+        artifact: &ParsedArtifact,
+        fingerprints: &[crate::algorithm::binaryv3::FingerprintV3Record],
+    ) -> Result<()> {
         self.bm25.index_document(artifact)?;
-        self.binary.index_document(artifact)?;
+        if !fingerprints.is_empty() {
+            self.binary.index_mut().index_fingerprints(fingerprints)?;
+        }
         self.graph.index_document(artifact)?;
         if let Some(ref mut dense) = self.dense {
             dense.index_document(artifact)?;
         }
         Ok(())
+    }
+
+    /// Broadcast a parsed artifact to all registered algorithms.
+    pub fn broadcast_artifact(&mut self, artifact: &ParsedArtifact) -> Result<()> {
+        let fps = self.binary.projector().project_artifact(artifact);
+        self.broadcast_artifact_with_fingerprints(artifact, &fps)
     }
 
     /// Remove a document path from all registered algorithms.

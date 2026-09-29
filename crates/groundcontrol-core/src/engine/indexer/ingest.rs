@@ -180,6 +180,18 @@ impl Engine {
         tag_configs: &[groundcontrol_common::config::EdgeTypeConfig],
         all_docs: &mut Vec<Document>,
     ) -> Result<()> {
+        let fps = self.binary.projector().project_artifact(&record);
+        self.ingest_parsed_record_with_fingerprints(record, &fps, tag_configs, all_docs)
+    }
+
+    /// Ingest a single parsed file record with precomputed binary fingerprints.
+    pub(crate) fn ingest_parsed_record_with_fingerprints(
+        &mut self,
+        record: ParsedArtifact,
+        fingerprints: &[crate::algorithm::binaryv3::FingerprintV3Record],
+        tag_configs: &[groundcontrol_common::config::EdgeTypeConfig],
+        all_docs: &mut Vec<Document>,
+    ) -> Result<()> {
         let path = &record.path;
         let modified_at = now_unix();
 
@@ -229,8 +241,8 @@ impl Engine {
             }
         }
 
-        // 3. Broadcast to all retrieval algorithms
-        self.broadcast_artifact(&record)?;
+        // 3. Broadcast to all retrieval algorithms with precomputed fingerprints
+        self.broadcast_artifact_with_fingerprints(&record, fingerprints)?;
 
         // 4. Document edge rules & Tag edge accumulation
         if let Some(mut doc) = record.doc_metadata {

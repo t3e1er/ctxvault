@@ -105,6 +105,22 @@ impl Store {
         Ok(())
     }
 
+    /// Toggle SQLite bulk ingestion mode.
+    ///
+    /// When enabled, disables foreign key constraint checking and relaxes synchronous disk flushing.
+    /// When disabled, restores `foreign_keys = ON` and `synchronous = NORMAL`.
+    pub fn set_bulk_mode(&self, enabled: bool) -> Result<()> {
+        let conn = self.conn();
+        if enabled {
+            conn.execute_batch("PRAGMA foreign_keys = OFF; PRAGMA synchronous = OFF;")
+                .map_err(|e| Error::Database(e.to_string()))?;
+        } else {
+            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")
+                .map_err(|e| Error::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Begin an intermediate batch transaction boundary if not already within a transaction.
     pub fn begin_batch(&self) -> Result<()> {
         let conn = self.conn();

@@ -70,16 +70,14 @@ impl CodeGraphExtractor {
     }
 
     /// Extract all structural edges (defines, imports, calls, implements) for a single code file
-    /// using a pre-computed symbol index, alongside any unresolved external references.
-    ///
-    /// The returned [`CodeExtraction::edges`] is byte-for-byte identical to the edge set
-    /// this extractor produced before external-reference capture was added; external references
-    /// are surfaced only via the separate [`CodeExtraction::external_refs`] channel.
-    pub fn extract_edges_for_file_with_index(
+    /// given an already-parsed Tree-sitter tree, reusing the AST in a single pass.
+    pub fn extract_edges_from_tree(
         file_path: &Path,
         content: &str,
         file_symbols: &[CodeSymbol],
         symbol_index: &HashMap<String, Vec<&CodeSymbol>>,
+        lang: crate::parser::code::languages::SupportedLanguage,
+        tree: &tree_sitter::Tree,
     ) -> CodeExtraction {
         let mut edges = Vec::new();
         let file_path_str = file_path.to_string_lossy().replace('\\', "/");
@@ -101,23 +99,6 @@ impl CodeGraphExtractor {
         }
 
         // 2. Parse AST for imports and call sites
-        if content.len() > crate::parser::code::chunker::CodeChunker::MAX_CODE_FILE_SIZE_BYTES {
-            return CodeExtraction { edges, external_refs: Vec::new() };
-        }
-
-        let Some(lang) = detect_language(file_path) else {
-            return CodeExtraction { edges, external_refs: Vec::new() };
-        };
-
-        let mut parser = Parser::new();
-        if parser.set_language(&lang.tree_sitter_language()).is_err() {
-            return CodeExtraction { edges, external_refs: Vec::new() };
-        }
-
-        let Some(tree) = parser.parse(content, None) else {
-            return CodeExtraction { edges, external_refs: Vec::new() };
-        };
-
         let mut visitor =
             CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, symbol_index);
         if let Some(query) = crate::parser::code::query::get_language_query(lang) {
@@ -130,9 +111,6 @@ impl CodeGraphExtractor {
 
         let mut external_refs = visitor.external_refs;
         let mut seen_imports = HashSet::new();
-        // Import edges always target an out-of-corpus module path (they never resolve to an
-        // in-corpus symbol), so each is an external reference. Derive them from the produced
-        // edges so the edge Vec itself is left untouched.
         for e in &visitor.edges {
             if e.provenance == EdgeProvenance::CodeImports
                 && seen_imports.insert((e.source.clone(), e.target.clone()))
@@ -148,6 +126,38 @@ impl CodeGraphExtractor {
 
         edges.extend(visitor.edges);
         CodeExtraction { edges, external_refs }
+    }
+
+    /// Extract all structural edges (defines, imports, calls, implements) for a single code file
+    /// using a pre-computed symbol index, alongside any unresolved external references.
+    ///
+    /// The returned [`CodeExtraction::edges`] is byte-for-byte identical to the edge set
+    /// this extractor produced before external-reference capture was added; external references
+    /// are surfaced only via the separate [`CodeExtraction::external_refs`] channel.
+    pub fn extract_edges_for_file_with_index(
+        file_path: &Path,
+        content: &str,
+        file_symbols: &[CodeSymbol],
+        symbol_index: &HashMap<String, Vec<&CodeSymbol>>,
+    ) -> CodeExtraction {
+        if content.len() > crate::parser::code::chunker::CodeChunker::MAX_CODE_FILE_SIZE_BYTES {
+            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+        }
+
+        let Some(lang) = detect_language(file_path) else {
+            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+        };
+
+        let mut parser = Parser::new();
+        if parser.set_language(&lang.tree_sitter_language()).is_err() {
+            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+        }
+
+        let Some(tree) = parser.parse(content, None) else {
+            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+        };
+
+        Self::extract_edges_from_tree(file_path, content, file_symbols, symbol_index, lang, &tree)
     }
 
     /// Extract all structural edges (defines, imports, calls, implements) for a single code file.

@@ -7,7 +7,9 @@
 use std::path::Path;
 
 use groundcontrol_common::config::ChunkingConfig;
-use groundcontrol_common::types::{Chunk, ChunkEmbedPolicy, CodeSymbol, CodeSymbolType};
+use groundcontrol_common::types::{
+    Chunk, ChunkEmbedPolicy, CodeSymbol, CodeSymbolType, Edge, ExternalRef,
+};
 use tree_sitter::{Node, Parser};
 
 use super::grammar::{AstGrammarExtractor, ExtractedGrammarSemantics, GenericAstGrammarExtractor};
@@ -22,6 +24,21 @@ pub struct CodeParseResult {
     pub symbols: Vec<CodeSymbol>,
     /// Extracted AST grammar semantics for each symbol.
     pub grammar_semantics: Vec<ExtractedGrammarSemantics>,
+}
+
+/// Unified result of single-pass code parsing: chunks, symbols, semantics, edges, and external refs.
+#[derive(Debug, Clone)]
+pub struct CodeParseAndExtractResult {
+    /// Extracted syntactic code chunks.
+    pub chunks: Vec<Chunk>,
+    /// Extracted code symbol definitions.
+    pub symbols: Vec<CodeSymbol>,
+    /// Extracted AST grammar semantics for each symbol.
+    pub grammar_semantics: Vec<ExtractedGrammarSemantics>,
+    /// Intra-file structural edges (defines, local calls, local imports).
+    pub edges: Vec<Edge>,
+    /// Unresolved call and import targets captured for cross-corpus or cross-file resolution.
+    pub external_refs: Vec<ExternalRef>,
 }
 
 /// AST-aware code chunker.
@@ -74,6 +91,66 @@ impl CodeChunker {
             chunks: extractor.chunks,
             symbols: extractor.symbols,
             grammar_semantics: extractor.grammar_semantics,
+        })
+    }
+
+    /// Parse, chunk, and extract structural code edges in a single unified Tree-sitter AST pass.
+    pub fn parse_and_extract(
+        file_path: &Path,
+        content: &str,
+        config: &ChunkingConfig,
+    ) -> Option<CodeParseAndExtractResult> {
+        if content.len() > Self::MAX_CODE_FILE_SIZE_BYTES {
+            tracing::info!(
+                "Skipping Tree-sitter AST parsing for oversized file {} ({} bytes > {} max)",
+                file_path.display(),
+                content.len(),
+                Self::MAX_CODE_FILE_SIZE_BYTES
+            );
+            return None;
+        }
+
+        let lang = detect_language(file_path)?;
+        let mut parser = Parser::new();
+        if let Err(e) = parser.set_language(&lang.tree_sitter_language()) {
+            tracing::warn!("Failed to set language for {}: {:?}", file_path.display(), e);
+            return None;
+        }
+
+        let Some(tree) = parser.parse(content, None) else {
+            tracing::warn!("Failed to parse content for {}", file_path.display());
+            return None;
+        };
+
+        // 1. Chunks, symbol definitions, and grammar semantics
+        let max_chars = config.max_tokens.max(256) * 4;
+        let mut extractor = AstExtractor::new(
+            file_path.to_string_lossy().to_string(),
+            content,
+            lang,
+            max_chars,
+            tree.root_node(),
+        );
+        extractor.traverse(tree.root_node());
+
+        // 2. Intra-file structural edges from the exact same parsed Tree
+        let symbol_index =
+            crate::graph::code::CodeGraphExtractor::build_symbol_index(&extractor.symbols);
+        let extraction = crate::graph::code::CodeGraphExtractor::extract_edges_from_tree(
+            file_path,
+            content,
+            &extractor.symbols,
+            &symbol_index,
+            lang,
+            &tree,
+        );
+
+        Some(CodeParseAndExtractResult {
+            chunks: extractor.chunks,
+            symbols: extractor.symbols,
+            grammar_semantics: extractor.grammar_semantics,
+            edges: extraction.edges,
+            external_refs: extraction.external_refs,
         })
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use tracing::{info, warn};
+use tracing::info;
 
 use groundcontrol_common::types::{Document, IndexingStatus};
 use groundcontrol_common::{Error, Result};
@@ -88,58 +88,102 @@ impl Engine {
     }
 
     /// Second-pass cross-file AST call graph resolution.
+    ///
+    /// Resolves unresolved external call references in memory against the complete
+    /// workspace symbol catalog with zero redundant disk I/O and zero re-parsing.
     pub fn resolve_cross_file_code_edges(&mut self) -> Result<usize> {
         let all_symbols = self.store.get_all_code_symbols()?;
-        if all_symbols.is_empty() {
+        if all_symbols.is_empty() || self.external_refs.is_empty() {
             return Ok(0);
         }
 
         let symbol_index = crate::graph::code::CodeGraphExtractor::build_symbol_index(&all_symbols);
-        let mut symbols_by_file: HashMap<String, Vec<groundcontrol_common::types::CodeSymbol>> =
-            HashMap::new();
-        for sym in &all_symbols {
-            symbols_by_file.entry(sym.file_path.clone()).or_default().push(sym.clone());
-        }
-
-        let corpus_path = PathBuf::from(&self.config.path);
-        let files = self.store.list_files()?;
+        let pending_refs = std::mem::take(&mut self.external_refs);
+        let mut remaining_refs = Vec::with_capacity(pending_refs.len());
         let mut edges_added = 0usize;
+        let mut visited_calls = std::collections::HashSet::new();
 
-        for f in &files {
-            let rel_p = Path::new(&f.path);
-            if !crate::parser::code::is_code_file(rel_p) {
-                continue;
-            }
+        for ext_ref in pending_refs {
+            if ext_ref.kind == groundcontrol_common::types::ExternalRefKind::Call {
+                let clean_name =
+                    ext_ref.raw_target.rsplit("::").next().unwrap_or(&ext_ref.raw_target);
+                let clean_name = clean_name.rsplit('.').next().unwrap_or(clean_name);
 
-            let full_path = corpus_path.join(&f.path);
-            let content = match Self::read_file_lossy(&full_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to read code file {}: {}", f.path, e);
-                    continue;
+                let caller_file = ext_ref.caller_scope_path.split('#').next().unwrap_or("");
+                let caller_dir = Path::new(caller_file).parent().unwrap_or_else(|| Path::new(""));
+
+                if let Some(candidates) = symbol_index.get(clean_name) {
+                    let cross_candidates: Vec<&&groundcontrol_common::types::CodeSymbol> =
+                        candidates.iter().filter(|s| s.file_path != caller_file).collect();
+
+                    if !cross_candidates.is_empty() {
+                        let (target_sym, confidence) = if cross_candidates.len() == 1 {
+                            (
+                                *cross_candidates[0],
+                                groundcontrol_common::types::ResolutionConfidence::High,
+                            )
+                        } else if let Some(dir_match) = cross_candidates.iter().find(|c| {
+                            Path::new(&c.file_path).parent().unwrap_or_else(|| Path::new(""))
+                                == caller_dir
+                        }) {
+                            (**dir_match, groundcontrol_common::types::ResolutionConfidence::Medium)
+                        } else {
+                            (
+                                *cross_candidates[0],
+                                groundcontrol_common::types::ResolutionConfidence::Speculative,
+                            )
+                        };
+
+                        let call_key =
+                            (ext_ref.caller_scope_path.clone(), target_sym.scope_path.clone());
+                        if visited_calls.insert(call_key) {
+                            let is_test = ext_ref.caller_scope_path.to_lowercase().contains("test")
+                                || ext_ref.caller_scope_path.to_lowercase().contains("spec");
+
+                            self.graph.add_code_edge(&groundcontrol_common::types::Edge {
+                                source: ext_ref.caller_scope_path.clone(),
+                                target: target_sym.scope_path.clone(),
+                                edge_type: "calls".to_string(),
+                                weight: 0.8,
+                                provenance: groundcontrol_common::types::EdgeProvenance::CodeCalls,
+                                target_corpus: None,
+                                confidence: Some(confidence),
+                                target_path: None,
+                                target_symbol: None,
+                                target_kind: None,
+                            });
+                            edges_added += 1;
+
+                            if is_test {
+                                self.graph.add_code_edge(&groundcontrol_common::types::Edge {
+                                    source: ext_ref.caller_scope_path.clone(),
+                                    target: target_sym.scope_path.clone(),
+                                    edge_type: "tests".to_string(),
+                                    weight: 0.9,
+                                    provenance:
+                                        groundcontrol_common::types::EdgeProvenance::CodeTests,
+                                    target_corpus: None,
+                                    confidence: Some(confidence),
+                                    target_path: None,
+                                    target_symbol: None,
+                                    target_kind: None,
+                                });
+                                edges_added += 1;
+                            }
+                        }
+                        continue;
+                    }
                 }
-            };
-
-            let file_symbols = symbols_by_file.get(&f.path).map(|v| v.as_slice()).unwrap_or(&[]);
-            let extraction =
-                crate::graph::code::CodeGraphExtractor::extract_edges_for_file_with_index(
-                    rel_p,
-                    &content,
-                    file_symbols,
-                    &symbol_index,
-                );
-
-            for edge in &extraction.edges {
-                self.graph.add_code_edge(edge);
-                edges_added += 1;
             }
 
-            if !extraction.external_refs.is_empty() {
-                self.external_refs.extend(extraction.external_refs);
-            }
+            remaining_refs.push(ext_ref);
         }
 
-        info!("Cross-file code call resolution complete: {} edges added/updated", edges_added);
+        self.external_refs = remaining_refs;
+        info!(
+            "In-memory cross-file code call resolution complete: {} edges added/updated",
+            edges_added
+        );
         Ok(edges_added)
     }
 

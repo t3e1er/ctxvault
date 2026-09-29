@@ -101,61 +101,7 @@ impl RetrievalAlgorithm for BinaryV3Algorithm {
     }
 
     fn index_document(&mut self, doc: &ParsedArtifact) -> Result<()> {
-        let mut fps = Vec::new();
-        let modality = if doc.is_code { Modality::Code } else { Modality::Docs };
-
-        // 1. File-level fingerprint
-        if let Some(ref content) = doc.raw_content {
-            let fp = self.index.projector().project_document(&doc.path, content);
-            let flags = EntityPriorFlags::from_path(&doc.path);
-            fps.push(FingerprintV3Record {
-                id: doc.path.clone(),
-                fingerprint: fp,
-                modality,
-                flags,
-            });
-        }
-
-        // 2. Symbols or chunks
-        if doc.is_code {
-            for sym in &doc.symbols {
-                let fp = self.index.projector().project_symbol(sym, &doc.path);
-                let flags = EntityPriorFlags::from_symbol(sym, &doc.path);
-                fps.push(FingerprintV3Record {
-                    id: format!("{}#{}", doc.path, sym.scope_path),
-                    fingerprint: fp,
-                    modality: Modality::Code,
-                    flags,
-                });
-            }
-
-            for chunk in &doc.chunks {
-                let fp = self.index.projector().project_chunk(&doc.path, &chunk.text);
-                let flags = EntityPriorFlags::from_chunk(&doc.path);
-                fps.push(FingerprintV3Record {
-                    id: format!("{}:chunk:{}", doc.path, chunk.chunk_index),
-                    fingerprint: fp,
-                    modality: Modality::Code,
-                    flags,
-                });
-            }
-        } else {
-            for chunk in &doc.chunks {
-                let fp = self.index.projector().project_chunk(&doc.path, &chunk.text);
-                let flags = EntityPriorFlags::from_chunk(&doc.path);
-                fps.push(FingerprintV3Record {
-                    id: if chunk.chunk_index == 0 {
-                        doc.path.clone()
-                    } else {
-                        format!("{}:chunk:{}", doc.path, chunk.chunk_index)
-                    },
-                    fingerprint: fp,
-                    modality: Modality::Docs,
-                    flags,
-                });
-            }
-        }
-
+        let fps = self.index.projector().project_artifact(doc);
         if !fps.is_empty() {
             self.index.index_fingerprints(&fps)?;
         }
