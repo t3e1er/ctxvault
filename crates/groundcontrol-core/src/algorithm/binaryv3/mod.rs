@@ -46,6 +46,11 @@ impl BinaryV3Algorithm {
         }
     }
 
+    /// Create a new binaryv3 algorithm with an existing index and index path.
+    pub fn with_index(index: BinaryV3SearchIndex, index_path: Option<PathBuf>) -> Self {
+        Self { index, config: BinaryV3Config::default(), index_path }
+    }
+
     /// Access the underlying `BinaryV3SearchIndex`.
     pub fn index(&self) -> &BinaryV3SearchIndex {
         &self.index

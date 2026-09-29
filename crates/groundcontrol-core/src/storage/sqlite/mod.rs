@@ -61,6 +61,50 @@ impl Store {
         Ok(())
     }
 
+    /// Non-blocking passive checkpoint of the SQLite WAL journal.
+    pub fn checkpoint_passive(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Drop secondary indices on code symbols and chunks for fast sequential bulk loading.
+    pub fn drop_bulk_indices(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch(
+            r#"
+            DROP INDEX IF EXISTS idx_code_symbols_name;
+            DROP INDEX IF EXISTS idx_code_symbols_file;
+            DROP INDEX IF EXISTS idx_code_symbols_scope;
+            DROP INDEX IF EXISTS idx_code_symbols_file_covering;
+            DROP INDEX IF EXISTS idx_code_symbols_canonical;
+            DROP INDEX IF EXISTS idx_chunks_file_chunk;
+            DROP INDEX IF EXISTS idx_chunks_file_covering;
+            "#,
+        )
+        .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Recreate secondary indices on code symbols and chunks after bulk loading.
+    pub fn recreate_bulk_indices(&self) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_chunks_file_chunk ON chunks(file_path, chunk_index);
+            CREATE INDEX IF NOT EXISTS idx_chunks_file_covering ON chunks(file_path, chunk_index, start_line, end_line, start_byte, end_byte);
+            CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name);
+            CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(file_path);
+            CREATE INDEX IF NOT EXISTS idx_code_symbols_scope ON code_symbols(scope_path);
+            CREATE INDEX IF NOT EXISTS idx_code_symbols_file_covering ON code_symbols(file_path, scope_path, symbol_type, start_line, end_line);
+            CREATE INDEX IF NOT EXISTS idx_code_symbols_canonical ON code_symbols(canonical_name);
+            "#,
+        )
+        .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Begin an intermediate batch transaction boundary if not already within a transaction.
     pub fn begin_batch(&self) -> Result<()> {
         let conn = self.conn();
