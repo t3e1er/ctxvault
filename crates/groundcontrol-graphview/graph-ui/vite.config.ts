@@ -13,7 +13,11 @@ export default defineConfig({
         const indexPath = path.join(outDir, 'index.html');
         const targetPath = path.join(outDir, 'embedded_dashboard.html');
         if (fs.existsSync(indexPath)) {
-          fs.copyFileSync(indexPath, targetPath);
+          let html = fs.readFileSync(indexPath, 'utf8');
+          // Normalize to LF line endings so the generated single-file bundle
+          // is strictly byte-deterministic across Windows, macOS, and Linux CI.
+          html = html.replace(/\r\n/g, '\n');
+          fs.writeFileSync(targetPath, html, 'utf8');
           fs.unlinkSync(indexPath);
           console.log(`[vite] Bundled single-file UI into ${targetPath}`);
         }
