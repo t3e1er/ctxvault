@@ -8,7 +8,7 @@ default: check
 # ── Quality ──────────────────────────────────────────
 
 # Run all quality checks (what CI runs)
-ci: fmt-check clippy test deny docs
+ci: check-ui fmt-check clippy test deny docs
 
 # Type-check without building (fast feedback)
 check:
@@ -122,6 +122,10 @@ graphview *ARGS:
 # Commit the generated embedded_dashboard.html to git so pure Rust builds need no Node.js
 build-ui:
     cd crates/groundcontrol-graphview/graph-ui && npm run build
+
+# Type-check and build the 3D GraphView singlefile bundle
+check-ui:
+    cd crates/groundcontrol-graphview/graph-ui && npx tsc --noEmit && npm run build
 
 # ── Groundtruth Benchmarking & Regression ────────────
 
