@@ -115,12 +115,37 @@ export class GraphScene {
 
     // Position floating labels at the exact space center (center of sphere), not density centroid
     if (payload.corpus === 'all' || payload.corpus === 'overview') {
-      this.corpusLabels.setCorpora(corporaMeta);
+      const activeMeta = corporaMeta && corporaMeta.length > 0 ? [...corporaMeta] : [];
+      if (activeMeta.length === 0) {
+        const corpusNames = Array.from(new Set(payload.nodes.map((n) => n.corpus || 'default')));
+        for (const cName of corpusNames) {
+          activeMeta.push({ name: cName, nodes: 0, edges: 0, graph_mtime: 0 });
+        }
+      }
+      for (const meta of activeMeta) {
+        if (!meta.center) {
+          const cNodes = payload.nodes.filter((n) => n.corpus === meta.name);
+          if (cNodes.length > 0) {
+            let cx = 0, cy = 0, cz = 0;
+            for (const cn of cNodes) {
+              cx += cn.position[0];
+              cy += cn.position[1];
+              cz += cn.position[2];
+            }
+            meta.center = [cx / cNodes.length, cy / cNodes.length, cz / cNodes.length];
+            meta.nodes = meta.nodes || cNodes.length;
+          } else {
+            meta.center = [0, 0, 0];
+          }
+        }
+      }
+      this.corpusLabels.setCorpora(activeMeta);
     } else {
       const singleMeta: CorpusMetadata = {
         name: payload.corpus,
         nodes: payload.nodes.length,
         edges: payload.edges.length,
+        graph_mtime: 0,
         center: [0, 0, 0], // Space center of single corpus sphere is origin
       };
       this.corpusLabels.setCorpora([singleMeta]);

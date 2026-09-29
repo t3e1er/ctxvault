@@ -53,7 +53,7 @@ export class HeaderControls {
     edgeCount: number
   ) {
     const corpusOptions = [
-      '<option value="all">All Corpora (Galaxy)</option>',
+      `<option value="all" ${activeCorpus === 'all' ? 'selected' : ''}>All Corpora (Galaxy)</option>`,
       ...(activeCorpus === 'ego' ? [`<option value="ego" selected>Ego Subgraph (${nodeCount.toLocaleString()} n)</option>`] : []),
       ...corpora.map(
         (c) =>
