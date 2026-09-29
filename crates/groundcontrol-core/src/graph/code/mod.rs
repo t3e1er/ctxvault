@@ -120,6 +120,12 @@ impl CodeGraphExtractor {
 
         let mut visitor =
             CallAndImportVisitor::new(file_path_str, content, lang, file_symbols, symbol_index);
+        if let Some(query) = crate::parser::code::query::get_language_query(lang) {
+            visitor.local_bindings =
+                query.extract_local_bindings(tree.root_node(), content.as_bytes());
+        }
+        visitor.extract_query_edges(tree.root_node());
+        visitor.extract_all_imports(tree.root_node());
         visitor.visit(tree.root_node());
 
         let mut external_refs = visitor.external_refs;

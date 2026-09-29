@@ -82,6 +82,7 @@ impl CorpusManager {
             docstring: None,
             start_line: 0,
             end_line: 0,
+            canonical_name: Some(moniker.clone()),
         };
         Some((target_corpus.clone(), symbol))
     }

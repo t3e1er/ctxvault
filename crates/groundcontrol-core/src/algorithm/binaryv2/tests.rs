@@ -47,6 +47,7 @@ fn test_binaryv2_semantic_bridging() {
         docstring: Some("Processes credit card charge and billing authorization".to_string()),
         start_line: 1,
         end_line: 20,
+        canonical_name: None,
     };
     let doc_payment =
         projector.project_symbol(&sym_payment, "src/paymentservice/charge.js", None, &rri);
@@ -63,6 +64,7 @@ fn test_binaryv2_semantic_bridging() {
         docstring: Some("Computes linear algebra determinant".to_string()),
         start_line: 1,
         end_line: 20,
+        canonical_name: None,
     };
     let doc_unrelated = projector.project_symbol(&sym_unrelated, "src/math/matrix.rs", None, &rri);
 
@@ -97,6 +99,7 @@ fn test_binaryv2_algorithm_retrieval() {
             docstring: Some("Check product catalog for price on each item and create shipping quote".to_string()),
             start_line: 19,
             end_line: 38,
+            canonical_name: None,
         }],
         grammar_semantics: Vec::new(),
         chunks: vec![Chunk::new(

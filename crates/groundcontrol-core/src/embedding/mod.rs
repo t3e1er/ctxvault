@@ -109,11 +109,24 @@ impl Embedder {
         #[cfg(target_os = "windows")]
         let (session_0, active_device_id) = {
             let candidates = directml_device_candidates();
-            let mut last_err = None;
+            let mut last_err: Option<String> = None;
             let mut result = None;
 
             for &cand_id in &candidates {
-                match create_builder(Some(cand_id))?.commit_from_file(&model_path) {
+                let mut builder = match create_builder(Some(cand_id)) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            device_id = cand_id,
+                            error = %e,
+                            "Failed to configure DirectML provider on candidate adapter; attempting next candidate"
+                        );
+                        last_err = Some(e.to_string());
+                        continue;
+                    }
+                };
+
+                match builder.commit_from_file(&model_path) {
                     Ok(sess) => {
                         result = Some((sess, Some(cand_id)));
                         break;
@@ -124,7 +137,7 @@ impl Embedder {
                             error = %e,
                             "Failed to initialize DirectML session on candidate adapter; attempting next candidate"
                         );
-                        last_err = Some(e);
+                        last_err = Some(e.to_string());
                     }
                 }
             }

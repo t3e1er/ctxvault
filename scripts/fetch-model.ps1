@@ -77,7 +77,12 @@ foreach ($f in $Files) {
     $url  = "$BaseUrl/$($f.Rel)"
     $part = "$dest.part"
     Write-Host "[*] Downloading $($f.Rel) ($($f.Bytes) bytes)..."
-    Invoke-WebRequest -Uri $url -OutFile $part -MaximumRedirection 5
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        & curl.exe -L --fail --retry 3 --progress-bar -o $part $url
+    } else {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile $part -MaximumRedirection 5
+    }
     if (-not (Test-Integrity $part $f.Bytes $f.Sha256 $f.Rel)) {
         $got = (Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower()
         Remove-Item -Force $part

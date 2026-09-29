@@ -23,8 +23,8 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     )
                     .map_err(|e| Error::Database(e.to_string()))?;
 
@@ -41,6 +41,7 @@ impl Store {
                         sym.language,
                         sym.start_line as i64,
                         sym.end_line as i64,
+                        sym.canonical_name,
                     ])
                     .map_err(|e| Error::Database(e.to_string()))?;
                 }
@@ -53,8 +54,8 @@ impl Store {
 
             let mut stmt = conn
                 .prepare(
-                    "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )
                 .map_err(|e| Error::Database(e.to_string()))?;
 
@@ -71,6 +72,7 @@ impl Store {
                     sym.language,
                     sym.start_line as i64,
                     sym.end_line as i64,
+                    sym.canonical_name,
                 ])
                 .map_err(|e| Error::Database(e.to_string()))?;
             }
@@ -83,7 +85,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols WHERE file_path = ?1 ORDER BY start_line",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -103,6 +105,7 @@ impl Store {
                     docstring: None,
                     start_line: row.get::<_, i64>(5)? as usize,
                     end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -124,7 +127,7 @@ impl Store {
         for chunk in file_paths.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols WHERE file_path IN ({placeholders}) ORDER BY file_path, start_line"
             );
             let mut stmt = conn.prepare(&sql).map_err(|e| Error::Database(e.to_string()))?;
@@ -147,6 +150,7 @@ impl Store {
                         docstring: None,
                         start_line: row.get::<_, i64>(5)? as usize,
                         end_line: row.get::<_, i64>(6)? as usize,
+                        canonical_name: row.get(7)?,
                     })
                 })
                 .map_err(|e| Error::Database(e.to_string()))?;
@@ -165,7 +169,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols WHERE name LIKE ?1 OR scope_path LIKE ?1 ORDER BY name",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -186,6 +190,7 @@ impl Store {
                     docstring: None,
                     start_line: row.get::<_, i64>(5)? as usize,
                     end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -201,7 +206,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols WHERE scope_path = ?1 ORDER BY file_path, start_line",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -221,6 +226,7 @@ impl Store {
                     docstring: None,
                     start_line: row.get::<_, i64>(5)? as usize,
                     end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -247,7 +253,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols WHERE name = ?1 ORDER BY file_path, start_line",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -267,6 +273,7 @@ impl Store {
                     docstring: None,
                     start_line: row.get::<_, i64>(5)? as usize,
                     end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -291,7 +298,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
                  FROM code_symbols ORDER BY file_path, start_line",
             )
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -311,6 +318,40 @@ impl Store {
                     docstring: None,
                     start_line: row.get::<_, i64>(5)? as usize,
                     end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
+                })
+            })
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| Error::Database(e.to_string()))
+    }
+
+    /// Find code symbols whose SCIP canonical moniker matches exactly.
+    pub fn find_symbols_by_canonical_name(&self, canonical_name: &str) -> Result<Vec<CodeSymbol>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name
+                 FROM code_symbols WHERE canonical_name = ?1 ORDER BY file_path, start_line",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![canonical_name], |row| {
+                let type_str: String = row.get(3)?;
+                let symbol_type: CodeSymbolType = serde_json::from_str(&format!("\"{type_str}\""))
+                    .unwrap_or(CodeSymbolType::Function);
+                Ok(CodeSymbol {
+                    file_path: row.get(0)?,
+                    name: row.get(1)?,
+                    scope_path: row.get(2)?,
+                    symbol_type,
+                    language: row.get(4)?,
+                    signature: String::new(),
+                    docstring: None,
+                    start_line: row.get::<_, i64>(5)? as usize,
+                    end_line: row.get::<_, i64>(6)? as usize,
+                    canonical_name: row.get(7)?,
                 })
             })
             .map_err(|e| Error::Database(e.to_string()))?;

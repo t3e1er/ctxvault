@@ -2,7 +2,7 @@ use petgraph::graph::DiGraph;
 use serde::{Deserialize, Serialize};
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::types::{EdgeProvenance, ResolutionConfidence};
+use groundcontrol_common::types::{EdgeKind, EdgeProvenance, ResolutionConfidence};
 
 /// Node data stored in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,8 +16,8 @@ pub struct GraphNode {
 /// Edge data stored in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
-    /// Edge type name (must match a registered `EdgeTypeConfig.name`).
-    pub edge_type: String,
+    /// Open typed edge kind (Universal semantic edge or interned grammar relation).
+    pub kind: EdgeKind,
     /// Weight of this edge.
     pub weight: f32,
     /// How this edge was created.
@@ -36,8 +36,22 @@ pub struct GraphEdge {
     pub target_kind: Option<String>,
 }
 
+impl GraphEdge {
+    /// Retrieve the typed [`groundcontrol_common::types::EdgeKind`] of this edge.
+    #[inline]
+    pub fn kind(&self) -> &EdgeKind {
+        &self.kind
+    }
+
+    /// Retrieve the canonical string representation of this edge type.
+    #[inline]
+    pub fn edge_type(&self) -> &str {
+        self.kind.as_str()
+    }
+}
+
 /// On-disk schema version stamped into `GraphData`.
-pub const GRAPH_SCHEMA_VERSION: u32 = 2;
+pub const GRAPH_SCHEMA_VERSION: u32 = 3;
 
 /// Serializable wrapper for persistence.
 #[derive(Serialize, Deserialize)]

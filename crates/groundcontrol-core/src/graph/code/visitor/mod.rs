@@ -35,7 +35,12 @@ impl<'a> CallAndImportVisitor<'a> {
             || spec.class_node_kinds.contains(&kind)
             || spec.struct_node_kinds.contains(&kind)
             || spec.trait_node_kinds.contains(&kind)
-            || spec.interface_node_kinds.contains(&kind);
+            || spec.interface_node_kinds.contains(&kind)
+            || self.file_symbols.iter().any(|s| {
+                s.start_line == node.start_position().row + 1
+                    && s.end_line == node.end_position().row + 1
+                    && crate::parser::code::spec::LanguageSpec::is_container(s.symbol_type)
+            });
 
         if is_container {
             let container_name = if is_rust_impl {
@@ -64,7 +69,16 @@ impl<'a> CallAndImportVisitor<'a> {
         }
 
         // Track caller function/method scope
-        if spec.is_callable(kind) {
+        let is_sym_callable = self.file_symbols.iter().any(|s| {
+            s.start_line == node.start_position().row + 1
+                && s.end_line == node.end_position().row + 1
+                && matches!(
+                    s.symbol_type,
+                    groundcontrol_common::types::CodeSymbolType::Function
+                        | groundcontrol_common::types::CodeSymbolType::Method
+                )
+        });
+        if spec.is_callable(kind) || is_sym_callable {
             let start_line = node.start_position().row + 1;
             let end_line = node.end_position().row + 1;
             let matching_sym = self
@@ -82,9 +96,17 @@ impl<'a> CallAndImportVisitor<'a> {
 
             self.type_env.push_scope(None);
 
+            // Bind local variables from declarative @local captures scoped to this callable
+            let start_byte = node.start_byte();
+            let end_byte = node.end_byte();
+            for b in &self.local_bindings {
+                if b.byte_offset >= start_byte && b.byte_offset <= end_byte {
+                    self.type_env.register_variable(b.var_name.clone(), b.type_name.clone());
+                }
+            }
+
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                self.type_env.inspect_node(child, self.content);
                 self.visit(child);
             }
 
@@ -92,9 +114,6 @@ impl<'a> CallAndImportVisitor<'a> {
             self.current_caller = prev_caller;
             return;
         }
-
-        // Inside a body: inspect statements/declarations for variable bindings
-        self.type_env.inspect_node(node, self.content);
 
         // Language-specific AST relationship extractions:
         match self.language {
@@ -127,9 +146,6 @@ impl<'a> CallAndImportVisitor<'a> {
         if spec.is_call(kind) {
             self.extract_call(node);
         }
-
-        // Extract trait implementations
-        self.extract_implements(node);
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {

@@ -267,6 +267,7 @@ fn test_find_symbols_by_normalized_scope() {
         docstring: None,
         start_line: 10,
         end_line: 20,
+        canonical_name: None,
     };
     let sym2 = groundcontrol_common::types::CodeSymbol {
         file_path: "binder.rs".to_string(),
@@ -278,6 +279,7 @@ fn test_find_symbols_by_normalized_scope() {
         docstring: None,
         start_line: 22,
         end_line: 30,
+        canonical_name: None,
     };
     let sym3 = groundcontrol_common::types::CodeSymbol {
         file_path: "other.rs".to_string(),
@@ -289,6 +291,7 @@ fn test_find_symbols_by_normalized_scope() {
         docstring: None,
         start_line: 5,
         end_line: 15,
+        canonical_name: None,
     };
 
     store.insert_file("binder.rs", "hash1", 1000, None, None, FileFormat::Source).unwrap();
@@ -328,6 +331,7 @@ fn test_find_symbols_by_normalized_scope() {
         docstring: None,
         start_line: 1,
         end_line: 10,
+        canonical_name: None,
     };
     store.save_code_symbols("binder2.rs", &[sym4]).unwrap();
 

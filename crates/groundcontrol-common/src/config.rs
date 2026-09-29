@@ -178,14 +178,21 @@ pub fn default_exclude_patterns() -> Vec<String> {
         "*.bz2".to_string(),
         "*.xz".to_string(),
         "*.7z".to_string(),
-        // Package manager lockfiles
+        // Package manager lockfiles & dependency checksums
         "package-lock.json".to_string(),
+        "*-lock.json".to_string(),
         "pnpm-lock.yaml".to_string(),
+        "*-lock.yaml".to_string(),
         "yarn.lock".to_string(),
         "Cargo.lock".to_string(),
         "composer.lock".to_string(),
         "Gemfile.lock".to_string(),
         "poetry.lock".to_string(),
+        "flake.lock".to_string(),
+        "pubspec.lock".to_string(),
+        "mix.lock".to_string(),
+        "*.lock".to_string(),
+        "*.sum".to_string(),
     ]
 }
 
@@ -675,6 +682,11 @@ pub fn get_corpora_cache_dir() -> PathBuf {
     get_cache_dir().join("corpora")
 }
 
+/// Directory where central model weights and tokenizers are stored: `${CTXV_CACHE_DIR}/models`.
+pub fn get_models_cache_dir() -> PathBuf {
+    get_cache_dir().join("models")
+}
+
 /// Central index storage directory for a specific corpus: `${CTXV_CACHE_DIR}/corpora/<name>`.
 pub fn get_corpus_index_dir(name: &str) -> PathBuf {
     get_corpora_cache_dir().join(name)
@@ -991,6 +1003,11 @@ mod tests {
         assert!(config.exclude.patterns.contains(&"tests/".to_string()));
         assert!(config.exclude.patterns.contains(&"node_modules/".to_string()));
         assert!(config.exclude.patterns.contains(&"target/".to_string()));
+        assert!(config.exclude.patterns.contains(&"package-lock.json".to_string()));
+        assert!(config.exclude.patterns.contains(&"*-lock.json".to_string()));
+        assert!(config.exclude.patterns.contains(&"Cargo.lock".to_string()));
+        assert!(config.exclude.patterns.contains(&"*.lock".to_string()));
+        assert!(config.exclude.patterns.contains(&"*.sum".to_string()));
     }
 
     #[test]

@@ -37,7 +37,7 @@ impl KnowledgeGraph {
 
         let mut edge_type_distribution: HashMap<String, usize> = HashMap::new();
         for edge in self.graph.edge_weights() {
-            *edge_type_distribution.entry(edge.edge_type.clone()).or_insert(0) += 1;
+            *edge_type_distribution.entry(edge.edge_type().to_string()).or_insert(0) += 1;
         }
 
         GraphStats { node_count, edge_count, orphan_count, most_connected, edge_type_distribution }
@@ -89,13 +89,14 @@ impl KnowledgeGraph {
                             && existing_paths.contains(&target_str[..target_str.len() - 3]));
 
                     if !exists {
-                        let key = format!("{}->{}:{}", src.path, tgt.path, edge.weight().edge_type);
+                        let key =
+                            format!("{}->{}:{}", src.path, tgt.path, edge.weight().edge_type());
                         if !seen.contains(&key) {
                             let _ = seen.insert(key);
                             broken.push(BrokenLink {
                                 source: src.path.clone(),
                                 target: tgt.path.clone(),
-                                edge_type: edge.weight().edge_type.clone(),
+                                edge_type: edge.weight().edge_type().to_string(),
                                 provenance: edge.weight().provenance.clone(),
                             });
                         }
@@ -115,7 +116,7 @@ impl KnowledgeGraph {
         for &edge_type in edge_types {
             let mut adj: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
             for edge in self.graph.edge_references() {
-                if edge.weight().edge_type.eq_ignore_ascii_case(edge_type) {
+                if edge.weight().edge_type().eq_ignore_ascii_case(edge_type) {
                     adj.entry(edge.source()).or_default().push(edge.target());
                 }
             }

@@ -117,3 +117,13 @@ run *ARGS:
 # Run the 3D GraphView visualizer server
 graphview *ARGS:
     cargo run -p groundcontrol-cli -- graphview {{ARGS}}
+
+# ── Groundtruth Benchmarking & Regression ────────────
+
+# Run the groundtruth regression and progress pipeline by TOML version
+benchmark *ARGS:
+    powershell -ExecutionPolicy Bypass -File ../groundtruth/scripts/pipeline.ps1 {{ARGS}}
+
+# Alias for benchmark pipeline
+eval *ARGS:
+    powershell -ExecutionPolicy Bypass -File ../groundtruth/scripts/pipeline.ps1 {{ARGS}}

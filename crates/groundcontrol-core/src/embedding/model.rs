@@ -79,8 +79,10 @@ pub(crate) fn check_directory_for_model(
 pub(crate) fn resolve_model_files(model_name: &ModelName) -> Result<(PathBuf, PathBuf)> {
     let candidate_subpaths = model_name.onnx_candidate_subpaths();
 
-    // Priority 1: Check CTX_MODELS_DIR
-    if let Ok(models_dir) = std::env::var("CTX_MODELS_DIR") {
+    // Priority 1: Check GROUNDCONTROL_MODELS_DIR and CTX_MODELS_DIR
+    let env_models_dir =
+        std::env::var("GROUNDCONTROL_MODELS_DIR").or_else(|_| std::env::var("CTX_MODELS_DIR"));
+    if let Ok(models_dir) = env_models_dir {
         let base = PathBuf::from(models_dir);
         let candidates = [base.join(model_name.model_dir_name()), base];
         for dir in candidates {
@@ -88,36 +90,39 @@ pub(crate) fn resolve_model_files(model_name: &ModelName) -> Result<(PathBuf, Pa
                 tracing::info!(
                     model = %model_name.version_string(),
                     onnx = %onnx.display(),
-                    "found model in CTX_MODELS_DIR"
+                    "found model in env models dir"
                 );
                 return Ok((onnx, tok));
             }
         }
     }
 
-    // Priority 2: Check sidecar directory relative to executable (<exe_dir>/models/<model>/)
-    // Priority 3: Check <exe_dir>/../models/<model>/ for cargo test / deps builds
+    // Priority 2: Check central cache directory (${GROUNDCONTROL_CACHE_DIR}/models/<model>/)
+    let central_cache_dir = groundcontrol_common::config::get_models_cache_dir();
+    let central_candidates =
+        [central_cache_dir.join(model_name.model_dir_name()), central_cache_dir];
+    for dir in central_candidates {
+        if let Some((onnx, tok)) = check_directory_for_model(&dir, candidate_subpaths) {
+            tracing::info!(
+                model = %model_name.version_string(),
+                onnx = %onnx.display(),
+                "found model in central cache dir"
+            );
+            return Ok((onnx, tok));
+        }
+    }
+
+    // Priority 3: Check sidecar directory relative to executable (<exe_dir>/models/<model>/)
+    // and workspace ancestor directories (<exe_dir>/../../models/<model>/)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let primary = exe_dir.join("models").join(model_name.model_dir_name());
-            if let Some((onnx, tok)) = check_directory_for_model(&primary, candidate_subpaths) {
-                tracing::info!(
-                    model = %model_name.version_string(),
-                    onnx = %onnx.display(),
-                    "found sidecar ONNX model and tokenizer"
-                );
-                return Ok((onnx, tok));
-            }
-
-            if let Some(parent) = exe_dir.parent() {
-                let parent_models = parent.join("models").join(model_name.model_dir_name());
-                if let Some((onnx, tok)) =
-                    check_directory_for_model(&parent_models, candidate_subpaths)
-                {
+            for ancestor in exe_dir.ancestors().take(5) {
+                let cand = ancestor.join("models").join(model_name.model_dir_name());
+                if let Some((onnx, tok)) = check_directory_for_model(&cand, candidate_subpaths) {
                     tracing::info!(
                         model = %model_name.version_string(),
                         onnx = %onnx.display(),
-                        "found parent sidecar ONNX model and tokenizer"
+                        "found sidecar/workspace ONNX model and tokenizer"
                     );
                     return Ok((onnx, tok));
                 }
@@ -125,10 +130,25 @@ pub(crate) fn resolve_model_files(model_name: &ModelName) -> Result<(PathBuf, Pa
         }
     }
 
+    // Priority 4: Check current working directory and its ancestors
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors().take(5) {
+            let cand = ancestor.join("models").join(model_name.model_dir_name());
+            if let Some((onnx, tok)) = check_directory_for_model(&cand, candidate_subpaths) {
+                tracing::info!(
+                    model = %model_name.version_string(),
+                    onnx = %onnx.display(),
+                    "found model in cwd ancestor"
+                );
+                return Ok((onnx, tok));
+            }
+        }
+    }
+
     Err(Error::Index(format!(
         "Embedding model '{}' not found. Mirror the Hugging Face repo layout: place \
          'onnx/model_quantized.onnx' and 'tokenizer.json' under '<exe_dir>/models/{}/' \
-         (or set 'CTX_MODELS_DIR' to the parent models directory). Run scripts/fetch-model.sh \
+         (or set 'GROUNDCONTROL_MODELS_DIR' to the parent models directory). Run scripts/fetch-model.sh \
          (or scripts/fetch-model.ps1) to download them.",
         model_name.version_string(),
         model_name.model_dir_name()

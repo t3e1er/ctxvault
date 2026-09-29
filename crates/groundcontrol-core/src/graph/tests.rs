@@ -8,7 +8,8 @@ use serde::Serialize;
 
 use groundcontrol_common::config::{EdgeClass, EdgeSource, EdgeTypeConfig};
 use groundcontrol_common::types::{
-    CommunityDetectionResult, Document, EdgeProvenance, ResolutionConfidence, WikiLink,
+    CommunityDetectionResult, Document, EdgeKind, EdgeProvenance, ResolutionConfidence,
+    UniversalEdge, WikiLink,
 };
 
 use super::types::GRAPH_SCHEMA_VERSION;
@@ -246,6 +247,52 @@ fn test_cross_corpus_edge_payload_round_trips() {
     assert_eq!(data.target_path.as_deref(), Some("src/api/user.rs"));
     assert_eq!(data.target_symbol.as_deref(), Some("api::create_user"));
     assert_eq!(data.target_kind.as_deref(), Some("Symbol"));
+}
+
+#[test]
+fn test_dynamic_grammar_edge_kind_and_persistence_round_trip() {
+    let mut graph = KnowledgeGraph::new();
+    graph.add_node("App", Some("App"));
+    graph.add_node("BaseApp", Some("BaseApp"));
+    graph.add_node("ConfigMixin", Some("ConfigMixin"));
+
+    // Add universal edge (inherits)
+    graph.add_edge(
+        "App",
+        "BaseApp",
+        UniversalEdge::Inherits.as_str(),
+        1.0,
+        EdgeProvenance::CodeExtends,
+        EdgeClass::Structural,
+    );
+
+    // Add dynamic grammar edge (embeds_struct)
+    let dynamic_kind = EdgeKind::grammar("embeds_struct");
+    graph.add_edge(
+        "App",
+        "ConfigMixin",
+        dynamic_kind.as_str(),
+        0.85,
+        EdgeProvenance::CodeStructEmbeds,
+        EdgeClass::Structural,
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.bin");
+    graph.save(&path).unwrap();
+
+    let loaded = KnowledgeGraph::load(&path).unwrap();
+    assert_eq!(loaded.node_count(), 3);
+    assert_eq!(loaded.edge_count(), 2);
+
+    let src_idx = loaded.get_node("App").expect("App node present");
+    let mut edge_kinds = Vec::new();
+    for edge in loaded.inner_graph().edges_directed(src_idx, Direction::Outgoing) {
+        edge_kinds.push(edge.weight().kind().clone());
+    }
+
+    assert!(edge_kinds.contains(&EdgeKind::Universal(UniversalEdge::Inherits)));
+    assert!(edge_kinds.contains(&EdgeKind::grammar("embeds_struct")));
 }
 
 #[test]

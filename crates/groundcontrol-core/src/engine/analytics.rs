@@ -16,11 +16,45 @@ use super::types::{now_unix, IndexingStatusResponse};
 impl Engine {
     /// Ingest a pre-computed SCIP (Source Code Intelligence Protocol) index into the knowledge graph.
     pub fn ingest_scip(&mut self, scip_path: &Path) -> Result<crate::graph::scip::ScipIngestStats> {
-        info!("Ingesting SCIP index from: {}", scip_path.display());
-        let (edges, stats) = crate::graph::scip::ScipIngester::extract_edges_from_file(scip_path)?;
+        self.ingest_scip_with_prefix(scip_path, None)
+    }
+
+    /// Ingest a pre-computed SCIP index with an optional repository-relative base directory prefix.
+    pub fn ingest_scip_with_prefix(
+        &mut self,
+        scip_path: &Path,
+        base_prefix: Option<&str>,
+    ) -> Result<crate::graph::scip::ScipIngestStats> {
+        info!("Ingesting SCIP index from: {} (prefix: {:?})", scip_path.display(), base_prefix);
+        let (edges, stats) = crate::graph::scip::ScipIngester::extract_edges_from_file_with_prefix(
+            scip_path,
+            base_prefix,
+        )?;
 
         for edge in &edges {
             self.graph.add_code_edge(edge);
+        }
+
+        // Reconcile SCIP monikers with existing SQLite code symbols
+        for edge in &edges {
+            if edge.edge_type == "defines" {
+                if let Some(leaf) = crate::graph::scip::moniker_leaf(&edge.target) {
+                    if let Ok(mut symbols) = self.store.get_code_symbols_for_file(&edge.source) {
+                        let mut changed = false;
+                        for sym in &mut symbols {
+                            if sym.name == leaf
+                                && sym.canonical_name.as_deref() != Some(&edge.target)
+                            {
+                                sym.canonical_name = Some(edge.target.clone());
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            let _ = self.store.save_code_symbols(&edge.source, &symbols);
+                        }
+                    }
+                }
+            }
         }
 
         self.graph.save(&self.index_dir.join("graph.bin"))?;
@@ -34,6 +68,23 @@ impl Engine {
         );
 
         Ok(stats)
+    }
+
+    /// Recursively discover and ingest all precomputed SCIP index files (`index.scip`, `*.scip`)
+    /// located within the corpus root or any subproject directory.
+    pub fn ingest_all_scip_indices(&mut self, corpus_root: &Path) -> Result<usize> {
+        let mut count = 0;
+        let scip_files = find_scip_files(corpus_root);
+
+        for (scip_file, prefix) in scip_files {
+            if let Ok(stats) = self.ingest_scip_with_prefix(&scip_file, prefix.as_deref()) {
+                if stats.edges_added > 0 {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     /// Second-pass cross-file AST call graph resolution.
@@ -303,4 +354,73 @@ impl Engine {
         let all_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
         crate::analytics::coverage_report(&self.bm25, queries, &all_paths, top_k)
     }
+}
+
+/// Helper to scan for all SCIP index files in a corpus directory.
+/// Returns a list of (absolute_path_to_scip_file, optional_relative_prefix).
+fn find_scip_files(root: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut results = Vec::new();
+    if !root.is_dir() {
+        return results;
+    }
+
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+                !matches!(
+                    name.as_ref(),
+                    ".git"
+                        | "target"
+                        | "node_modules"
+                        | "build"
+                        | "dist"
+                        | ".index"
+                        | ".agents"
+                        | ".gemini"
+                )
+            } else {
+                true
+            }
+        })
+        .build();
+
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let is_scip = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |n| n == "index.scip" || n.ends_with(".scip"));
+
+            if is_scip {
+                let parent = path.parent().unwrap_or(root);
+                let subproject_dir = if parent.file_name().and_then(|n| n.to_str()) == Some(".scip")
+                {
+                    parent.parent().unwrap_or(root)
+                } else {
+                    parent
+                };
+
+                let prefix = if subproject_dir == root {
+                    None
+                } else if let Ok(rel) = subproject_dir.strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    if rel_str.is_empty() {
+                        None
+                    } else {
+                        Some(rel_str)
+                    }
+                } else {
+                    None
+                };
+
+                results.push((path.to_path_buf(), prefix));
+            }
+        }
+    }
+
+    results
 }
