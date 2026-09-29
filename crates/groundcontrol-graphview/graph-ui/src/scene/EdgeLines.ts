@@ -133,6 +133,8 @@ export class EdgeLines {
 
       const hex = getEdgeColor(edge.edgeType, edge.edgeClass);
       tempColor.setHex(hex);
+      // Calibrate edges so they are distinctly colored but visibly softer and dimmer than nodes
+      tempColor.multiplyScalar(0.60);
 
       // Source vertex
       colors[idx] = tempColor.r;
@@ -149,12 +151,12 @@ export class EdgeLines {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const baseOpacity = this.customOpacity !== null ? this.customOpacity : calcEdgeOpacity(count);
-    const opacity = this.gradientContrast ? Math.min(0.35, baseOpacity * 0.8) : baseOpacity;
+    const opacity = this.gradientContrast ? Math.min(0.26, baseOpacity * 0.70) : Math.min(0.32, baseOpacity * 0.85);
     const material = new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity,
-      blending: this.gradientContrast ? THREE.NormalBlending : THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
       depthWrite: false,
     });
 

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { NodeData, ViewMode } from '../types.ts';
-import { communityColor, stellarColorForDegree } from '../lib/colors.ts';
+import { communityColor, getCategoryColor, stellarColorForDegree } from '../lib/colors.ts';
 
 export class NodeCloud {
   public group: THREE.Group;
@@ -97,7 +97,7 @@ export class NodeCloud {
     const geometry = new THREE.SphereGeometry(1.0, 8, 6);
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
-      toneMapped: true,
+      toneMapped: false,
     });
 
     const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
@@ -112,9 +112,8 @@ export class NodeCloud {
 
       if (this.gradientContrast) {
         const deg = node.degree || 1;
-        const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.55);
-        this.color.multiplyScalar(0.45 + 0.55 * falloff);
-        const s = Math.max(0.9, (node.size * 0.45 * this.particleScale) * (0.55 + 0.45 * falloff));
+        const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.35);
+        const s = Math.max(0.9, (node.size * 0.45 * this.particleScale) * (0.65 + 0.35 * falloff));
         this.dummy.scale.set(s, s, s);
       } else {
         const s = Math.max(1.2, node.size * 0.45 * this.particleScale);
@@ -147,12 +146,6 @@ export class NodeCloud {
 
       this.resolveColor(n, mode, this.color);
 
-      if (this.gradientContrast) {
-        const deg = n.degree || 1;
-        const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.55);
-        this.color.multiplyScalar(0.45 + 0.55 * falloff);
-      }
-
       colors[i * 3] = this.color.r;
       colors[i * 3 + 1] = this.color.g;
       colors[i * 3 + 2] = this.color.b;
@@ -165,7 +158,7 @@ export class NodeCloud {
       size: 4.5 * this.particleScale,
       vertexColors: true,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.95,
       sizeAttenuation: true,
     });
 
@@ -203,7 +196,7 @@ export class NodeCloud {
     // 1. Search filtering
     if (this.searchMatchIds !== null) {
       if (this.searchMatchIds.has(node.id)) {
-        outColor.setHex(0xf59e0b); // Neon amber glow for search matches
+        outColor.setHex(0xf59e0b).multiplyScalar(2.0); // Neon amber glow for search matches
         return;
       } else {
         outColor.setHex(0x131a28); // Deeply dimmed non-matches
@@ -222,21 +215,31 @@ export class NodeCloud {
 
     // 3. Selection & Hover
     if (this.selectedId === node.id) {
-      outColor.setHex(0xffffff); // Selected node glows white
+      outColor.setHex(0xffffff).multiplyScalar(2.2); // Selected node glows white
       return;
     }
     if (this.hoveredId === node.id) {
-      outColor.setHex(0x38bdf8); // Hovered node glows cyan
+      outColor.setHex(0x38bdf8).multiplyScalar(2.0); // Hovered node glows cyan
       return;
     }
 
     // 4. Base modes
     if (mode === 'entity') {
-      outColor.setHex(node.colorRgb);
+      const hex = node.colorRgb || getCategoryColor(node.entityType);
+      outColor.setHex(hex);
     } else if (mode === 'degree') {
       outColor.setHex(stellarColorForDegree(node.degree));
     } else if (mode === 'community') {
       outColor.setHex(communityColor(node.community));
+    }
+
+    // 5. Luminance Boost: ensure nodes are vibrant and clearly brighter than connecting edges
+    outColor.multiplyScalar(1.45);
+
+    if (this.gradientContrast) {
+      const deg = node.degree || 1;
+      const falloff = 1.0 / Math.pow(1.0 + Math.log10(deg), 0.35);
+      outColor.multiplyScalar(0.75 + 0.25 * falloff);
     }
   }
 

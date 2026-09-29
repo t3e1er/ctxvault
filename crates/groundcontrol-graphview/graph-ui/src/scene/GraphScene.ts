@@ -40,7 +40,7 @@ export class GraphScene {
     // 1. Scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x07090e);
-    this.scene.fog = new THREE.FogExp2(0x07090e, 0.0003);
+    this.scene.fog = new THREE.FogExp2(0x07090e, 0.00003);
 
     // 2. Camera
     const aspect = container.clientWidth / container.clientHeight;
@@ -52,7 +52,7 @@ export class GraphScene {
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.15;
     container.appendChild(this.renderer.domElement);
 
     // 4. Controls
@@ -164,6 +164,11 @@ export class GraphScene {
     this.camera.position.set(cx, cy + fitDistance * 0.22, cz + fitDistance);
     this.camera.lookAt(cx, cy, cz);
     this.controls.update();
+
+    // Adapt fog density dynamically based on scene scale so distant overview is never blacked out
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.density = Math.max(0.000008, Math.min(0.0001, 0.35 / fitDistance));
+    }
   }
 
   private calculateCorpusCenters(nodes: NodeData[]): Map<string, [number, number, number]> {
