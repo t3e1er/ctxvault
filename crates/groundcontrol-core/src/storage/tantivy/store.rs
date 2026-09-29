@@ -122,41 +122,46 @@ impl BM25Index {
         let field_tags = self.fields.tags;
         let field_modality = self.fields.modality;
 
-        let docs: Vec<_> = chunks
-            .iter()
-            .map(|chunk| {
-                let modality_tag =
-                    chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
-                doc!(
-                    field_path => doc_path,
-                    field_chunk_index => chunk.chunk_index.to_string(),
-                    field_title => title_text,
-                    field_body => chunk.text.as_str(),
-                    field_tags => tags_text.as_str(),
-                    field_modality => modality_tag,
-                )
-            })
-            .collect();
-
         let writer = self.ensure_writer()?;
-        let mut failed = false;
-        for tantivy_doc in &docs {
-            if let Err(e) = writer.add_document(tantivy_doc.clone()) {
+        let mut failed_at_idx: Option<usize> = None;
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let modality_tag =
+                chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
+            let tantivy_doc = doc!(
+                field_path => doc_path,
+                field_chunk_index => chunk.chunk_index.to_string(),
+                field_title => title_text,
+                field_body => chunk.text.as_str(),
+                field_tags => tags_text.as_str(),
+                field_modality => modality_tag,
+            );
+            if let Err(e) = writer.add_document(tantivy_doc) {
                 tracing::warn!("Tantivy add_document error: {e}. Re-acquiring index writer...");
-                failed = true;
+                failed_at_idx = Some(idx);
                 break;
             }
         }
 
-        if failed {
+        if let Some(failed_idx) = failed_at_idx {
             self.release_writer();
             std::thread::sleep(std::time::Duration::from_millis(250));
             if let Some(ref path) = self.index_path {
                 heal_stale_lockfiles(path);
             }
             let writer = self.ensure_writer()?;
-            for tantivy_doc in docs {
-                writer.add_document(tantivy_doc).map_err(|e| Error::Index(e.to_string()))?;
+            for chunk in &chunks[failed_idx..] {
+                let modality_tag =
+                    chunk.entity_kind.as_ref().map(EntityKind::modality_tag).unwrap_or("docs");
+                let retry_doc = doc!(
+                    field_path => doc_path,
+                    field_chunk_index => chunk.chunk_index.to_string(),
+                    field_title => title_text,
+                    field_body => chunk.text.as_str(),
+                    field_tags => tags_text.as_str(),
+                    field_modality => modality_tag,
+                );
+                writer.add_document(retry_doc).map_err(|e| Error::Index(e.to_string()))?;
             }
         }
 

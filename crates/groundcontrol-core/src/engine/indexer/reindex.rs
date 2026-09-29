@@ -73,6 +73,7 @@ impl Engine {
             self.clear_algorithms()?;
             self.store.reset_indexing_state(&corpus_id)?;
             let _ = self.store.drop_bulk_indices();
+            let _ = self.store.set_bulk_mode(true);
         } else {
             let existing = self.store.list_files()?;
             for file in existing {
@@ -350,6 +351,7 @@ impl Engine {
 
         if !resume {
             let _ = self.store.recreate_bulk_indices();
+            let _ = self.store.set_bulk_mode(false);
         }
 
         self.commit()?;
