@@ -217,11 +217,12 @@ pub fn build_tier_0_overview(
         };
 
         // Proportional budget: larger corpora get more of the total budget.
-        // Floor of 500 ensures every corpus gets at least some representation.
+        // Floor of 500 (bounded by budget) ensures every corpus gets at least some representation.
         let corpus_nodes = snapshot.graph.node_count().max(1);
+        let min_bound = 500.min(budget);
         let per_corpus_budget = ((budget as f64 * corpus_nodes as f64 / total_nodes_all as f64)
             .round() as usize)
-            .clamp(500, budget);
+            .clamp(min_bound, budget);
         let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
         let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
