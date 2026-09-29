@@ -86,7 +86,7 @@ ignore = "0.4"
 # Compression & Archiving
 tar = "0.4"
 zstd = "0.14"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Document Extraction (Pure Rust)
 quick-xml = "0.41"
