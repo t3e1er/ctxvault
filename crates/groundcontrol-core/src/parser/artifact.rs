@@ -10,7 +10,6 @@ use groundcontrol_common::config::ChunkingConfig;
 use groundcontrol_common::types::{Document, Edge, EdgeProvenance, FileFormat, ParsedArtifact};
 use groundcontrol_common::Result;
 
-use crate::graph::code::CodeGraphExtractor;
 use crate::index::classifier::{FileClassification, FileClassifier};
 use crate::parser::code::chunker::CodeChunker;
 use crate::parser::document::DocumentExtractorRegistry;
@@ -57,7 +56,7 @@ impl ArtifactParser {
         let content = String::from_utf8_lossy(bytes).into_owned();
         let path = Path::new(rel_path);
         let file_title = path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
-        let parse_res = CodeChunker::parse_and_chunk(path, &content, chunking_config);
+        let parse_res = CodeChunker::parse_and_extract(path, &content, chunking_config);
 
         let mut raw_chunks = Vec::new();
         let mut symbols = Vec::new();
@@ -66,19 +65,11 @@ impl ArtifactParser {
         let mut external_refs = Vec::new();
 
         if let Some(res) = parse_res {
-            let symbol_index = CodeGraphExtractor::build_symbol_index(&res.symbols);
-            let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
-                path,
-                &content,
-                &res.symbols,
-                &symbol_index,
-            );
-            graph_edges = extraction.edges;
-            external_refs = extraction.external_refs;
-
             raw_chunks = res.chunks;
             symbols = res.symbols;
             grammar_semantics = res.grammar_semantics;
+            graph_edges = res.edges;
+            external_refs = res.external_refs;
         }
 
         Ok(ParsedArtifact {

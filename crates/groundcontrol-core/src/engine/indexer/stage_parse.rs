@@ -1,6 +1,5 @@
-//! Artifact parsing, lossy file reading, and chunk to pending conversion.
+//! Artifact parsing and chunk to pending conversion.
 
-use std::fs;
 use std::path::Path;
 
 use groundcontrol_common::config::{ChunkingConfig, IndexMode};
@@ -39,14 +38,6 @@ pub(crate) fn chunk_to_pending(
         text,
         embed_policy: chunk.embed_policy,
         modality,
-    }
-}
-
-impl crate::engine::state::Engine {
-    /// Helper to read file bytes and decode as UTF-8 lossily so non-UTF8 characters never throw.
-    pub(crate) fn read_file_lossy(path: &Path) -> std::io::Result<String> {
-        let bytes = fs::read(path)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 

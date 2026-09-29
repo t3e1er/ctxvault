@@ -3,9 +3,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
+
+use crate::algorithm::binaryv3::FingerprintV3Record;
 
 use groundcontrol_common::config::{EdgeSource, IndexMode};
 use groundcontrol_common::types::{ChunkEmbedPolicy, Document, ParsedArtifact};
@@ -122,8 +125,10 @@ impl Engine {
 
         if !files_to_index.is_empty() {
             let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+            let binary_projector = self.binary.projector_arc();
             let (work_tx, work_rx) = crossbeam_channel::unbounded::<(String, PathBuf)>();
-            let (ast_tx, ast_rx) = crossbeam_channel::bounded::<ParsedArtifact>(2048);
+            let (ast_tx, ast_rx) =
+                crossbeam_channel::bounded::<(ParsedArtifact, Vec<FingerprintV3Record>)>(2048);
 
             let chunk_tx_opt = embedding_pipeline.as_ref().and_then(|p| p.chunk_sender());
             let chunking_config = self.config.chunking.clone();
@@ -146,6 +151,7 @@ impl Engine {
                     let chunk_tx_clone = chunk_tx_opt.clone();
                     let chunking_ref = &chunking_config;
                     let classifier_clone = self.classifier.clone();
+                    let projector_clone = Arc::clone(&binary_projector);
 
                     std::thread::Builder::new()
                         .name(format!("indexer-worker-{}", i))
@@ -177,6 +183,8 @@ impl Engine {
                                     }
                                 };
 
+                                let fingerprints = projector_clone.project_artifact(&record);
+
                                 if let Some(ref tx) = chunk_tx_clone {
                                     if !record.is_code {
                                         for chunk in &record.chunks {
@@ -195,7 +203,7 @@ impl Engine {
                                     }
                                 }
 
-                                if ast_tx_clone.send(record).is_err() {
+                                if ast_tx_clone.send((record, fingerprints)).is_err() {
                                     break;
                                 }
                             }
@@ -208,9 +216,14 @@ impl Engine {
 
                 let _ = self.store.begin_batch();
 
-                while let Ok(record) = ast_rx.recv() {
+                while let Ok((record, fingerprints)) = ast_rx.recv() {
                     let path = record.path.clone();
-                    if let Err(e) = self.ingest_parsed_record(record, &tag_configs, &mut all_docs) {
+                    if let Err(e) = self.ingest_parsed_record_with_fingerprints(
+                        record,
+                        &fingerprints,
+                        &tag_configs,
+                        &mut all_docs,
+                    ) {
                         warn!("Failed to ingest {}: {}", path, e);
                         continue;
                     }

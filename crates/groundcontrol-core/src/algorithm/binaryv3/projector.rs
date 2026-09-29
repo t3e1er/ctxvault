@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
-use groundcontrol_common::types::{BinaryFingerprint, CodeSymbol};
+use groundcontrol_common::types::{BinaryFingerprint, CodeSymbol, Modality, ParsedArtifact};
 
 use super::tokenizer::UNIVERSAL_ABBREVIATIONS;
+use super::types::{EntityPriorFlags, FingerprintV3Record};
 
 /// Total embedding dimensions for Matryoshka binary fingerprints (4 x 64-bit words).
 pub const V3_DIMENSIONS: usize = 256;
@@ -318,6 +319,66 @@ impl BinaryV3Projector {
         let mut total_weight = 0.0f32;
         self.accumulate_text(&mut sum, &mut total_weight, text, 1.0);
         self.finalize_projection(sum, total_weight)
+    }
+
+    /// Project an entire parsed artifact (file, symbols, chunks) into precomputed 256-bit fingerprints.
+    pub fn project_artifact(&self, doc: &ParsedArtifact) -> Vec<FingerprintV3Record> {
+        let mut fps = Vec::new();
+        let modality = if doc.is_code { Modality::Code } else { Modality::Docs };
+
+        // 1. File-level fingerprint
+        if let Some(ref content) = doc.raw_content {
+            let fp = self.project_document(&doc.path, content);
+            let flags = EntityPriorFlags::from_path(&doc.path);
+            fps.push(FingerprintV3Record {
+                id: doc.path.clone(),
+                fingerprint: fp,
+                modality,
+                flags,
+            });
+        }
+
+        // 2. Symbols or chunks
+        if doc.is_code {
+            for sym in &doc.symbols {
+                let fp = self.project_symbol(sym, &doc.path);
+                let flags = EntityPriorFlags::from_symbol(sym, &doc.path);
+                fps.push(FingerprintV3Record {
+                    id: format!("{}#{}", doc.path, sym.scope_path),
+                    fingerprint: fp,
+                    modality: Modality::Code,
+                    flags,
+                });
+            }
+
+            for chunk in &doc.chunks {
+                let fp = self.project_chunk(&doc.path, &chunk.text);
+                let flags = EntityPriorFlags::from_chunk(&doc.path);
+                fps.push(FingerprintV3Record {
+                    id: format!("{}:chunk:{}", doc.path, chunk.chunk_index),
+                    fingerprint: fp,
+                    modality: Modality::Code,
+                    flags,
+                });
+            }
+        } else {
+            for chunk in &doc.chunks {
+                let fp = self.project_chunk(&doc.path, &chunk.text);
+                let flags = EntityPriorFlags::from_chunk(&doc.path);
+                fps.push(FingerprintV3Record {
+                    id: if chunk.chunk_index == 0 {
+                        doc.path.clone()
+                    } else {
+                        format!("{}:chunk:{}", doc.path, chunk.chunk_index)
+                    },
+                    fingerprint: fp,
+                    modality: Modality::Docs,
+                    flags,
+                });
+            }
+        }
+
+        fps
     }
 
     /// Project extracted AST grammar semantics into a 256-bit binary fingerprint.

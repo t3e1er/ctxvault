@@ -102,6 +102,11 @@ impl BinaryV3SearchIndex {
         &self.projector
     }
 
+    /// Clone the reference-counted projector handle.
+    pub fn projector_arc(&self) -> Arc<BinaryV3Projector> {
+        Arc::clone(&self.projector)
+    }
+
     /// Access active configuration.
     pub fn config(&self) -> &BinaryV3Config {
         &self.config
