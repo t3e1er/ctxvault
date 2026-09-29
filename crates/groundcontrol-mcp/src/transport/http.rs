@@ -404,9 +404,14 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
-                if let Some(activation) =
-                    extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients, manager.default_corpus_name())
-                {
+                if let Some(activation) = extract_activation(
+                    &req,
+                    &res,
+                    elapsed_ms,
+                    resolved_client,
+                    &state.clients,
+                    manager.default_corpus_name(),
+                ) {
                     let _ = state.activations.send(activation);
                 }
 
@@ -440,9 +445,14 @@ async fn handle_jsonrpc_multi(
                     }
                 }
 
-                if let Some(activation) =
-                    extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients, manager.default_corpus_name())
-                {
+                if let Some(activation) = extract_activation(
+                    &req,
+                    &res,
+                    elapsed_ms,
+                    resolved_client,
+                    &state.clients,
+                    manager.default_corpus_name(),
+                ) {
                     let _ = state.activations.send(activation);
                 }
 
@@ -500,9 +510,14 @@ async fn handle_jsonrpc_multi(
             }
         }
 
-        if let Some(activation) =
-            extract_activation(&req, &res, elapsed_ms, resolved_client, &state.clients, default_corpus.as_deref())
-        {
+        if let Some(activation) = extract_activation(
+            &req,
+            &res,
+            elapsed_ms,
+            resolved_client,
+            &state.clients,
+            default_corpus.as_deref(),
+        ) {
             let _ = state.activations.send(activation);
         }
 
@@ -637,7 +652,12 @@ fn extract_activation(
         if let Some(tree) = val.get("tree").and_then(|t| t.as_array()) {
             fn extract_tree_nodes(nodes: &[Value], paths: &mut Vec<String>) {
                 for n in nodes {
-                    if let Some(name) = n.get("node").or_else(|| n.get("path")).or_else(|| n.get("file")).and_then(|v| v.as_str()) {
+                    if let Some(name) = n
+                        .get("node")
+                        .or_else(|| n.get("path"))
+                        .or_else(|| n.get("file"))
+                        .and_then(|v| v.as_str())
+                    {
                         if !paths.contains(&name.to_string()) && paths.len() < 30 {
                             paths.push(name.to_string());
                         }
@@ -708,7 +728,9 @@ fn extract_activation(
                         let abs_open = start_idx + open + 1;
                         if let Some(close) = line[abs_open..].find('`') {
                             let candidate = line[abs_open..abs_open + close].trim();
-                            if (candidate.contains('/') || candidate.contains('\\') || candidate.contains('.'))
+                            if (candidate.contains('/')
+                                || candidate.contains('\\')
+                                || candidate.contains('.'))
                                 && !candidate.contains(' ')
                             {
                                 if !paths.contains(&candidate.to_string()) && paths.len() < 12 {
@@ -724,7 +746,11 @@ fn extract_activation(
                         if let Some(p_end) = line[p_start + 1..].find(')') {
                             let inner = line[p_start + 1..p_start + 1 + p_end].trim();
                             let clean_path = inner.split(":L").next().unwrap_or(inner);
-                            if (clean_path.contains('/') || clean_path.contains('\\') || clean_path.ends_with(".rs") || clean_path.ends_with(".ts") || clean_path.ends_with(".md"))
+                            if (clean_path.contains('/')
+                                || clean_path.contains('\\')
+                                || clean_path.ends_with(".rs")
+                                || clean_path.ends_with(".ts")
+                                || clean_path.ends_with(".md"))
                                 && !clean_path.contains(' ')
                                 && !paths.contains(&clean_path.to_string())
                                 && paths.len() < 12
