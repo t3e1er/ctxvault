@@ -377,7 +377,7 @@ pub async fn handle_query(
                 let pet_graph = snap.graph.inner();
                 for edge in pet_graph.edge_references() {
                     let w = edge.weight();
-                    if w.edge_type.to_lowercase().contains(edge_filter) {
+                    if w.edge_type().to_lowercase().contains(edge_filter) {
                         let src_path = &pet_graph[edge.source()].path;
                         let tgt_path = &pet_graph[edge.target()].path;
                         if target_sub.is_empty()
