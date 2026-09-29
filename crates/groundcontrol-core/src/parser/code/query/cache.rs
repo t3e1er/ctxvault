@@ -6,7 +6,7 @@ use tree_sitter::Query;
 use super::LanguageQuery;
 use crate::parser::code::languages::SupportedLanguage;
 
-const LANG_COUNT: usize = 48;
+const LANG_COUNT: usize = 64;
 static QUERIES: [OnceLock<Option<LanguageQuery>>; LANG_COUNT] =
     [const { OnceLock::new() }; LANG_COUNT];
 
@@ -37,5 +37,24 @@ pub fn get_language_query(lang: SupportedLanguage) -> Option<&'static LanguageQu
             .as_ref()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_languages_compile_queries() {
+        use crate::parser::code::languages::SupportedLanguage;
+
+        for lang in [
+            SupportedLanguage::Xml,
+            SupportedLanguage::Vb6,
+            SupportedLanguage::PlSql,
+            SupportedLanguage::Cobol,
+        ] {
+            assert!(get_language_query(lang).is_some(), "Query pack should compile for {:?}", lang);
+        }
     }
 }

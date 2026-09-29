@@ -25,12 +25,14 @@ pub enum FileClassification {
     Code(SupportedLanguage),
     /// Rich document file that will produce a Derived Text Projection.
     Document(FileFormat),
+    /// Plain-text code or configuration in an unsupported language (BM25 fallback).
+    GenericText,
     /// Ignored file (binary asset, test fixture, or unsupported format).
     Ignored,
 }
 
 impl FileClassification {
-    /// Returns true if this file is indexable (doc, code, or rich document).
+    /// Returns true if this file is indexable (doc, code, rich document, or generic text).
     pub fn is_indexable(&self) -> bool {
         !matches!(self, Self::Ignored)
     }
@@ -38,7 +40,7 @@ impl FileClassification {
     /// Returns the corresponding `FileFormat`.
     pub fn file_format(&self) -> FileFormat {
         match self {
-            Self::MarkdownDoc | Self::Code(_) => FileFormat::Source,
+            Self::MarkdownDoc | Self::Code(_) | Self::GenericText => FileFormat::Source,
             Self::Document(fmt) => *fmt,
             Self::Ignored => FileFormat::Source,
         }
@@ -49,6 +51,14 @@ impl FileClassification {
         matches!(self, Self::MarkdownDoc | Self::Document(_))
     }
 }
+
+/// Known binary file extensions that should never be indexed as text.
+pub const KNOWN_BINARY_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "so", "dylib", "bin", "o", "a", "lib", "class", "jar", "pyc", "pyo", "pyd",
+    "png", "jpg", "jpeg", "gif", "ico", "webp", "bmp", "tiff", "psd", "mp3", "wav", "flac", "ogg",
+    "mp4", "avi", "mkv", "mov", "webm", "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "iso",
+    "wasm", "woff", "woff2", "ttf", "eot", "otf", "db", "sqlite", "sqlite3", "pdf", "docx",
+];
 
 /// A compiled classifier for determining file modalities.
 #[derive(Clone, Debug)]
@@ -73,7 +83,7 @@ impl FileClassifier {
     }
 
     /// Classify a file by path, optionally reading sample bytes.
-    pub fn classify(&self, path: &Path, _sample_bytes: Option<&[u8]>) -> FileClassification {
+    pub fn classify(&self, path: &Path, sample_bytes: Option<&[u8]>) -> FileClassification {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
 
         // 1. Native Markdown notes are always documentation.
@@ -107,7 +117,27 @@ impl FileClassifier {
             }
         }
 
-        FileClassification::Ignored
+        // 4. Universal Fallback for unsupported text files
+        // Ignore dotfiles/hidden files (e.g. .gitignore, .env, .gitattributes)
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            if file_name.starts_with('.') {
+                return FileClassification::Ignored;
+            }
+        }
+
+        // Must have an extension to represent an unsupported code/markup language
+        if ext.is_empty() || KNOWN_BINARY_EXTENSIONS.contains(&ext.as_str()) {
+            return FileClassification::Ignored;
+        }
+
+        if let Some(bytes) = sample_bytes {
+            let check_len = bytes.len().min(1024);
+            if bytes[..check_len].contains(&0) {
+                return FileClassification::Ignored;
+            }
+        }
+
+        FileClassification::GenericText
     }
 }
 
@@ -166,6 +196,53 @@ mod tests {
         // Rich documents outside docs.patterns
         assert_eq!(
             classifier.classify(Path::new("fixtures/sample.pdf"), None),
+            FileClassification::Ignored
+        );
+
+        // New polyglot languages
+        assert_eq!(
+            classifier.classify(Path::new("finance/account.cbl"), None),
+            FileClassification::Code(SupportedLanguage::Cobol)
+        );
+        assert_eq!(
+            classifier.classify(Path::new("legacy/form1.frm"), None),
+            FileClassification::Code(SupportedLanguage::Vb6)
+        );
+        assert_eq!(
+            classifier.classify(Path::new("db/pkg_body.pkb"), None),
+            FileClassification::Code(SupportedLanguage::PlSql)
+        );
+        assert_eq!(
+            classifier.classify(Path::new("maven/pom.xml"), None),
+            FileClassification::Code(SupportedLanguage::Xml)
+        );
+        assert_eq!(
+            classifier.classify(Path::new("transform/sheet.xslt"), None),
+            FileClassification::Code(SupportedLanguage::Xml)
+        );
+
+        // Universal Plain-Text BM25 Fallback
+        assert_eq!(
+            classifier.classify(Path::new("pascal/main.pas"), None),
+            FileClassification::GenericText
+        );
+        assert_eq!(
+            classifier.classify(Path::new("config/settings.ini"), Some(b"[settings]\nport=8080\n")),
+            FileClassification::GenericText
+        );
+
+        // Dotfiles and extensionless files ignored by fallback
+        assert_eq!(classifier.classify(Path::new(".gitignore"), None), FileClassification::Ignored);
+        assert_eq!(classifier.classify(Path::new(".env"), None), FileClassification::Ignored);
+        assert_eq!(classifier.classify(Path::new("LICENSE"), None), FileClassification::Ignored);
+
+        // Binary files correctly ignored
+        assert_eq!(
+            classifier.classify(Path::new("bin/app.exe"), None),
+            FileClassification::Ignored
+        );
+        assert_eq!(
+            classifier.classify(Path::new("data/corrupt.dat"), Some(&[0x48, 0x65, 0x00, 0x6c])),
             FileClassification::Ignored
         );
     }

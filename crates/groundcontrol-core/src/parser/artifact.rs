@@ -32,6 +32,9 @@ impl ArtifactParser {
 
         match classification {
             FileClassification::Code(_) => Self::parse_code(rel_path, bytes, hash, chunking_config),
+            FileClassification::GenericText => {
+                Self::parse_generic_text(rel_path, bytes, hash, chunking_config)
+            }
             FileClassification::MarkdownDoc => {
                 Self::parse_markdown(rel_path, bytes, hash, chunking_config)
             }
@@ -90,6 +93,79 @@ impl ArtifactParser {
             chunks: raw_chunks,
             graph_edges,
             external_refs,
+            raw_content: Some(content),
+            projection_text: None,
+        })
+    }
+
+    fn parse_generic_text(
+        rel_path: &str,
+        bytes: &[u8],
+        hash: String,
+        _chunking_config: &ChunkingConfig,
+    ) -> Result<ParsedArtifact> {
+        let content = String::from_utf8_lossy(bytes).into_owned();
+        let path = Path::new(rel_path);
+        let file_title = path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut raw_chunks = Vec::new();
+        let window_size = 100;
+        let overlap = 10;
+        let mut start = 0;
+        let mut chunk_idx = 0;
+
+        if lines.is_empty() {
+            raw_chunks.push(
+                groundcontrol_common::types::Chunk::new(rel_path, 0, "", 0, 0).with_lines(1, 1),
+            );
+        } else {
+            let mut byte_offsets = Vec::with_capacity(lines.len() + 1);
+            let mut curr_offset = 0;
+            for line in &lines {
+                byte_offsets.push(curr_offset);
+                curr_offset += line.len() + 1; // +1 for newline
+            }
+            byte_offsets.push(content.len());
+
+            while start < lines.len() {
+                let end = (start + window_size).min(lines.len());
+                let chunk_lines = &lines[start..end];
+                let chunk_content = chunk_lines.join("\n");
+                let start_byte = byte_offsets[start];
+                let end_byte = byte_offsets[end].min(content.len());
+
+                raw_chunks.push(
+                    groundcontrol_common::types::Chunk::new(
+                        rel_path,
+                        chunk_idx,
+                        chunk_content,
+                        start_byte,
+                        end_byte,
+                    )
+                    .with_lines(start + 1, end),
+                );
+
+                chunk_idx += 1;
+                if end == lines.len() {
+                    break;
+                }
+                start += window_size.saturating_sub(overlap);
+            }
+        }
+
+        Ok(ParsedArtifact {
+            path: rel_path.to_string(),
+            hash,
+            is_code: true,
+            format: FileFormat::Source,
+            title: file_title,
+            doc_metadata: None,
+            symbols: Vec::new(),
+            grammar_semantics: Vec::new(),
+            chunks: raw_chunks,
+            graph_edges: Vec::new(),
+            external_refs: Vec::new(),
             raw_content: Some(content),
             projection_text: None,
         })
@@ -187,5 +263,109 @@ impl ArtifactParser {
             raw_content: Some(extracted.normalized_text.clone()),
             projection_text: Some(extracted.normalized_text),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use groundcontrol_common::config::CorpusConfig;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_parse_generic_text_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let config = CorpusConfig::default();
+        let classifier = FileClassifier::new(tmp.path(), &config);
+        let chunking_config = ChunkingConfig::default();
+
+        let pascal_code = "program HelloWorld;\nbegin\n  writeln('Hello, Pascal!');\nend.\n";
+        let rel_path = "legacy/hello.pas";
+        let full_path = tmp.path().join("legacy/hello.pas");
+
+        let artifact = ArtifactParser::parse(
+            rel_path,
+            &full_path,
+            pascal_code.as_bytes(),
+            "hash123".to_string(),
+            &classifier,
+            &chunking_config,
+        )
+        .expect("Generic text should parse successfully");
+
+        assert!(artifact.is_code);
+        assert_eq!(artifact.format, FileFormat::Source);
+        assert!(!artifact.chunks.is_empty());
+        assert_eq!(artifact.chunks[0].start_line, 1);
+        assert!(artifact.chunks[0].text.contains("Hello, Pascal!"));
+    }
+
+    #[test]
+    fn test_parse_new_polyglot_languages() {
+        let tmp = TempDir::new().unwrap();
+        let config = CorpusConfig::default();
+        let classifier = FileClassifier::new(tmp.path(), &config);
+        let chunking_config = ChunkingConfig::default();
+
+        // 1. XML
+        let xml_src = r#"<?xml version="1.0"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:template name="test_template">
+    <xsl:value-of select="'hello'"/>
+  </xsl:template>
+</xsl:stylesheet>"#;
+        let xml_art = ArtifactParser::parse(
+            "templates/sheet.xsl",
+            &tmp.path().join("templates/sheet.xsl"),
+            xml_src.as_bytes(),
+            "h_xml".to_string(),
+            &classifier,
+            &chunking_config,
+        )
+        .expect("XML should parse successfully");
+        assert!(xml_art.is_code);
+        assert!(!xml_art.chunks.is_empty());
+
+        // 2. VB6
+        let vb6_src = "Sub CalculateTotal()\n    Dim x As Integer\nEnd Sub\n";
+        let vb6_art = ArtifactParser::parse(
+            "forms/frmMain.frm",
+            &tmp.path().join("forms/frmMain.frm"),
+            vb6_src.as_bytes(),
+            "h_vb6".to_string(),
+            &classifier,
+            &chunking_config,
+        )
+        .expect("VB6 should parse successfully");
+        assert!(vb6_art.is_code);
+        assert!(!vb6_art.chunks.is_empty());
+
+        // 3. PL/SQL
+        let plsql_src = "CREATE PACKAGE BODY finance IS\nPROCEDURE update_balance IS\nBEGIN\n  NULL;\nEND update_balance;\nEND finance;\n";
+        let plsql_art = ArtifactParser::parse(
+            "db/update_bal.pkb",
+            &tmp.path().join("db/update_bal.pkb"),
+            plsql_src.as_bytes(),
+            "h_pls".to_string(),
+            &classifier,
+            &chunking_config,
+        )
+        .expect("PL/SQL should parse successfully");
+        assert!(plsql_art.is_code);
+        assert!(!plsql_art.chunks.is_empty());
+
+        // 4. COBOL
+        let cobol_src = "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. HELLO.\n       PROCEDURE DIVISION.\n           DISPLAY 'HELLO'.\n           STOP RUN.\n";
+        let cobol_art = ArtifactParser::parse(
+            "src/hello.cbl",
+            &tmp.path().join("src/hello.cbl"),
+            cobol_src.as_bytes(),
+            "h_cob".to_string(),
+            &classifier,
+            &chunking_config,
+        )
+        .expect("COBOL should parse successfully");
+        assert!(cobol_art.is_code);
+        assert!(!cobol_art.chunks.is_empty());
     }
 }

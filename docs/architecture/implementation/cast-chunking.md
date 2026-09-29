@@ -48,15 +48,23 @@ pub fn process(&self, tx: Transaction) -> Result<Receipt> {
 
 ---
 
-## 3. Supported Languages (16+)
+## 3. Supported Languages (52 Languages)
 
-* Rust (`tree-sitter-rust`)
-* TypeScript & JavaScript (`tree-sitter-typescript`, `tree-sitter-javascript`)
-* Python (`tree-sitter-python`)
-* Go (`tree-sitter-go`)
-* Java (`tree-sitter-java`)
-* C & C++ (`tree-sitter-c`, `tree-sitter-cpp`)
-* C# (`tree-sitter-c-sharp`)
-* Bash / Shell (`tree-sitter-bash`)
-* Lua (`tree-sitter-lua`)
+* Rust, Go, Python, TypeScript, JavaScript, Java, C, C++, C#
+* COBOL (`arborium-cobol`)
+* Visual Basic 6.0 (`tree-sitter-vb6`)
+* Oracle PL/SQL (`tree-sitter-plsql-sqry`)
+* XML & XSLT (`tree-sitter-xml`)
+* Bash, Lua, Ruby, PHP, Swift, Kotlin, Scala, Elixir, Erlang, Dart, Julia, R
+* Zig, D, WGSL, CUDA, Verilog, TLA+, Gleam, Nix, OCaml, Haskell
+* SQL, HCL / Terraform, Bicep, Starlark, CMake, Make, Dockerfile
+* HTML, CSS, JSON, TOML, YAML, Protocol Buffers, GraphQL
 * Markdown (`pulldown-cmark`)
+
+## 4. Universal Plain-Text BM25 Fallback
+
+For text sources lacking native Tree-sitter AST support (e.g., Pascal, Fortran, Ada, legacy scripts, or custom configuration files):
+1. **Binary Detection**: Evaluates sample bytes for null bytes (`b'\0'`) and matches against known binary extension filters (`KNOWN_BINARY_EXTENSIONS`).
+2. **Generic Classification**: Non-binary text files are categorized as [`FileClassification::GenericText`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/classifier/classifier.rs).
+3. **Sliding Line-Window Chunking**: [`ArtifactParser::parse_generic_text`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/parser/artifact.rs) segments lines into sliding windows (100 lines with 10-line overlap).
+4. **Unified Retrieval**: Ingested directly into the Tantivy BM25 code index and SQLite metadata catalog, providing Turn 1 search snippets, `get_snippet` handle fetches, and line-slice `read_file` support.

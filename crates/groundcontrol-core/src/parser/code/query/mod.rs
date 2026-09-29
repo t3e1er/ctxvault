@@ -145,7 +145,7 @@ impl LanguageQuery {
             let mut is_test = false;
             let mut dynamic_captures = Vec::new();
 
-            for capture in m.captures() {
+            for capture in m.captures {
                 let id = capture.index;
                 let cname = self.query.capture_names()[id as usize];
 
@@ -251,7 +251,7 @@ impl LanguageQuery {
             let mut var_node = None;
             let mut type_node = None;
 
-            for capture in m.captures() {
+            for capture in m.captures {
                 if capture.index == var_id {
                     var_node = Some(capture.node);
                 } else if capture.index == type_id {
