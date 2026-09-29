@@ -155,6 +155,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "arborium-cobol"
+version = "2.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f4f892443d18dfe484cb58e4365fc6e544e5372a1d48c8d6582f52dfabfc57"
+dependencies = [
+ "arborium-sysroot",
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "arborium-sysroot"
+version = "2.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd9d120dd5df8b918cd96676a88f1233a66f10687d415b69f70b3396acddddf"
+dependencies = [
+ "cc",
+ "dlmalloc",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +987,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlmalloc"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad5208a115eaba24916f7456929832e310a81518c641f93fee4f89aa93aa3675"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1392,6 +1424,7 @@ name = "groundcontrol-core"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "arborium-cobol",
  "assert_fs",
  "blake3",
  "bytemuck",
@@ -1453,6 +1486,7 @@ dependencies = [
  "tree-sitter-nix",
  "tree-sitter-ocaml",
  "tree-sitter-php",
+ "tree-sitter-plsql-sqry",
  "tree-sitter-powershell",
  "tree-sitter-proto",
  "tree-sitter-python",
@@ -1467,8 +1501,10 @@ dependencies = [
  "tree-sitter-tlaplus",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
+ "tree-sitter-vb6",
  "tree-sitter-verilog",
  "tree-sitter-wgsl-bevy",
+ "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "zip",
@@ -3688,6 +3724,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqry-tree-sitter-support"
+version = "31.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3dca8ee00ff7c7f637df92d6035b4f70614717ba6231060d73db7ff8c04ad369"
+dependencies = [
+ "thiserror 2.0.21",
+ "tree-sitter",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4377,12 +4423,13 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.27.0"
+version = "0.26.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2038684e0058edba0d17302619f62eabce4a8e11c6ac59506996a8d79848851d"
+checksum = "17ebdd3a5a7e28a1890b876fdbd0c3c0fe0a6336cffaa104f11b9f720c9daa29"
 dependencies = [
  "cc",
  "regex",
+ "regex-syntax",
  "serde_json",
  "streaming-iterator",
  "tree-sitter-language",
@@ -4675,6 +4722,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-plsql-sqry"
+version = "31.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704383b7176f83da3d49cfaa8557a7de3e77e333665093cc4cb752a5dfbcb053"
+dependencies = [
+ "cc",
+ "sqry-tree-sitter-support",
+ "tree-sitter",
+]
+
+[[package]]
 name = "tree-sitter-powershell"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4815,6 +4873,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-vb6"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "178cfc0f2c3e9ab0fe72cea69fe30c492d76bb4f94d7a60bc2f865eb994bf655"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
 name = "tree-sitter-verilog"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4829,6 +4897,16 @@ name = "tree-sitter-wgsl-bevy"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c96503dc3a7f1d17d954d2569c65143a9af03d40c6ad83f7ba5241a3965c60d0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-xml"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e670041f591d994f54d597ddcd8f4ebc930e282c4c76a42268743b71f0c8b6b3"
 dependencies = [
  "cc",
  "tree-sitter-language",

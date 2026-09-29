@@ -91,6 +91,10 @@ define_languages![
     (D, d),
     (Wgsl, wgsl),
     (Erlang, erlang),
+    (Xml, xml),
+    (Vb6, vb6),
+    (PlSql, plsql),
+    (Cobol, cobol),
 ];
 
 impl SupportedLanguage {
