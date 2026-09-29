@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use groundcontrol_common::config::{get_corpora_cache_dir, get_corpus_index_dir};
 use groundcontrol_core::graph::KnowledgeGraph;
@@ -16,10 +17,18 @@ pub struct CorpusSnapshot {
     pub name: String,
     /// Absolute path to corpus index directory.
     pub index_dir: PathBuf,
+    /// Absolute path to the original source root directory on disk, if known.
+    pub root_dir: Option<PathBuf>,
     /// Loaded petgraph knowledge graph.
     pub graph: KnowledgeGraph,
     /// Authoritative AST-derived symbol types from meta.db (key -> symbol_type).
     pub ast_types: Arc<HashMap<String, String>>,
+    /// Pre-computed path → community-id mapping from Leiden detection at load time.
+    /// Used by Tier 2 ego subgraph to inherit full community coloring without re-running detection.
+    pub community_map: Arc<HashMap<String, u32>>,
+    /// Modification time of `graph.bin` when this snapshot was loaded.
+    /// Surfaced in `/api/status` for cache-staleness detection.
+    pub graph_mtime: SystemTime,
 }
 
 impl CorpusSnapshot {
@@ -36,14 +45,36 @@ impl CorpusSnapshot {
         let graph = KnowledgeGraph::load(&graph_path)
             .map_err(|e| GraphViewError::GraphLoad(format!("{}: {}", name, e)))?;
 
-        // Extract AST-derived entity classes from SQLite catalog meta.db
+        // Extract AST-derived entity classes and source root from SQLite catalog meta.db
         let mut ast_types = HashMap::new();
+        let mut root_dir = None;
         let meta_path = index_dir.join("meta.db");
         if meta_path.exists() {
             if let Ok(conn) = rusqlite::Connection::open_with_flags(
                 &meta_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             ) {
+                if let Ok(mut stmt) =
+                    conn.prepare("SELECT value FROM corpus_config WHERE key = 'corpus_config'")
+                {
+                    if let Ok(mut rows) = stmt.query([]) {
+                        if let Ok(Some(row)) = rows.next() {
+                            if let Ok(val_str) = row.get::<_, String>(0) {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<serde_json::Value>(&val_str)
+                                {
+                                    if let Some(p) = parsed.get("path").and_then(|v| v.as_str()) {
+                                        let clean = p
+                                            .trim_start_matches("//?/")
+                                            .trim_start_matches(r"\\?\");
+                                        root_dir = Some(PathBuf::from(clean));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Ok(mut stmt) = conn
                     .prepare("SELECT name, scope_path, file_path, symbol_type FROM code_symbols")
                 {
@@ -100,11 +131,28 @@ impl CorpusSnapshot {
             "Loaded read-only corpus graph snapshot"
         );
 
+        // Pre-compute community map via Leiden detection (run once at load, cached for Tier 2).
+        let community_res = graph.detect_communities_leiden();
+        let mut community_map = HashMap::with_capacity(community_res.communities.len() * 8);
+        for (comm_id, comm) in community_res.communities.iter().enumerate() {
+            for member in &comm.members {
+                community_map.insert(member.clone(), comm_id as u32);
+            }
+        }
+
+        // Record graph.bin mtime for staleness detection.
+        let graph_mtime = std::fs::metadata(&graph_path)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
         Ok(Self {
             name: name.to_string(),
             index_dir: index_dir.to_path_buf(),
+            root_dir,
             graph,
             ast_types: Arc::new(ast_types),
+            community_map: Arc::new(community_map),
+            graph_mtime,
         })
     }
 }

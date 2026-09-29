@@ -14,7 +14,7 @@ pub enum ClusterMode {
 
 impl Default for ClusterMode {
     fn default() -> Self {
-        Self::Directory
+        Self::Community
     }
 }
 
@@ -52,6 +52,12 @@ pub struct EdgeLayout {
     pub edge_type: String,
     /// Normalized edge weight.
     pub weight: f32,
+    /// Edge semantic class discriminant:
+    /// 0 = Structural, 1 = Semantic, 2 = Code, 3 = CrossModal, 4 = Hybrid.
+    pub edge_class: u8,
+    /// Cross-corpus resolution confidence:
+    /// 0 = None (intra-corpus), 1 = High, 2 = Medium, 3 = Speculative.
+    pub confidence: u8,
 }
 
 /// Fully computed 3D scene payload.

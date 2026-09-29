@@ -1,0 +1,20 @@
+{
+  "name": "groundcontrol-graphview-ui",
+  "private": true,
+  "version": "0.2.2",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "three": "^0.168.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.168.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.2",
+    "ws": "^8.22.0"
+  }
+}

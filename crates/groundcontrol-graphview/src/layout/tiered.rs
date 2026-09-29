@@ -16,10 +16,9 @@ use crate::layout::{
 };
 use crate::loader::{CorpusCatalog, CorpusSnapshot};
 
-/// Maximum default nodes allowed in Tier 0 Galaxy view.
-pub const TIER_0_BUDGET: usize = 50000;
-/// Default node budget for Tier 1 Corpus view.
-pub const TIER_1_DEFAULT_BUDGET: usize = 50000;
+/// Default node budget shared by all tier views. Proportional allocation divides this
+/// across corpora in Tier 0 by relative node count, with a floor of 500 per corpus.
+pub const DEFAULT_NODE_BUDGET: usize = 50_000;
 
 /// Compute 3D celestial coordinates for all corpus clouds in Galaxy view.
 /// Distributes corpora across 3D space, grouping connected corpora together
@@ -37,39 +36,19 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
         return map;
     }
 
-    // 1. Build lookup of node paths per corpus to measure inter-corpus connectivity
-    let mut corpus_paths: Vec<HashSet<String>> = Vec::with_capacity(num_corpora);
-    for name in &names {
-        let mut paths = HashSet::new();
-        if let Some(snap) = catalog.get_corpus(name) {
-            let pet = snap.graph.inner();
-            for n_idx in pet.node_indices() {
-                let p = pet[n_idx].path.replace('\\', "/");
-                paths.insert(p.clone());
-                if let Some(sub) = p.split('#').nth(1) {
-                    paths.insert(sub.to_string());
-                }
-            }
-        }
-        corpus_paths.push(paths);
-    }
-
-    // 2. Count cross-corpus edge references between each pair of corpora (i, j)
+    // Count cross-corpus edge references between each pair of corpora (i, j)
     let mut inter_links: HashMap<(usize, usize), usize> = HashMap::new();
     for (i, name) in names.iter().enumerate() {
         if let Some(snap) = catalog.get_corpus(name) {
             let pet = snap.graph.inner();
             for edge_ref in pet.edge_references() {
-                let tgt_p = pet[edge_ref.target()].path.replace('\\', "/");
-                let tgt_sub = tgt_p.split('#').nth(1).unwrap_or("");
-
-                for (j, other_paths) in corpus_paths.iter().enumerate() {
-                    if i != j
-                        && (other_paths.contains(&tgt_p)
-                            || (!tgt_sub.is_empty() && other_paths.contains(tgt_sub)))
-                    {
-                        let key = if i < j { (i, j) } else { (j, i) };
-                        *inter_links.entry(key).or_insert(0) += 1;
+                let w = edge_ref.weight();
+                if let Some(ref tgt_corpus) = w.target_corpus {
+                    if let Some(j) = names.iter().position(|n| n == tgt_corpus) {
+                        if i != j {
+                            let key = if i < j { (i, j) } else { (j, i) };
+                            *inter_links.entry(key).or_insert(0) += 1;
+                        }
                     }
                 }
             }
@@ -81,8 +60,9 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
     // If 2 corpora:
     if num_corpora == 2 {
         let links = inter_links.get(&(0, 1)).copied().unwrap_or(0);
-        // If cojoining edges exist, pull closer (1800 units total distance), else separate (2800 units)
-        let sep = if links > 0 { 900.0 } else { 1400.0 };
+        // Proportional proximity scaling: stronger cross-corpus links pull corpora closer (min 850, default 1400)
+        let link_factor = if links > 0 { (links as f32).ln_1p() } else { 0.0 };
+        let sep = (1400.0 - 550.0 * (link_factor / (link_factor + 2.5))).max(850.0);
         positions.push([-sep, 0.0, 0.0]);
         positions.push([sep, 0.0, 0.0]);
     } else {
@@ -135,15 +115,16 @@ pub fn compute_corpus_centers(catalog: &CorpusCatalog) -> HashMap<String, [f32; 
                     forces[j][1] += ny * rep;
                     forces[j][2] += nz * rep;
 
-                    // Attraction along cojoining edges
+                    // Attraction along cojoining edges: stronger links pull closer toward min_sep
                     let key = (i, j);
                     let links = inter_links.get(&key).copied().unwrap_or(0);
                     if links > 0 {
-                        let target_dist = 1800.0_f32;
+                        let link_factor = (links as f32).ln_1p();
+                        let target_dist =
+                            (2000.0 - 450.0 * (link_factor / (link_factor + 2.5))).max(min_sep);
                         if dist > target_dist {
-                            let pull = ((dist - target_dist)
-                                * (0.04 + 0.02 * (links as f32).ln_1p()))
-                            .min(180.0);
+                            let pull =
+                                ((dist - target_dist) * (0.05 + 0.03 * link_factor)).min(220.0);
                             forces[i][0] += nx * pull;
                             forces[i][1] += ny * pull;
                             forces[i][2] += nz * pull;
@@ -224,13 +205,26 @@ pub fn build_tier_0_overview(
     let mut path_to_global_id: HashMap<String, u32> = HashMap::new();
     let mut node_to_corpus: Vec<usize> = Vec::new();
 
+    // Total nodes across all loaded corpora for proportional budget allocation.
+    let total_nodes_all: usize = corpus_names
+        .iter()
+        .filter_map(|n| catalog.get_corpus(n))
+        .map(|s| s.graph.node_count())
+        .sum::<usize>()
+        .max(1);
+
     for (c_idx, name) in corpus_names.iter().enumerate() {
         let Some(snapshot) = catalog.get_corpus(name) else {
             continue;
         };
 
-        // Budget per corpus in multi-corpus mode
-        let per_corpus_budget = (budget / num_corpora).max(2000);
+        // Proportional budget: larger corpora get more of the total budget.
+        // Floor of 500 (bounded by budget) ensures every corpus gets at least some representation.
+        let corpus_nodes = snapshot.graph.node_count().max(1);
+        let min_bound = 500.min(budget);
+        let per_corpus_budget = ((budget as f64 * corpus_nodes as f64 / total_nodes_all as f64)
+            .round() as usize)
+            .clamp(min_bound, budget);
         let layout = build_tier_1_corpus(&snapshot, per_corpus_budget, cluster_mode);
 
         let center = centers.get(name).copied().unwrap_or([0.0, 0.0, 0.0]);
@@ -268,24 +262,35 @@ pub fn build_tier_0_overview(
         }
     }
 
-    // Detect and connect cojoining cross-corpus edges
+    // Emit cross-corpus edges by reading GraphEdge.target_corpus directly — O(E) not O(C×E).
+    // Edges where target_corpus is Some(_) are already resolved cross-corpus links with full
+    // target_path metadata; no path-intersection scan needed.
     for name in &corpus_names {
         if let Some(snapshot) = catalog.get_corpus(name) {
             let pet = snapshot.graph.inner();
             for edge_ref in pet.edge_references() {
-                let src_node = &pet[edge_ref.source()];
-                let tgt_node = &pet[edge_ref.target()];
-                let src_p = src_node.path.replace('\\', "/");
-                let tgt_p = tgt_node.path.replace('\\', "/");
+                let w = edge_ref.weight();
+                // Only process edges that are explicitly marked as cross-corpus.
+                if w.target_corpus.is_none() {
+                    continue;
+                }
+                let src_p = pet[edge_ref.source()].path.replace('\\', "/");
+                let tgt_p = w
+                    .target_path
+                    .as_deref()
+                    .unwrap_or(&pet[edge_ref.target()].path)
+                    .replace('\\', "/");
 
-                if let (Some(&s_id), Some(&t_id)) = (
-                    path_to_global_id.get(&src_p).or_else(|| {
-                        src_p.split('#').nth(1).and_then(|sub| path_to_global_id.get(sub))
-                    }),
-                    path_to_global_id.get(&tgt_p).or_else(|| {
-                        tgt_p.split('#').nth(1).and_then(|sub| path_to_global_id.get(sub))
-                    }),
-                ) {
+                let s_id = path_to_global_id
+                    .get(&src_p)
+                    .or_else(|| src_p.split('#').nth(1).and_then(|s| path_to_global_id.get(s)))
+                    .copied();
+                let t_id = path_to_global_id
+                    .get(&tgt_p)
+                    .or_else(|| tgt_p.split('#').nth(1).and_then(|s| path_to_global_id.get(s)))
+                    .copied();
+
+                if let (Some(s_id), Some(t_id)) = (s_id, t_id) {
                     let s_idx = s_id as usize;
                     let t_idx = t_id as usize;
                     if s_id != t_id
@@ -293,11 +298,22 @@ pub fn build_tier_0_overview(
                         && t_idx < node_to_corpus.len()
                         && node_to_corpus[s_idx] != node_to_corpus[t_idx]
                     {
+                        // Map ResolutionConfidence to wire byte: None=0, High=1, Medium=2, Speculative=3.
+                        use groundcontrol_common::types::ResolutionConfidence;
+                        let confidence = match w.confidence {
+                            Some(ResolutionConfidence::High) => 1u8,
+                            Some(ResolutionConfidence::Medium) => 2u8,
+                            Some(ResolutionConfidence::Speculative) => 3u8,
+                            None => 0u8,
+                        };
+                        // CrossModal = 3 in the edge_class discriminant mapping.
                         all_edges.push(EdgeLayout {
                             source: s_id,
                             target: t_id,
                             edge_type: "cross_corpus".to_string(),
                             weight: 2.0,
+                            edge_class: 3, // CrossModal
+                            confidence,
                         });
                     }
                 }
@@ -382,14 +398,37 @@ pub fn build_tier_1_corpus(
         communities.push(comm);
     }
 
-    // Extract edges between selected nodes
+    // Extract edges between selected nodes, propagating edge_class and confidence.
     let mut raw_edges = Vec::new();
     for pet_edge in pet_graph.edge_references() {
         if let (Some(&src_loc), Some(&tgt_loc)) =
             (idx_to_local.get(&pet_edge.source()), idx_to_local.get(&pet_edge.target()))
         {
             let w = pet_edge.weight();
-            raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight));
+            // Map EdgeClass to discriminant: Structural=0, Semantic=1, Code=2, CrossModal=3, Hybrid=4.
+            use groundcontrol_common::config::EdgeClass;
+            let edge_class: u8 = match w.class {
+                EdgeClass::Structural => 0,
+                EdgeClass::Semantic => 1,
+                EdgeClass::Code => 2,
+                EdgeClass::CrossModal => 3,
+                EdgeClass::Hybrid => 4,
+            };
+            use groundcontrol_common::types::ResolutionConfidence;
+            let confidence: u8 = match w.confidence {
+                Some(ResolutionConfidence::High) => 1,
+                Some(ResolutionConfidence::Medium) => 2,
+                Some(ResolutionConfidence::Speculative) => 3,
+                None => 0,
+            };
+            raw_edges.push((
+                src_loc,
+                tgt_loc,
+                w.edge_type().to_string(),
+                w.weight,
+                edge_class,
+                confidence,
+            ));
         }
     }
 
@@ -398,7 +437,7 @@ pub fn build_tier_1_corpus(
         cluster_mode,
         anchor_strength: match cluster_mode {
             ClusterMode::Directory => 0.25,
-            ClusterMode::Community => 0.22,
+            ClusterMode::Community => 0.35,
         },
         ..Default::default()
     };
@@ -489,7 +528,10 @@ pub fn build_tier_2_local(
         let deg = pet_graph.edges_directed(pet_idx, Direction::Incoming).count()
             + pet_graph.edges_directed(pet_idx, Direction::Outgoing).count();
         degrees.push(deg);
-        communities.push(if pet_idx == center_idx { 1 } else { 0 });
+        // Inherit community from the snapshot's pre-computed community map.
+        // Falls back to 0 for nodes not in any detected community.
+        let comm = snapshot.community_map.get(&node_data.path).copied().unwrap_or(0);
+        communities.push(comm);
     }
 
     let mut raw_edges = Vec::new();
@@ -499,7 +541,30 @@ pub fn build_tier_2_local(
                 (idx_to_local.get(&pet_idx), idx_to_local.get(&edge.target()))
             {
                 let w = edge.weight();
-                raw_edges.push((src_loc, tgt_loc, w.edge_type().to_string(), w.weight));
+                // Map EdgeClass to discriminant: Structural=0, Semantic=1, Code=2, CrossModal=3, Hybrid=4.
+                use groundcontrol_common::config::EdgeClass;
+                let edge_class: u8 = match w.class {
+                    EdgeClass::Structural => 0,
+                    EdgeClass::Semantic => 1,
+                    EdgeClass::Code => 2,
+                    EdgeClass::CrossModal => 3,
+                    EdgeClass::Hybrid => 4,
+                };
+                use groundcontrol_common::types::ResolutionConfidence;
+                let confidence: u8 = match w.confidence {
+                    Some(ResolutionConfidence::High) => 1,
+                    Some(ResolutionConfidence::Medium) => 2,
+                    Some(ResolutionConfidence::Speculative) => 3,
+                    None => 0,
+                };
+                raw_edges.push((
+                    src_loc,
+                    tgt_loc,
+                    w.edge_type().to_string(),
+                    w.weight,
+                    edge_class,
+                    confidence,
+                ));
             }
         }
     }

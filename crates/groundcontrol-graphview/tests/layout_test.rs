@@ -38,8 +38,10 @@ fn test_force_layout_simulation() {
     let titles = vec![None, None, None];
     let degrees = vec![2, 1, 1];
     let communities = vec![0, 0, 1];
-    let raw_edges =
-        vec![(0, 1, "wikilink".to_string(), 1.0f32), (0, 2, "calls".to_string(), 1.0f32)];
+    let raw_edges = vec![
+        (0, 1, "wikilink".to_string(), 1.0f32, 0u8, 0u8),
+        (0, 2, "calls".to_string(), 1.0f32, 2u8, 1u8),
+    ];
 
     // Test Directory Clustering
     let dir_config = LayoutConfig {
@@ -100,6 +102,8 @@ fn test_binary_protocol_packing() {
                 target: i as u32,
                 edge_type: "calls".to_string(),
                 weight: 1.0,
+                edge_class: 2,
+                confidence: 1,
             });
         }
     }
@@ -108,7 +112,7 @@ fn test_binary_protocol_packing() {
         GraphLayout { corpus: "test_corpus".to_string(), nodes, edges, communities_count: 3 };
 
     let encoded = BinaryWireEncoder::encode(&layout);
-    assert!(encoded.len() > 16 + 100 * 32 + 99 * 12);
+    assert!(encoded.len() > 16 + 100 * 32 + 99 * 16);
 
     let magic = u32::from_le_bytes(encoded[0..4].try_into().unwrap());
     let version = u32::from_le_bytes(encoded[4..8].try_into().unwrap());
