@@ -31,6 +31,8 @@ class GraphViewApp {
     this.inspector = new Inspector(document.getElementById('inspector-mount')!);
     this.telemetry = new TelemetryFeed(document.getElementById('telemetry-mount')!);
 
+    (window as any).__graphApp = this;
+
     this.bindEvents();
   }
 
@@ -524,7 +526,14 @@ class GraphViewApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+function bootstrap() {
   const app = new GraphViewApp();
+  (window as any).__graphApp = app;
   app.init();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootstrap);
+} else {
+  bootstrap();
+}
