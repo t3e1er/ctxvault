@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "groundcontrol-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "groundcontrol-common"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "serde",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "groundcontrol-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "groundcontrol-graphview"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "groundcontrol-mcp"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",

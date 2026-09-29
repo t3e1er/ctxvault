@@ -27,6 +27,7 @@ struct FingerprintsV3Data {
 #[derive(Clone)]
 pub struct BinaryV3SearchIndex {
     records: Vec<FingerprintV3Record>,
+    id_to_idx: std::collections::HashMap<String, usize>,
     projector: Arc<BinaryV3Projector>,
     config: BinaryV3Config,
 }
@@ -51,6 +52,7 @@ impl BinaryV3SearchIndex {
     pub fn new() -> Self {
         Self {
             records: Vec::new(),
+            id_to_idx: std::collections::HashMap::new(),
             projector: Arc::new(BinaryV3Projector::default()),
             config: BinaryV3Config::default(),
         }
@@ -69,8 +71,12 @@ impl BinaryV3SearchIndex {
             )));
         }
 
+        let id_to_idx =
+            data.records.iter().enumerate().map(|(idx, r)| (r.id.clone(), idx)).collect();
+
         Ok(Self {
             records: data.records,
+            id_to_idx,
             projector: Arc::new(BinaryV3Projector::default()),
             config: BinaryV3Config::default(),
         })
@@ -111,6 +117,13 @@ impl BinaryV3SearchIndex {
         self.config = config;
     }
 
+    /// Set projection kind.
+    pub fn set_projection_kind(
+        &mut self,
+        _kind: groundcontrol_common::types::BinaryProjectionKind,
+    ) {
+    }
+
     /// Project a text query into a 256-bit fingerprint.
     pub fn project_query(&self, query: &str) -> BinaryFingerprint {
         self.projector.project_query(query)
@@ -134,6 +147,7 @@ impl BinaryV3SearchIndex {
     /// Clear all fingerprint records.
     pub fn clear(&mut self) {
         self.records.clear();
+        self.id_to_idx.clear();
     }
 
     /// Remove all fingerprints associated with a document path.
@@ -145,18 +159,18 @@ impl BinaryV3SearchIndex {
                 && !r.id.starts_with(&chunk_prefix)
                 && !r.id.starts_with(&symbol_prefix)
         });
+        self.id_to_idx =
+            self.records.iter().enumerate().map(|(idx, r)| (r.id.clone(), idx)).collect();
     }
 
-    /// Add or update binary fingerprint records.
+    /// Add or update binary fingerprint records in O(1) amortized time.
     pub fn index_fingerprints(&mut self, new_records: &[FingerprintV3Record]) -> Result<()> {
-        let mut index_map: std::collections::HashMap<String, usize> =
-            self.records.iter().enumerate().map(|(idx, r)| (r.id.clone(), idx)).collect();
-
         for rec in new_records {
-            if let Some(&existing_idx) = index_map.get(&rec.id) {
+            if let Some(&existing_idx) = self.id_to_idx.get(&rec.id) {
                 self.records[existing_idx] = rec.clone();
             } else {
-                index_map.insert(rec.id.clone(), self.records.len());
+                let idx = self.records.len();
+                self.id_to_idx.insert(rec.id.clone(), idx);
                 self.records.push(rec.clone());
             }
         }

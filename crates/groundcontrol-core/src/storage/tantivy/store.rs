@@ -73,14 +73,14 @@ impl BM25Index {
     /// This acquires an exclusive file lock on the index directory.
     fn ensure_writer(&mut self) -> Result<&mut IndexWriter> {
         if self.writer.is_none() {
-            let writer = match self.index.writer(50_000_000) {
+            let writer = match self.index.writer(128_000_000) {
                 Ok(w) => w,
                 Err(e) => {
                     // Try healing stale lockfiles if we have an index path, then retry once.
                     if let Some(ref path) = self.index_path {
                         heal_stale_lockfiles(path);
                     }
-                    self.index.writer(50_000_000).map_err(|retry_err| {
+                    self.index.writer(128_000_000).map_err(|retry_err| {
                         Error::Index(format!(
                             "Failed to acquire Lockfile: {} (retry also failed: {})",
                             e, retry_err

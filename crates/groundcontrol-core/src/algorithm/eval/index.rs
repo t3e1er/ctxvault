@@ -135,19 +135,9 @@ impl AlgorithmicIndex {
         self.config = config;
     }
 
-    /// Execute isolated binary Hamming query.
+    /// Execute isolated binary Hamming query (BinaryV3).
     pub fn query_binary(&self, query: &str, k: usize, modality: Modality) -> Result<Vec<AlgoHit>> {
         super::query::execute_binary_query(&self.engine, &self.config, query, k, modality)
-    }
-
-    /// Execute isolated binaryv2 multi-channel semantic Hamming query.
-    pub fn query_binary_v2(
-        &self,
-        query: &str,
-        k: usize,
-        modality: Modality,
-    ) -> Result<Vec<AlgoHit>> {
-        super::query::execute_binary_v2_query(&self.engine, &self.config, query, k, modality)
     }
 
     /// Execute isolated binaryv3 Matryoshka SIF + Bayesian structural prior query.

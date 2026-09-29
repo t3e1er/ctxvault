@@ -9,7 +9,7 @@ use super::hit::{deduplicate_hits, AlgoHit};
 use super::sanitizer::sanitize_lucene_query;
 use crate::engine::Engine;
 
-/// Execute isolated binary Hamming search.
+/// Execute isolated binary Hamming search (backed by BinaryV3).
 pub fn execute_binary_query(
     engine: &Engine,
     config: &AlgoConfig,
@@ -17,44 +17,7 @@ pub fn execute_binary_query(
     k: usize,
     modality: Modality,
 ) -> Result<Vec<AlgoHit>> {
-    let sanitized = sanitize_lucene_query(query);
-    let search_text = if sanitized.is_empty() { query } else { &sanitized };
-
-    let binary = engine.binary_index();
-    let q_fp = binary.project_query_with_kind(search_text, config.binary_projection)?;
-    let pool_size = (k * config.binary_pool_multiplier).max(500);
-    let hits = binary.search_hamming(&q_fp, pool_size, modality)?;
-
-    let raw = hits.into_iter().map(|(id, dist)| {
-        let sim = 1.0 - (dist as f32 / 256.0);
-        (id, sim as f64, None)
-    });
-
-    Ok(deduplicate_hits(raw, k, modality, search_text))
-}
-
-/// Execute isolated binaryv2 multi-channel semantic Hamming search.
-pub fn execute_binary_v2_query(
-    engine: &Engine,
-    config: &AlgoConfig,
-    query: &str,
-    k: usize,
-    modality: Modality,
-) -> Result<Vec<AlgoHit>> {
-    let sanitized = sanitize_lucene_query(query);
-    let search_text = if sanitized.is_empty() { query } else { &sanitized };
-
-    let binaryv2 = engine.binaryv2_index();
-    let q_fp = binaryv2.project_query(search_text);
-    let pool_size = (k * config.binary_pool_multiplier).max(500);
-    let hits = binaryv2.search_hamming(&q_fp, pool_size, modality)?;
-
-    let raw = hits.into_iter().map(|(id, dist)| {
-        let sim = 1.0 - (dist as f32 / 256.0);
-        (id, sim as f64, None)
-    });
-
-    Ok(crate::algorithm::binaryv2::deduplicate_binary_v2_hits(raw, k, modality, search_text))
+    execute_binary_v3_query(engine, config, query, k, modality)
 }
 
 /// Execute isolated binaryv3 Matryoshka SIF + Bayesian structural prior search.

@@ -9,14 +9,14 @@ impl Engine {
     /// incurring quadratic graph re-serialization and edge table rewrites.
     pub fn commit_intermediate(&mut self) -> Result<()> {
         let _ = self.store.commit_batch();
-        self.bm25.commit()?;
-        let _ = self.store.checkpoint();
+        let _ = self.store.checkpoint_passive();
         Ok(())
     }
 
     /// Commit all pending changes across all registered retrieval algorithms and SQLite.
     pub fn commit(&mut self) -> Result<()> {
         let _ = self.store.commit_batch();
+        let _ = self.store.checkpoint();
         self.graph.save(&self.index_dir.join("graph.bin"))?;
         if let Some(ref vi) = self.vector_index() {
             if vi.is_dirty() && !vi.is_empty() {
@@ -24,7 +24,7 @@ impl Engine {
             }
         }
         if !self.binary.is_empty() {
-            let _ = self.binary.save_to_path(&self.index_dir.join("fingerprints.bin"));
+            let _ = self.binary.save_to_path(&self.index_dir.join("fingerprints_v3.bin"));
         }
         self.commit_algorithms()?;
         Ok(())

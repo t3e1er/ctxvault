@@ -1,6 +1,5 @@
 //! Search strategies: BM25, semantic (vector), hybrid, graph, related, multihop, fast (SIF + Binary + PPR).
 
-pub mod binary;
 pub mod bm25;
 pub mod explain;
 pub mod fast;
@@ -14,7 +13,9 @@ pub mod semantic;
 #[cfg(test)]
 mod tests;
 
-pub use binary::BinarySearchIndex;
+pub use crate::algorithm::binaryv3::BinaryV3SearchIndex;
+/// Canonical in-memory 256-bit binary search index backed by BinaryV3.
+pub type BinarySearchIndex = BinaryV3SearchIndex;
 pub use bm25::search_bm25;
 pub use explain::search_explain;
 pub use fast::{search_explain_fast, search_fast};

@@ -22,7 +22,7 @@ impl Store {
 
             {
                 let mut stmt = tx
-                    .prepare(
+                    .prepare_cached(
                         "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     )
@@ -53,7 +53,7 @@ impl Store {
                 .map_err(|e| Error::Database(e.to_string()))?;
 
             let mut stmt = conn
-                .prepare(
+                .prepare_cached(
                     "INSERT INTO code_symbols (file_path, name, scope_path, symbol_type, language, start_line, end_line, canonical_name)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )

@@ -15,7 +15,7 @@ impl Store {
             let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e.to_string()))?;
             {
                 let mut stmt = tx
-                    .prepare(
+                    .prepare_cached(
                         "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, start_line, end_line)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     )
@@ -37,7 +37,7 @@ impl Store {
             tx.commit().map_err(|e| Error::Database(e.to_string()))?;
         } else {
             let mut stmt = conn
-                .prepare(
+                .prepare_cached(
                     "INSERT INTO chunks (file_path, chunk_index, start_byte, end_byte, start_line, end_line)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )

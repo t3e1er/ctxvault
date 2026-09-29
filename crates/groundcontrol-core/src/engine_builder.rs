@@ -150,16 +150,16 @@ impl EngineBuilder {
             store.insert_edge_types(&edge_type_records)?;
         }
 
-        // 7. Load or create binary search index (fingerprints.bin).
-        let fingerprints_path = index_dir.join("fingerprints.bin");
+        // 7. Load or create binary search index (fingerprints_v3.bin).
+        let fingerprints_path = index_dir.join("fingerprints_v3.bin");
         let binary_index = if fingerprints_path.exists() {
-            crate::search::binary::BinarySearchIndex::load_from_path(&fingerprints_path)
+            crate::algorithm::binaryv3::BinaryV3SearchIndex::load_from_path(&fingerprints_path)
                 .unwrap_or_else(|e| {
                     warn!("Failed to load fingerprints from disk, starting fresh: {}", e);
-                    crate::search::binary::BinarySearchIndex::new()
+                    crate::algorithm::binaryv3::BinaryV3SearchIndex::new()
                 })
         } else {
-            crate::search::binary::BinarySearchIndex::new()
+            crate::algorithm::binaryv3::BinaryV3SearchIndex::new()
         };
 
         Ok(Engine::from_parts(
