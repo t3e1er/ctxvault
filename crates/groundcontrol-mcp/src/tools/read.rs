@@ -25,6 +25,7 @@ pub(crate) struct ReadFileParams {
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub max_lines: Option<usize>,
+    pub max_tokens: Option<usize>,
     pub format: Option<String>,
 }
 
@@ -37,11 +38,13 @@ pub(crate) struct ListNotesParams {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct GetSnippetParams {
+    pub symbol: Option<String>,
     pub name: Option<String>,
     pub path: Option<String>,
     pub chunk_index: Option<usize>,
     pub qualified_name: Option<String>,
     pub max_lines: Option<usize>,
+    pub max_tokens: Option<usize>,
     #[serde(default)]
     pub include_neighbors: bool,
     pub format: Option<String>,
@@ -71,14 +74,35 @@ pub(crate) fn language_from_path(path: &str) -> &'static str {
     }
 }
 
-/// Bound a body of source lines to `max_lines`, joining with newlines and
+/// Bound a body of source lines to `max_lines` and optional `max_tokens`, joining with newlines and
 /// reporting whether truncation occurred.
 pub(crate) fn cap_lines(lines: &[&str], max_lines: usize) -> (String, bool) {
-    if lines.len() > max_lines {
+    cap_lines_with_budget(lines, max_lines, None)
+}
+
+/// Bound a body of source lines to `max_lines` and optional `max_tokens`.
+pub(crate) fn cap_lines_with_budget(
+    lines: &[&str],
+    max_lines: usize,
+    max_tokens: Option<usize>,
+) -> (String, bool) {
+    let (mut text, mut truncated) = if lines.len() > max_lines {
         (lines[..max_lines].join("\n"), true)
     } else {
         (lines.join("\n"), false)
+    };
+
+    let byte_limit = max_tokens.map(|t| t.saturating_mul(4)).unwrap_or(4096);
+    if text.len() > byte_limit {
+        let mut end = byte_limit;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        truncated = true;
     }
+
+    (text, truncated)
 }
 
 /// Build a bare handle (no body) for a code symbol: scope_path + file + line range + signature/docstring.
@@ -108,6 +132,7 @@ fn read_single_file(
     start_line: Option<usize>,
     end_line: Option<usize>,
     max_lines: usize,
+    max_tokens: Option<usize>,
 ) -> Result<Value> {
     let proj_path = engine.projection_path(path);
     let is_projected = proj_path.is_file();
@@ -133,7 +158,7 @@ fn read_single_file(
             let slice_start = start - 1;
             let slice_end = end.max(slice_start);
             let slice = &file_lines[slice_start..slice_end];
-            cap_lines(slice, max_lines)
+            cap_lines_with_budget(slice, max_lines, max_tokens)
         };
 
         return Ok(serde_json::json!({
@@ -152,7 +177,7 @@ fn read_single_file(
     if is_markdown && start_line.is_none() && end_line.is_none() {
         let doc = groundcontrol_core::parser::parse_document(Path::new(path), &raw)?;
         let lines: Vec<&str> = doc.content.lines().collect();
-        let (content, truncated) = cap_lines(&lines, max_lines);
+        let (content, truncated) = cap_lines_with_budget(&lines, max_lines, max_tokens);
         return Ok(serde_json::json!({
             "kind": "markdown_note",
             "path": path,
@@ -184,7 +209,7 @@ fn read_single_file(
     let slice_start = start - 1;
     let slice_end = end.max(slice_start);
     let slice = &file_lines[slice_start..slice_end];
-    let (content, truncated) = cap_lines(slice, max_lines);
+    let (content, truncated) = cap_lines_with_budget(slice, max_lines, max_tokens);
 
     Ok(serde_json::json!({
         "kind": if is_markdown { "markdown_note" } else { "code_file" },
@@ -216,7 +241,14 @@ pub fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
     match target_paths {
         PathOrPaths::Single(p) => {
             let max_lines = params.max_lines.unwrap_or(1000).max(1);
-            let val = read_single_file(engine, &p, params.start_line, params.end_line, max_lines)?;
+            let val = read_single_file(
+                engine,
+                &p,
+                params.start_line,
+                params.end_line,
+                max_lines,
+                params.max_tokens,
+            )?;
             if is_lean {
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let start_line =
@@ -249,7 +281,7 @@ pub fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
             let results: Vec<(String, std::result::Result<Value, String>)> = paths
                 .iter()
                 .map(|p| {
-                    let res = read_single_file(engine, p, None, None, max_lines)
+                    let res = read_single_file(engine, p, None, None, max_lines, params.max_tokens)
                         .map_err(|e| e.to_string());
                     (p.clone(), res)
                 })
@@ -285,37 +317,48 @@ pub fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
     let corpus_root = Path::new(&engine.config().path);
     let is_lean = params.format.as_deref() == Some("lean");
 
-    let target_name = params.qualified_name.or(params.name);
+    let target_name = params.symbol.or(params.qualified_name).or(params.name);
     if let Some(ref qualified_name) = target_name {
         return fetch_code_symbol(
             engine,
             corpus_root,
             qualified_name,
             max_lines,
+            params.max_tokens,
             params.include_neighbors,
             is_lean,
         );
     }
 
     if let Some(path) = params.path.as_deref() {
-        if let Some(chunk_index) = params.chunk_index {
-            return fetch_doc_chunk(
-                engine,
-                path,
-                chunk_index,
-                max_lines,
-                params.include_neighbors,
-                is_lean,
-            );
-        }
-        return Err(Error::Config(format!(
-            "get_snippet needs a chunk_index for a doc fetch on '{path}'. \
-             For a whole file use Tier 3: read_file.",
-        )));
+        let chunk_index = match params.chunk_index {
+            Some(idx) => idx,
+            None => {
+                let chunks = engine.store().get_chunks_for_file(path).unwrap_or_default();
+                if chunks.len() <= 1 {
+                    0
+                } else {
+                    return Err(Error::Config(format!(
+                        "get_snippet needs a chunk_index (0..{}) for a doc fetch on '{path}'. \
+                         For a whole file use Tier 3: read_file.",
+                        chunks.len().saturating_sub(1)
+                    )));
+                }
+            }
+        };
+        return fetch_doc_chunk(
+            engine,
+            path,
+            chunk_index,
+            max_lines,
+            params.max_tokens,
+            params.include_neighbors,
+            is_lean,
+        );
     }
 
     Err(Error::Config(
-        "get_snippet requires either `name`/`qualified_name` (code) or `path`+`chunk_index` (doc)."
+        "get_snippet requires either `symbol`/`name`/`qualified_name` (code) or `path`+`chunk_index` (doc)."
             .to_string(),
     ))
 }
@@ -327,6 +370,7 @@ fn fetch_code_symbol(
     corpus_root: &Path,
     qualified_name: &str,
     max_lines: usize,
+    max_tokens: Option<usize>,
     include_neighbors: bool,
     is_lean: bool,
 ) -> Result<Value> {
@@ -346,10 +390,14 @@ fn fetch_code_symbol(
                 leaf_candidates.into_iter().filter(|s| s.name.eq_ignore_ascii_case(leaf)).collect();
 
             if !leaf_matches.is_empty() {
-                let candidates: Vec<Value> = leaf_matches.iter().map(code_symbol_handle).collect();
+                let total_leaf = leaf_matches.len();
+                let leaf_slice =
+                    if leaf_matches.len() > 20 { &leaf_matches[..20] } else { &leaf_matches[..] };
+                let candidates: Vec<Value> = leaf_slice.iter().map(code_symbol_handle).collect();
                 if is_lean {
                     let mut s = format!(
-                        "# Candidate Suggestions for '{qualified_name}'\n\nNo code symbol matches '{qualified_name}', but found {} candidate(s) with leaf name '{leaf}'. Disambiguate with an exact scope_path:\n\n",
+                        "# Candidate Suggestions for '{qualified_name}'\n\nNo code symbol matches '{qualified_name}', but found {} candidate(s) with leaf name '{leaf}' (showing top {}). Disambiguate with an exact scope_path:\n\n",
+                        total_leaf,
                         candidates.len()
                     );
                     for (i, c) in candidates.iter().enumerate() {
@@ -388,7 +436,7 @@ fn fetch_code_symbol(
             let (source, truncated) = if sym.start_line > 0 && sym.start_line <= file_lines.len() {
                 let start_idx = sym.start_line - 1;
                 let end_idx = sym.end_line.min(file_lines.len());
-                cap_lines(&file_lines[start_idx..end_idx], max_lines)
+                cap_lines_with_budget(&file_lines[start_idx..end_idx], max_lines, max_tokens)
             } else {
                 (String::new(), false)
             };
@@ -498,10 +546,13 @@ fn fetch_code_symbol(
             }
         }
         _ => {
-            let candidates: Vec<Value> = matches.iter().map(code_symbol_handle).collect();
+            let total_matches = matches.len();
+            let matches_slice = if matches.len() > 20 { &matches[..20] } else { &matches[..] };
+            let candidates: Vec<Value> = matches_slice.iter().map(code_symbol_handle).collect();
             if is_lean {
                 let mut s = format!(
-                    "# Ambiguous Symbol: '{qualified_name}' ({} matches)\n\nDisambiguate with an exact scope_path:\n\n",
+                    "# Ambiguous Symbol: '{qualified_name}' ({} matches, showing top {})\n\nDisambiguate with an exact scope_path:\n\n",
+                    total_matches,
                     candidates.len()
                 );
                 for (i, c) in candidates.iter().enumerate() {
@@ -536,6 +587,7 @@ fn fetch_doc_chunk(
     path: &str,
     chunk_index: usize,
     max_lines: usize,
+    max_tokens: Option<usize>,
     include_neighbors: bool,
     is_lean: bool,
 ) -> Result<Value> {
@@ -551,7 +603,7 @@ fn fetch_doc_chunk(
 
     let chunk_text = engine.fetch_chunk_text(path, chunk.start_byte, chunk.end_byte)?;
     let text_lines: Vec<&str> = chunk_text.lines().collect();
-    let (text, truncated) = cap_lines(&text_lines, max_lines);
+    let (text, truncated) = cap_lines_with_budget(&text_lines, max_lines, max_tokens);
 
     let full_doc_path = Path::new(&engine.config().path).join(path);
     let total_lines =

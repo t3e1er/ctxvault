@@ -207,9 +207,11 @@ pub fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             }
         }
 
+        let mut docs_items = collapse_file_results(docs_items);
+        let mut code_items = collapse_file_results(code_items);
+
         let is_lean = params.detail.as_deref() == Some("ids");
-        let k =
-            if is_lean { 0 } else { params.snippets.unwrap_or_else(|| params.limit.unwrap_or(10)) };
+        let k = if is_lean { 0 } else { params.snippets.unwrap_or(3) };
 
         populate_top_snippets(engine, &mut docs_items, k, 20);
         populate_top_snippets(engine, &mut code_items, k, 20);
@@ -228,7 +230,7 @@ pub fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             for item in &mut docs_items {
                 item.language = None;
                 item.entity_kind = None;
-                item.chunk_index = None;
+                // Preserve chunk_index for Turn 2a get_snippet handles
                 item.symbol = None;
                 item.graph_affordances = None;
                 item.graph = engine.format_cypher_affordances(&item.path, 3);
@@ -300,8 +302,10 @@ pub fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
             item.language = None;
             // 2. Entity kind is omitted (implied by snippet/symbol).
             item.entity_kind = None;
-            // 3. Chunk index is omitted.
-            item.chunk_index = None;
+            // 3. Chunk index is omitted when a symbol identifier is matched.
+            if matched_symbol.is_some() {
+                item.chunk_index = None;
+            }
             // 4. Bare symbol identifier is surfaced only when snippet is omitted (trailing hits or snippets: 0)
             //    or when in lean emission mode for Tier 2 progressive disclosure scent.
             if params.format.as_deref() == Some("lean") || item.snippet.is_none() {
@@ -312,7 +316,7 @@ pub fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
         }
 
         if params.format.as_deref() == Some("lean") {
-            let lean_text = crate::format::lean::format_lean_search(
+            let mut lean_text = crate::format::lean::format_lean_search(
                 &query.query,
                 &mode_str,
                 Some(engine.config().name.as_str()),
@@ -320,6 +324,7 @@ pub fn handle_search(engine: &Engine, args: Value) -> Result<Value> {
                 &docs_items,
                 is_lean,
             );
+            lean_text.push_str(&format!("\n---\n{}\n", engine.coverage_summary()));
             return Ok(Value::String(lean_text));
         }
 
@@ -396,4 +401,31 @@ pub fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
     let results = apply_detail(results, params.detail.as_deref());
 
     serde_json::to_value(results).map_err(|e| Error::Config(format!("serialize error: {}", e)))
+}
+
+/// Collapse multiple search result chunks from the same file into the best-matching result.
+fn collapse_file_results(
+    results: Vec<groundcontrol_common::types::SearchResult>,
+) -> Vec<groundcontrol_common::types::SearchResult> {
+    let mut collapsed: Vec<groundcontrol_common::types::SearchResult> =
+        Vec::with_capacity(results.len());
+    let mut path_to_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for r in results {
+        if let Some(&idx) = path_to_index.get(&r.path) {
+            let existing = &mut collapsed[idx];
+            let counter = existing.collapsed_chunks.unwrap_or(0) + 1;
+            existing.collapsed_chunks = Some(counter);
+            if r.score > existing.score {
+                let prev_counter = existing.collapsed_chunks;
+                *existing = r;
+                existing.collapsed_chunks = prev_counter;
+            }
+        } else {
+            path_to_index.insert(r.path.clone(), collapsed.len());
+            collapsed.push(r);
+        }
+    }
+    collapsed
 }

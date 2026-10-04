@@ -40,15 +40,16 @@ pub fn language_from_path(path: &str) -> &'static str {
 // Turn 1: Search Formatter
 // ---------------------------------------------------------------------------
 
-/// Format non-zero score components compactly, e.g. ` (bm25: 14.2, vec: 0.72)`.
-fn format_score_components(components: Option<&ScoreBreakdown>) -> String {
+/// Format non-zero score components compactly, e.g. ` (bm25: 14.2, vec: 0.72)` or `fp:` in fast mode.
+fn format_score_components(components: Option<&ScoreBreakdown>, mode: &str) -> String {
     let Some(sc) = components else { return String::new() };
     let mut parts = Vec::new();
     if sc.bm25.abs() > 0.0001 {
         parts.push(format!("bm25: {:.2}", sc.bm25));
     }
     if sc.vector.abs() > 0.0001 {
-        parts.push(format!("vec: {:.2}", sc.vector));
+        let label = if mode == "fast" { "fp" } else { "vec" };
+        parts.push(format!("{label}: {:.2}", sc.vector));
     }
     if sc.graph_boost.abs() > 0.0001 {
         parts.push(format!("graph: {:.2}", sc.graph_boost));
@@ -93,10 +94,22 @@ pub fn format_lean_search(
             let num = i + 1;
             let symbol_title = hit.symbol.as_deref().unwrap_or(&hit.path);
             let score_str = format!("{:.3}", hit.score);
-            let comps = format_score_components(hit.score_components.as_ref());
+            let comps = format_score_components(hit.score_components.as_ref(), mode);
+            let corpus_tag = match hit.corpus.as_deref() {
+                Some(c) => format!("[{c}] "),
+                None => String::new(),
+            };
+            let corpus_arg = match hit.corpus.as_deref() {
+                Some(c) => format!(", corpus: \"{c}\""),
+                None => String::new(),
+            };
 
-            out.push_str(&format!("{num}. {symbol_title} (`{}`)", hit.path));
-            out.push_str(&format!(" [score: {score_str}{comps}]\n"));
+            let chunk_count_str = match hit.collapsed_chunks {
+                Some(n) if n > 0 => format!(" (+{n} chunks)"),
+                _ => String::new(),
+            };
+            out.push_str(&format!("{num}. {corpus_tag}{symbol_title} (`{}`)", hit.path));
+            out.push_str(&format!(" [score: {score_str}{comps}{chunk_count_str}]\n"));
 
             if !is_ids_only {
                 if let Some(ref snippet) = hit.snippet {
@@ -107,14 +120,16 @@ pub fn format_lean_search(
                 // Turn 2a handle
                 if let Some(chunk_idx) = hit.chunk_index {
                     out.push_str(&format!(
-                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: {})\n",
+                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: {}{corpus_arg})\n",
                         hit.path, chunk_idx
                     ));
                 } else if let Some(ref sym) = hit.symbol {
-                    out.push_str(&format!("-> [T2a fetch] get_snippet(symbol: \"{sym}\")\n"));
+                    out.push_str(&format!(
+                        "-> [T2a fetch] get_snippet(symbol: \"{sym}\"{corpus_arg})\n"
+                    ));
                 } else {
                     out.push_str(&format!(
-                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: 0)\n",
+                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: 0{corpus_arg})\n",
                         hit.path
                     ));
                 }
@@ -137,9 +152,24 @@ pub fn format_lean_search(
         for (i, hit) in docs_items.iter().enumerate() {
             let num = i + 1;
             let score_str = format!("{:.3}", hit.score);
-            let comps = format_score_components(hit.score_components.as_ref());
+            let comps = format_score_components(hit.score_components.as_ref(), mode);
+            let corpus_tag = match hit.corpus.as_deref() {
+                Some(c) => format!("[{c}] "),
+                None => String::new(),
+            };
+            let corpus_arg = match hit.corpus.as_deref() {
+                Some(c) => format!(", corpus: \"{c}\""),
+                None => String::new(),
+            };
 
-            out.push_str(&format!("{num}. `{}` [score: {score_str}{comps}]\n", hit.path));
+            let chunk_count_str = match hit.collapsed_chunks {
+                Some(n) if n > 0 => format!(" (+{n} chunks)"),
+                _ => String::new(),
+            };
+            out.push_str(&format!(
+                "{num}. {corpus_tag}`{}` [score: {score_str}{comps}{chunk_count_str}]\n",
+                hit.path
+            ));
 
             if !is_ids_only {
                 if let Some(ref snippet) = hit.snippet {
@@ -148,12 +178,12 @@ pub fn format_lean_search(
 
                 if let Some(chunk_idx) = hit.chunk_index {
                     out.push_str(&format!(
-                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: {})\n",
+                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: {}{corpus_arg})\n",
                         hit.path, chunk_idx
                     ));
                 } else {
                     out.push_str(&format!(
-                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: 0)\n",
+                        "-> [T2a fetch] get_snippet(path: \"{}\", chunk_index: 0{corpus_arg})\n",
                         hit.path
                     ));
                 }
@@ -370,6 +400,11 @@ fn format_graph_branch(node: &GraphTreeNode, indent_level: usize, out: &mut Stri
         other => format!("-[:{other}]-> "),
     };
 
+    let conf_str = match node.confidence.as_deref() {
+        Some(c) => format!(" (conf: {c})"),
+        None => String::new(),
+    };
+
     let loc = match (node.file.as_deref(), node.line) {
         (Some(f), Some(l)) => format!(" ({f}:L{l})"),
         (Some(f), None) => format!(" ({f})"),
@@ -381,7 +416,7 @@ fn format_graph_branch(node: &GraphTreeNode, indent_level: usize, out: &mut Stri
         _ => String::new(),
     };
 
-    out.push_str(&format!("{indent}{arrow}{}{loc}{hub_str}\n", node.node));
+    out.push_str(&format!("{indent}{arrow}{}{conf_str}{loc}{hub_str}\n", node.node));
 
     for branch in &node.branches {
         format_graph_branch(branch, indent_level + 1, out);
@@ -514,9 +549,11 @@ mod tests {
                 branches: vec![],
                 suppressed: None,
                 hub: None,
+                confidence: None,
             }],
             suppressed: None,
             hub: None,
+            confidence: None,
         };
         result.tree = vec![child];
 
