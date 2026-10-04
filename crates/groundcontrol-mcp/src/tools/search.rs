@@ -404,9 +404,13 @@ pub fn handle_search_related(engine: &Engine, args: Value) -> Result<Value> {
 }
 
 /// Collapse multiple search result chunks from the same file into the best-matching result.
-fn collapse_file_results(results: Vec<groundcontrol_common::types::SearchResult>) -> Vec<groundcontrol_common::types::SearchResult> {
-    let mut collapsed: Vec<groundcontrol_common::types::SearchResult> = Vec::with_capacity(results.len());
-    let mut path_to_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+fn collapse_file_results(
+    results: Vec<groundcontrol_common::types::SearchResult>,
+) -> Vec<groundcontrol_common::types::SearchResult> {
+    let mut collapsed: Vec<groundcontrol_common::types::SearchResult> =
+        Vec::with_capacity(results.len());
+    let mut path_to_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for r in results {
         if let Some(&idx) = path_to_index.get(&r.path) {

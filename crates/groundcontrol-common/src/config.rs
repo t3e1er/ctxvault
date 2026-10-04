@@ -44,7 +44,7 @@ pub struct CorpusConfig {
     /// Rich documentation promotion configuration.
     #[serde(default)]
     pub docs: DocsConfig,
-    /// Cross-corpus regex identifier extraction patterns: [identifiers]
+    /// Cross-corpus regex identifier extraction patterns: `[identifiers]`
     #[serde(default)]
     pub identifiers: BTreeMap<String, String>,
 }

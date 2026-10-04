@@ -74,8 +74,16 @@ pub enum ToolProfile {
 const LEAN_TOOLS: [&str; 5] = ["search", "grep", "where", "read_file", "status"];
 
 /// Tools exposed under the `scout` profile (minimal retrieve/navigate set).
-const SCOUT_TOOLS: [&str; 8] =
-    ["search", "search_related", "grep", "where", "get_snippet", "read_file", "list_notes", "status"];
+const SCOUT_TOOLS: [&str; 8] = [
+    "search",
+    "search_related",
+    "grep",
+    "where",
+    "get_snippet",
+    "read_file",
+    "list_notes",
+    "status",
+];
 
 /// Read-only tools added by the `analysis` profile on top of `scout`.
 const ANALYSIS_ONLY_TOOLS: [&str; 6] = [

@@ -287,10 +287,8 @@ pub fn decode_text_lossy(bytes: &[u8]) -> String {
     }
     // 4. Heuristic UTF-16LE without BOM (e.g. ASCII characters in UTF-16: byte 0 non-zero, byte 1 is 0x00, byte 2 non-zero, byte 3 is 0x00)
     if bytes.len() >= 4 && bytes[1] == 0 && bytes[3] == 0 && bytes[0] != 0 && bytes[2] != 0 {
-        let u16_slice: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
+        let u16_slice: Vec<u16> =
+            bytes.chunks_exact(2).map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]])).collect();
         return char::decode_utf16(u16_slice)
             .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect();

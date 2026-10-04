@@ -13,7 +13,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
-use tantivy::directory::{Directory, DirectoryLock, FileHandle, Lock, WatchCallback, WatchHandle, WritePtr};
+use tantivy::directory::{
+    Directory, DirectoryLock, FileHandle, Lock, WatchCallback, WatchHandle, WritePtr,
+};
 
 /// Exponential retry configuration for transient file system errors.
 const WRITE_MAX_RETRIES: usize = 12;
@@ -102,7 +104,8 @@ impl<D: Directory + Clone> Directory for RetryDirectory<D> {
                             "Transient lock during Tantivy open_write, retrying..."
                         );
                         sleep(delay);
-                        delay = (delay.saturating_mul(2)).min(Duration::from_millis(WRITE_MAX_BACKOFF_MS));
+                        delay = (delay.saturating_mul(2))
+                            .min(Duration::from_millis(WRITE_MAX_BACKOFF_MS));
                     } else {
                         return Err(OpenWriteError::IoError { io_error, filepath });
                     }
@@ -130,7 +133,8 @@ impl<D: Directory + Clone> Directory for RetryDirectory<D> {
                             "Transient lock during Tantivy atomic_write, retrying..."
                         );
                         sleep(delay);
-                        delay = (delay.saturating_mul(2)).min(Duration::from_millis(WRITE_MAX_BACKOFF_MS));
+                        delay = (delay.saturating_mul(2))
+                            .min(Duration::from_millis(WRITE_MAX_BACKOFF_MS));
                     } else {
                         return Err(io_error);
                     }

@@ -46,7 +46,8 @@ pub fn handle_where_engine(engine: &Engine, args: Value) -> Result<Value> {
         .map_err(|e| Error::Config(format!("invalid params for where: {}", e)))?;
 
     let max_results = params.max_results.unwrap_or(50).max(1);
-    let records = engine.find_identifiers(&params.identifier, params.role.as_deref(), max_results)?;
+    let records =
+        engine.find_identifiers(&params.identifier, params.role.as_deref(), max_results)?;
     let results: Vec<Value> = records
         .into_iter()
         .map(|r| {
@@ -92,9 +93,7 @@ fn format_lean_where(identifier: &str, results: &[Value]) -> String {
             None => String::new(),
         };
 
-        out.push_str(&format!(
-            "{num}. [{corpus}] `{file}:L{line}` [role: {role}{kind_str}]\n"
-        ));
+        out.push_str(&format!("{num}. [{corpus}] `{file}:L{line}` [role: {role}{kind_str}]\n"));
     }
 
     out

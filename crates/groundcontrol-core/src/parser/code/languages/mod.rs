@@ -188,12 +188,14 @@ pub fn get_language_spec(lang: SupportedLanguage) -> &'static LanguageSpec {
 /// Declarative dialect disambiguation rules when file extensions overlap.
 ///
 /// Maps (extension, language, heuristic_predicate).
-pub static DIALECT_DISAMBIGUATORS: &[(&str, SupportedLanguage, fn(&[u8]) -> bool)] = &[
-    ("sql", SupportedLanguage::PlSql, plsql::is_plsql_dialect),
-];
+pub static DIALECT_DISAMBIGUATORS: &[(&str, SupportedLanguage, fn(&[u8]) -> bool)] =
+    &[("sql", SupportedLanguage::PlSql, plsql::is_plsql_dialect)];
 
 /// Detect programming or configuration language from a file path and optional sample content.
-pub fn detect_language_with_content(path: &Path, content: Option<&[u8]>) -> Option<SupportedLanguage> {
+pub fn detect_language_with_content(
+    path: &Path,
+    content: Option<&[u8]>,
+) -> Option<SupportedLanguage> {
     if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
         let lower = filename.to_ascii_lowercase();
         for def in ALL_DEFINITIONS {

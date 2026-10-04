@@ -241,7 +241,14 @@ pub fn handle_read_file(engine: &Engine, args: Value) -> Result<Value> {
     match target_paths {
         PathOrPaths::Single(p) => {
             let max_lines = params.max_lines.unwrap_or(1000).max(1);
-            let val = read_single_file(engine, &p, params.start_line, params.end_line, max_lines, params.max_tokens)?;
+            let val = read_single_file(
+                engine,
+                &p,
+                params.start_line,
+                params.end_line,
+                max_lines,
+                params.max_tokens,
+            )?;
             if is_lean {
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let start_line =
@@ -384,7 +391,8 @@ fn fetch_code_symbol(
 
             if !leaf_matches.is_empty() {
                 let total_leaf = leaf_matches.len();
-                let leaf_slice = if leaf_matches.len() > 20 { &leaf_matches[..20] } else { &leaf_matches[..] };
+                let leaf_slice =
+                    if leaf_matches.len() > 20 { &leaf_matches[..20] } else { &leaf_matches[..] };
                 let candidates: Vec<Value> = leaf_slice.iter().map(code_symbol_handle).collect();
                 if is_lean {
                     let mut s = format!(

@@ -209,8 +209,8 @@ impl Engine {
             Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string()
         });
 
-        // 1. Broadcast to all retrieval algorithms (BM25, binary, graph)
-        self.broadcast_artifact(&record)?;
+        // 1. Broadcast to all retrieval algorithms with precomputed fingerprints
+        self.broadcast_artifact_with_fingerprints(&record, fingerprints)?;
 
         // 2. SQLite Store
         self.store.insert_file(

@@ -95,7 +95,8 @@ impl Store {
 
         // If no explicit identifier records match, check code symbols defining this name
         if results.is_empty() {
-            let sym_sql = "SELECT name, file_path, start_line FROM code_symbols WHERE name = ?1 LIMIT ?2";
+            let sym_sql =
+                "SELECT name, file_path, start_line FROM code_symbols WHERE name = ?1 LIMIT ?2";
             if let Ok(mut sym_stmt) = conn.prepare(sym_sql) {
                 if let Ok(mut sym_rows) = sym_stmt.query(params![identifier, limit as i64]) {
                     while let Ok(Some(row)) = sym_rows.next() {

@@ -13,7 +13,7 @@ use groundcontrol_common::types::{
 use tree_sitter::{Node, Parser};
 
 use super::grammar::{AstGrammarExtractor, ExtractedGrammarSemantics, GenericAstGrammarExtractor};
-use super::languages::{detect_language_with_content, SupportedLanguage};
+use super::languages::{detect_language, detect_language_with_content, SupportedLanguage};
 
 /// Result of parsing a code file: chunks for embedding/BM25 and extracted code symbols.
 #[derive(Debug, Clone)]
@@ -382,7 +382,9 @@ impl<'a> AstExtractor<'a> {
             let is_oversized_leaf = !is_container && chunk_text.len() > self.max_chars;
             let (first_emit_text, remainder_slices) = if is_oversized_leaf {
                 let mut rem = Vec::new();
-                let first_limit = self.max_chars.saturating_sub(breadcrumb.len() + docstring.as_ref().map_or(0, |d| d.len() + 1));
+                let first_limit = self.max_chars.saturating_sub(
+                    breadcrumb.len() + docstring.as_ref().map_or(0, |d| d.len() + 1),
+                );
                 let first_end = match raw_node_text.char_indices().nth(first_limit) {
                     Some((idx, _)) => idx,
                     None => raw_node_text.len(),
@@ -402,8 +404,13 @@ impl<'a> AstExtractor<'a> {
                         None => rem_slice.len(),
                     };
                     let slice_text = &raw_node_text[current_offset..current_offset + step];
-                    let cont_header = format!("{breadcrumb}// Continuation (part {part}) of {full_scope}\n");
-                    rem.push((current_offset, current_offset + step, format!("{cont_header}{slice_text}")));
+                    let cont_header =
+                        format!("{breadcrumb}// Continuation (part {part}) of {full_scope}\n");
+                    rem.push((
+                        current_offset,
+                        current_offset + step,
+                        format!("{cont_header}{slice_text}"),
+                    ));
                     current_offset += step;
                     part += 1;
                 }

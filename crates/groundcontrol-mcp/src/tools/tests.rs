@@ -801,7 +801,7 @@ fn test_multi_corpus_fan_out_tags_by_corpus() {
             templates_dir: None,
             exclude: groundcontrol_common::config::ExcludeConfig::default(),
             docs: groundcontrol_common::config::DocsConfig::default(),
-        identifiers: Default::default(),
+            identifiers: Default::default(),
         };
         add_test_corpus(&mut manager, config);
     }
