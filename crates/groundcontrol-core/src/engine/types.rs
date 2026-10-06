@@ -114,7 +114,7 @@ pub(crate) fn now_unix() -> i64 {
 pub(crate) fn walk_markdown_files(
     root: &Path,
     matcher: &crate::index::exclude::ExcludeMatcher,
-    classifier: &crate::index::classifier::FileClassifier,
+    classifier: &crate::classifier::FileClassifier,
 ) -> Result<Vec<(String, PathBuf)>> {
     let mut results = Vec::new();
     if !root.exists() {
@@ -128,7 +128,7 @@ fn walk_dir_recursive(
     root: &Path,
     current: &Path,
     matcher: &crate::index::exclude::ExcludeMatcher,
-    classifier: &crate::index::classifier::FileClassifier,
+    classifier: &crate::classifier::FileClassifier,
     results: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     let entries = fs::read_dir(current)?;

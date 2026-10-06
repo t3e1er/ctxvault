@@ -360,7 +360,7 @@ fn test_search_hybrid_empty_query() {
 
 #[test]
 fn test_search_hybrid_full_with_vectors() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let index = setup_bm25();
     let graph = setup_graph();
@@ -419,7 +419,7 @@ fn test_search_hybrid_full_with_vectors() {
 
 #[test]
 fn test_search_hybrid_full_without_vectors() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let index = setup_bm25();
     let graph = setup_graph();
@@ -455,7 +455,7 @@ fn test_search_hybrid_full_without_vectors() {
 
 #[test]
 fn test_rrf_fusion_merges_bm25_and_vector_for_same_file() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let mut bm25 = BM25Index::open_in_memory().unwrap();
     let chunk = make_code_chunk("src/auth/service.rs", 5, "pub fn authenticate() -> bool { true }");
@@ -506,7 +506,7 @@ fn test_rrf_fusion_merges_bm25_and_vector_for_same_file() {
 
 #[test]
 fn test_rrf_best_bm25_chunk_selected() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let mut bm25 = BM25Index::open_in_memory().unwrap();
     let chunks = vec![
@@ -556,7 +556,7 @@ fn test_search_related_empty_seeds() {
 
 #[test]
 fn test_search_explain_returns_breakdowns() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let index = setup_bm25();
     let graph = setup_graph();
@@ -663,7 +663,7 @@ fn test_search_graph_with_edge_filter() {
 
 #[test]
 fn test_search_semantic_with_embedding() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     // Create a vector index with some test vectors.
     let mut vi = VectorIndex::new(384, 100, 200, 16);
@@ -697,7 +697,7 @@ fn test_search_semantic_with_embedding() {
 
 #[test]
 fn test_search_semantic_empty_index() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let vi = VectorIndex::new_default(384);
     let query_vec = vec![0.1_f32; 384];
@@ -753,7 +753,7 @@ fn test_rrf_fuse_merges_lists() {
 
 #[test]
 fn test_search_depth_precise_only_chunks() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
 
     let mut vi = VectorIndex::new(384, 100, 200, 16);
 

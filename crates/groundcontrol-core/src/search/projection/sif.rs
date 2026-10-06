@@ -178,7 +178,7 @@ impl SifEngine {
             total_weight += weight;
 
             // Incorporate sub-tokens from camelCase and snake_case identifiers
-            let sub_tokens = crate::parser::code::patterns::split_identifier(word);
+            let sub_tokens = crate::parser::code::split_identifier(word);
             if sub_tokens.len() > 1 {
                 for sub in sub_tokens {
                     let sub_lower = sub.to_lowercase();

@@ -37,13 +37,13 @@ impl CorpusManager {
         let corpus_path = PathBuf::from(&config.path);
 
         // Auto-bootstrap from committed SCM artifact if central cache is empty
-        if let Some(scm_bundle) = crate::bundle::detect_bundle(&corpus_path) {
+        if let Some(scm_bundle) = crate::index::bundle::detect_bundle(&corpus_path) {
             if !index_dir.join("meta.db").exists() {
-                let _ = crate::bundle::import_bundle(&scm_bundle, index_dir, None, None);
+                let _ = crate::index::bundle::import_bundle(&scm_bundle, index_dir, None, None);
             }
         }
 
-        let mut engine = crate::engine_builder::EngineBuilder::open(config, index_dir)?;
+        let mut engine = crate::engine::builder::EngineBuilder::open(config, index_dir)?;
 
         // Auto-detect and passively ingest all SCIP indices (root and subprojects)
         let _ = engine.ingest_all_scip_indices(&corpus_path);
@@ -124,9 +124,9 @@ impl CorpusManager {
         let index_dir = groundcontrol_common::config::get_corpus_index_dir(&name);
 
         // Auto-bootstrap from committed SCM artifact if central cache is empty
-        if let Some(scm_bundle) = crate::bundle::detect_bundle(&canonical) {
+        if let Some(scm_bundle) = crate::index::bundle::detect_bundle(&canonical) {
             if !index_dir.join("meta.db").exists() {
-                let _ = crate::bundle::import_bundle(&scm_bundle, &index_dir, None, None);
+                let _ = crate::index::bundle::import_bundle(&scm_bundle, &index_dir, None, None);
             }
         }
 
@@ -159,7 +159,7 @@ impl CorpusManager {
             }
         };
 
-        let mut engine = crate::engine_builder::EngineBuilder::open(config, &index_dir)?;
+        let mut engine = crate::engine::builder::EngineBuilder::open(config, &index_dir)?;
 
         // Auto-detect and passively ingest all SCIP indices (root and subprojects)
         let _ = engine.ingest_all_scip_indices(&canonical);
@@ -214,7 +214,7 @@ impl CorpusManager {
                         if self.engines.contains_key(folder_name) {
                             continue;
                         }
-                        if let Ok(store) = crate::persistence::Store::open(&meta_db) {
+                        if let Ok(store) = crate::storage::sqlite::Store::open(&meta_db) {
                             if let Ok(Some(cfg_str)) = store.get_config("corpus_config") {
                                 if let Ok(mut cfg) = serde_json::from_str::<CorpusConfig>(&cfg_str)
                                 {
@@ -222,7 +222,7 @@ impl CorpusManager {
                                         cfg.name = folder_name.to_string();
                                         let corpus_src = PathBuf::from(&cfg.path);
                                         if let Ok(engine) =
-                                            crate::engine_builder::EngineBuilder::open(cfg, &path)
+                                            crate::engine::builder::EngineBuilder::open(cfg, &path)
                                         {
                                             self.engines.insert(folder_name.to_string(), engine);
                                             mounted.push(folder_name.to_string());
@@ -272,7 +272,7 @@ impl CorpusManager {
         let cache_dir = groundcontrol_common::config::get_corpus_index_dir(name);
         let meta_db = cache_dir.join("meta.db");
         if meta_db.exists() {
-            if let Ok(store) = crate::persistence::Store::open(&meta_db) {
+            if let Ok(store) = crate::storage::sqlite::Store::open(&meta_db) {
                 if let Ok(Some(cfg_str)) = store.get_config("corpus_config") {
                     if let Ok(cfg) = serde_json::from_str::<CorpusConfig>(&cfg_str) {
                         return Some(cfg.path);
@@ -298,9 +298,9 @@ impl CorpusManager {
         name: &str,
         out_path: &Path,
         source_commit: Option<String>,
-    ) -> Result<crate::bundle::BundleManifest> {
+    ) -> Result<crate::index::bundle::BundleManifest> {
         let engine = self.get_engine_mut(name)?;
-        crate::bundle::export_bundle(engine, out_path, source_commit)
+        crate::index::bundle::export_bundle(engine, out_path, source_commit)
     }
 
     /// Import an index bundle into central storage (`${CTXV_CACHE_DIR}/corpora/<name>`) and mount it.
@@ -308,11 +308,12 @@ impl CorpusManager {
         &mut self,
         bundle_path: &Path,
         target_corpus_dir: &Path,
-    ) -> Result<crate::bundle::BundleManifest> {
-        let manifest = crate::bundle::validate_bundle(bundle_path, None, None)?;
+    ) -> Result<crate::index::bundle::BundleManifest> {
+        let manifest = crate::index::bundle::validate_bundle(bundle_path, None, None)?;
         let target_index_dir =
             groundcontrol_common::config::get_corpus_index_dir(&manifest.corpus_name);
-        let manifest = crate::bundle::import_bundle(bundle_path, &target_index_dir, None, None)?;
+        let manifest =
+            crate::index::bundle::import_bundle(bundle_path, &target_index_dir, None, None)?;
 
         let config = CorpusConfig {
             name: manifest.corpus_name.clone(),

@@ -14,8 +14,8 @@ use crate::algorithm::{BinaryAlgorithm, Bm25Algorithm, DenseAlgorithm, GraphAlgo
 use crate::embedding::Embedder;
 use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
-use crate::persistence::Store;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
+use crate::storage::sqlite::Store;
 
 /// Coordinates persistence, full-text index, knowledge graph, and vector index for a corpus.
 pub struct Engine {
@@ -28,7 +28,7 @@ pub struct Engine {
     pub(crate) embedder: RwLock<Option<Arc<Embedder>>>,
     pub(crate) index_dir: PathBuf,
     pub(crate) exclude_matcher: Arc<crate::index::exclude::ExcludeMatcher>,
-    pub(crate) classifier: Arc<crate::index::classifier::FileClassifier>,
+    pub(crate) classifier: Arc<crate::classifier::FileClassifier>,
     pub(crate) external_refs: Vec<groundcontrol_common::types::ExternalRef>,
 }
 
@@ -46,8 +46,7 @@ impl Engine {
         let corpus_root = PathBuf::from(&config.path);
         let exclude_matcher =
             Arc::new(crate::index::exclude::ExcludeMatcher::new(&corpus_root, &config.exclude));
-        let classifier =
-            Arc::new(crate::index::classifier::FileClassifier::new(&corpus_root, &config));
+        let classifier = Arc::new(crate::classifier::FileClassifier::new(&corpus_root, &config));
 
         let bm25_algo = Bm25Algorithm::new(bm25);
         let binary_algo = crate::algorithm::binaryv3::BinaryV3Algorithm::with_index(
@@ -74,7 +73,7 @@ impl Engine {
 
     /// Create or open an engine for a corpus.
     pub fn open(config: CorpusConfig, index_dir: &Path) -> Result<Self> {
-        crate::engine_builder::EngineBuilder::open(config, index_dir)
+        crate::engine::builder::EngineBuilder::open(config, index_dir)
     }
 
     /// Ensure the embedder is initialized. Returns Ok(true) if available, Ok(false) if skipped.
@@ -111,9 +110,9 @@ impl Engine {
         self.embedder.read().unwrap().clone()
     }
 
-    /// Construct a [`crate::search_service::CoreSearchService`] borrowing all required ports from this engine.
-    pub fn search_service(&self) -> crate::search_service::CoreSearchService<'_> {
-        crate::search_service::CoreSearchService::new(
+    /// Construct a [`crate::search::service::CoreSearchService`] borrowing all required ports from this engine.
+    pub fn search_service(&self) -> crate::search::service::CoreSearchService<'_> {
+        crate::search::service::CoreSearchService::new(
             self.bm25.index(),
             self.dense.as_ref().map(|d| d.vector_index()),
             Some(self.binary.index()),
@@ -377,7 +376,7 @@ impl Engine {
     }
 
     /// Get the file classifier for this engine.
-    pub fn classifier(&self) -> &Arc<crate::index::classifier::FileClassifier> {
+    pub fn classifier(&self) -> &Arc<crate::classifier::FileClassifier> {
         &self.classifier
     }
 

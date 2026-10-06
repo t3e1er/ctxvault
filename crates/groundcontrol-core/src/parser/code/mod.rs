@@ -6,18 +6,14 @@ pub mod manifest;
 pub mod query;
 pub mod semantics;
 
+#[cfg(test)]
+mod tests;
+
 // Facade re-exports: Language subsystem
 pub use languages::{
     detect_language, detect_language_with_content, get_language_definition, get_language_spec,
     is_code_file, LanguageDefinition, LanguageSpec, SupportedLanguage, ALL_DEFINITIONS,
 };
-
-// Backward-compatible module aliases for internal references
-pub use languages as definition;
-pub use languages::spec;
-pub use semantics::grammar;
-pub use semantics::patterns;
-pub use semantics::scope;
 
 // Facade re-exports: Semantics subsystem
 pub use semantics::{

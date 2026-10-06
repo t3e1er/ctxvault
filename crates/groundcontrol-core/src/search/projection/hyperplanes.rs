@@ -12,8 +12,7 @@
 
 use groundcontrol_common::types::BinaryFingerprint;
 
-use crate::parser::code::grammar::{DataFlowSink, ExtractedGrammarSemantics};
-use crate::parser::code::patterns::split_identifier;
+use crate::parser::code::{split_identifier, DataFlowSink, ExtractedGrammarSemantics};
 
 use super::BinaryProjector;
 
@@ -249,7 +248,7 @@ fn hash_feature_to_64d(feature: &str, channel: usize) -> [f32; CHANNEL_DIMENSION
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::code::grammar::WeightedToken;
+    use crate::parser::code::{DataFlowPath, WeightedToken};
 
     #[test]
     fn test_hyperplane_projector_basic() {
@@ -281,7 +280,7 @@ mod tests {
         let mut sem_a = ExtractedGrammarSemantics::default();
         sem_a.interface_tokens.push(WeightedToken { text: "dispatch".into(), weight: 1.0 });
         sem_a.api_tokens.push(WeightedToken { text: "client.send".into(), weight: 1.0 });
-        sem_a.dataflow_paths.push(crate::parser::code::grammar::DataFlowPath {
+        sem_a.dataflow_paths.push(DataFlowPath {
             source_param: "packet".into(),
             sink: DataFlowSink::Call("client.send".into()),
         });
@@ -290,7 +289,7 @@ mod tests {
         let mut sem_b = ExtractedGrammarSemantics::default();
         sem_b.interface_tokens.push(WeightedToken { text: "dispatch".into(), weight: 1.0 });
         sem_b.api_tokens.push(WeightedToken { text: "packet.send".into(), weight: 1.0 });
-        sem_b.dataflow_paths.push(crate::parser::code::grammar::DataFlowPath {
+        sem_b.dataflow_paths.push(DataFlowPath {
             source_param: "client".into(),
             sink: DataFlowSink::Call("packet.send".into()),
         });

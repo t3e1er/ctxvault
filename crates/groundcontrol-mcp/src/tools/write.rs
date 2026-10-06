@@ -73,8 +73,7 @@ pub fn handle_write_note(engine: &mut Engine, args: Value) -> Result<Value> {
 
     let classification = engine.classifier().classify(&full_path, None);
     let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    if let groundcontrol_core::index::classifier::FileClassification::Document(fmt) = classification
-    {
+    if let groundcontrol_core::classifier::FileClassification::Document(fmt) = classification {
         return Err(Error::NotPermitted(format!(
             "write_note cannot modify document format '{fmt}': documents are strictly read-only. Author markdown notes derived from them with 'derived_from' frontmatter."
         )));

@@ -5,13 +5,6 @@
 //! in `Engine::open`. It is the single place where the concrete adapters
 //! (`Store`, `BM25Index`, `KnowledgeGraph`, `VectorIndex`) are constructed and
 //! then handed to [`Engine::from_parts`] for pure assembly.
-//!
-//! Per Approach B of the ports-and-adapters refactor, `Engine` stays a single
-//! concrete type and nothing is generic: this builder wires the concrete
-//! adapters (which `core` legitimately owns) and injects them into the engine.
-//! `Engine::open` is a thin delegate to [`EngineBuilder::open`], so all existing
-//! call sites keep working while the adapter-construction sequence lives in
-//! exactly one place.
 
 use std::fs;
 use std::path::Path;
@@ -25,8 +18,8 @@ use groundcontrol_common::Result;
 use crate::engine::Engine;
 use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
-use crate::persistence::Store;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
+use crate::storage::sqlite::Store;
 
 /// Core-side factory that constructs the concrete adapters for an [`Engine`].
 ///

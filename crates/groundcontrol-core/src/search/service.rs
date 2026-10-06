@@ -1,31 +1,12 @@
 //! Core implementation of the [`SearchService`] port.
 //!
 //! [`CoreSearchService`] owns the search-mode dispatch (`bm25` | `semantic` |
-//! `hybrid` | `graph` | `explain`) that previously lived inline in the MCP
+//! `hybrid` | `graph` | `explain` | `fast`) that previously lived inline in the MCP
 //! `handle_search` tool. It borrows the resolved retrieval backends it needs
 //! (the BM25 index, the optional vector index, the knowledge graph, an optional
 //! embedder) plus the corpus's code-path set, and forwards each mode to the
 //! existing `crate::search` free functions — preserving their fallbacks,
 //! defaults, and error messages byte-for-byte.
-//!
-//! # Boundary
-//!
-//! The service receives **already-resolved** inputs. Engine-specific concerns —
-//! lazy embedder initialization (`ensure_embedder`), fast-mode detection,
-//! resolving `embedder_ref` / `vector_index` presence / `code_paths_set`, and
-//! (after this seam) the `detail`/verbosity shaping and JSON serialization —
-//! stay in the MCP adapter. The service reproduces the semantic-mode fast-mode
-//! guard purely from its inputs: a semantic search with no vector index present
-//! yields the same "unavailable in fast mode" error.
-//!
-//! # `explain` dummy vector index
-//!
-//! The `explain` mode calls `crate::search::search_explain`, which takes a
-//! `&VectorIndex` unconditionally. When no vector index is present (fast mode),
-//! the original code constructed an empty 384-dim fallback index. That fallback
-//! now lives here, inside the adapter's own crate (core is allowed to name
-//! `VectorIndex`), so the MCP layer no longer needs to reference
-//! `VectorIndex::new_default`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,7 +21,7 @@ use crate::embedding::Embedder;
 use crate::graph::KnowledgeGraph;
 use crate::index::BM25Index;
 use crate::search;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
 
 /// Core adapter implementing the [`SearchService`] port.
 ///

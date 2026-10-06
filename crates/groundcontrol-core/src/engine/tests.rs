@@ -9,7 +9,7 @@ use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
 use groundcontrol_common::types::{CodeSymbolType, IndexingStatus};
 
 use crate::engine::Engine;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
 
 /// Create a minimal corpus config pointing at the given path.
 fn test_config(corpus_path: &Path) -> CorpusConfig {

@@ -8,7 +8,7 @@ use groundcontrol_common::types::{ChunkEmbedPolicy, Modality, ParsedArtifact, Se
 use groundcontrol_common::{Error, Result};
 
 use crate::embedding::Embedder;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
 
 #[cfg(test)]
 pub mod tests;
