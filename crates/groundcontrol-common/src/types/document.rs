@@ -1,5 +1,7 @@
 //! Document domain types.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A unique identifier for a document (note) within a corpus.
@@ -127,4 +129,20 @@ pub struct FileRecord {
     pub indexed_at: i64,
     /// Format of the file (native source or projected document).
     pub format: FileFormat,
+}
+
+/// An outbound cross-reference link extracted from a rich document (canonical [`DocLink`]).
+pub type DocumentLink = DocLink;
+
+/// Structured document extracted from a rich document container (.docx, .pdf, .html).
+#[derive(Debug, Clone)]
+pub struct ExtractedDocument {
+    /// Document title extracted from metadata or primary heading.
+    pub title: Option<String>,
+    /// Extracted document metadata properties (author, date, subject, etc.).
+    pub metadata: HashMap<String, String>,
+    /// Normalized UTF-8 text with Markdown formatting and synthetic lines.
+    pub normalized_text: String,
+    /// Outbound cross-reference links (hyperlinks, anchors, references).
+    pub outbound_links: Vec<DocumentLink>,
 }

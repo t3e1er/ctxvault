@@ -12,8 +12,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use crate::engine::Engine;
-use groundcontrol_common::error::{Error, Result};
-use groundcontrol_common::ports::MetadataCatalog;
+use groundcontrol_common::{Error, MetadataCatalog, Result};
 
 /// Name of the manifest file inside the archive.
 pub const MANIFEST_FILENAME: &str = "manifest.json";

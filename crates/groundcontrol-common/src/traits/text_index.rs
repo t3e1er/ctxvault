@@ -1,22 +1,20 @@
-//! Full-text index port.
+//! Full-text index domain capability contract.
 
 use crate::types::{Chunk, Modality, SearchResult};
 use crate::Result;
 
-/// Full-text index port: the BM25 lexical-retrieval contract for a corpus.
+/// Domain capability contract for BM25 full-text indexing and lexical retrieval.
 ///
-/// This is the domain-facing contract for the Tantivy-backed full-text index.
-/// It covers document ingestion (add/remove), commit/writer-lifecycle, and
-/// ranked lexical search — optionally restricted to a [`Modality`]. Every
-/// signature speaks only [`crate::types`] domain types (`Chunk`,
-/// `SearchResult`, `Modality`) and standard-library types — no backend type
-/// (`tantivy::*`, schemas, writers, readers) ever crosses this boundary, so
-/// consumers depend on the contract rather than on Tantivy.
+/// This contract defines data boundaries for document chunk ingestion, writer
+/// lifecycle management, commit checkpoints, and ranked lexical querying
+/// across modalities ([`Modality::Docs`], [`Modality::Code`], [`Modality::Both`]).
+/// Every signature operates strictly on [`crate::types`] domain models and
+/// standard-library types. Raw Tantivy index handles (`tantivy::Index`,
+/// schemas, readers, writers) remain strictly encapsulated within
+/// `groundcontrol-core`.
 ///
-/// Construction (opening or creating the underlying index) and lockfile
-/// healing are deliberately **not** part of this port: they are
-/// adapter/composition-root concerns. The port describes only the runtime
-/// behaviour a full-text index must provide.
+/// Index creation, disk directory initialization, and lockfile healing are
+/// managed directly by the concrete index implementation in `groundcontrol-core`.
 pub trait TextIndex {
     /// Release the underlying writer, dropping any exclusive index lock.
     ///

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use groundcontrol_common::config::CorpusConfig;
-use groundcontrol_common::ports::GraphStore;
+use groundcontrol_common::traits::GraphStore;
 use groundcontrol_common::types::CodeSymbolType;
 use groundcontrol_core::corpus_manager::CorpusManager;
 use groundcontrol_core::graph::hybrid_lsp::TypeEnvironment;

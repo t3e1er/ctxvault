@@ -12,9 +12,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::ports::{SearchQuery, SearchService};
-use groundcontrol_common::types::{Modality, SearchExplanation, SearchResult};
-use groundcontrol_common::{Error, Result};
+use groundcontrol_common::{
+    Error, Modality, Result, SearchExplanation, SearchQuery, SearchResult, SearchService,
+};
 
 use crate::algorithm::binaryv3::BinaryV3SearchIndex;
 use crate::embedding::Embedder;

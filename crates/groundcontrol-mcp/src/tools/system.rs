@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde_json::Value;
 
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
+use groundcontrol_common::traits::{GraphStore, MetadataCatalog};
 use groundcontrol_common::{Error, Result};
 use groundcontrol_core::corpus_manager::CorpusManager;
 use groundcontrol_core::engine::Engine;

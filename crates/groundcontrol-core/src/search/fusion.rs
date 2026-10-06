@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use groundcontrol_common::ports::GraphStore;
 use groundcontrol_common::types::{Modality, ScoreBreakdown, SearchResult};
+use groundcontrol_common::GraphStore;
 
 /// Classify a result path as passing a [`Modality`] filter using the set of
 /// known code node keys.

@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use groundcontrol_common::ports::RetrievalAlgorithm;
 use groundcontrol_common::types::{Modality, ParsedArtifact, SearchResult};
-use groundcontrol_common::{Error, Result};
+use groundcontrol_common::{Error, Result, RetrievalAlgorithm};
 
 use super::composite::{search_fast_composite, search_hybrid_composite, CompositeConfig};
 

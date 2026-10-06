@@ -66,7 +66,8 @@ async fn test_mcp_http_server_and_client_e2e() {
     // 2. Initialize CorpusManager and index notes
     let manager = build_manager("test-corpus", &corpus_path);
     {
-        use groundcontrol_common::ports::{SearchQuery, SearchService};
+        use groundcontrol_common::traits::SearchService;
+        use groundcontrol_common::types::SearchQuery;
         let engine = manager.default_engine().expect("default engine");
         let query = SearchQuery {
             query: "architecture".to_string(),

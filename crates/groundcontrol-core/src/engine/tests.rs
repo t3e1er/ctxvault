@@ -5,8 +5,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use groundcontrol_common::config::CorpusConfig;
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
 use groundcontrol_common::types::{CodeSymbolType, IndexingStatus};
+use groundcontrol_common::{GraphStore, MetadataCatalog};
 
 use crate::engine::Engine;
 use crate::storage::hnsw::VectorIndex;

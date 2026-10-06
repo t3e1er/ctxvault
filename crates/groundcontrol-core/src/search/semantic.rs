@@ -1,8 +1,7 @@
 //! Semantic (dense vector) search strategies.
 
-use groundcontrol_common::ports::{EmbeddingProvider, VectorStore};
 use groundcontrol_common::types::{Modality, ScoreBreakdown, SearchDepth, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::{EmbeddingProvider, Result, VectorStore};
 
 use super::fusion::rrf_fuse;
 

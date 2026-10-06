@@ -533,7 +533,7 @@ impl VectorIndex {
 // Port adapter: VectorStore
 // ---------------------------------------------------------------------------
 
-impl groundcontrol_common::ports::VectorStore for VectorIndex {
+impl groundcontrol_common::VectorStore for VectorIndex {
     fn add(
         &mut self,
         vector: &[f32],

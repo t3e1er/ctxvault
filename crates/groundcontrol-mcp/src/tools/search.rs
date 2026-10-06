@@ -5,7 +5,8 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-use groundcontrol_common::ports::{MetadataCatalog, SearchQuery, SearchService};
+use groundcontrol_common::traits::{MetadataCatalog, SearchService};
+use groundcontrol_common::types::SearchQuery;
 use groundcontrol_common::{Error, Result};
 use groundcontrol_core::engine::Engine;
 

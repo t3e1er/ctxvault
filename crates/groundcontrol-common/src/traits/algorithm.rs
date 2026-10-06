@@ -1,14 +1,15 @@
-//! Retrieval algorithm port for modular search backends.
+//! Retrieval algorithm domain capability contract for modular search backends.
 
 use std::path::Path;
 
 use crate::types::{Modality, ParsedArtifact, SearchResult};
 use crate::Result;
 
-/// Uniform port satisfied by individual search and retrieval algorithm components.
+/// Domain capability contract satisfied by individual search and retrieval algorithm components.
 ///
 /// Each retrieval algorithm (`bm25`, `binary`, `ppr`, `dense`, etc.) manages its
-/// own indexing lifecycle, internal storage/memory structures, and isolated query execution.
+/// own indexing lifecycle, internal storage/memory structures, and isolated query execution
+/// for benchmarks, evaluation harnesses, and algorithmic ablation testing.
 pub trait RetrievalAlgorithm: Send + Sync {
     /// Canonical algorithm identifier (e.g. `"bm25"`, `"binary"`, `"ppr"`, `"dense"`).
     fn name(&self) -> &'static str;

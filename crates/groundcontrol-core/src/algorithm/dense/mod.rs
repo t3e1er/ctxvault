@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use groundcontrol_common::ports::RetrievalAlgorithm;
-use groundcontrol_common::types::{ChunkEmbedPolicy, Modality, ParsedArtifact, SearchResult};
-use groundcontrol_common::{Error, Result};
+use groundcontrol_common::types::ChunkEmbedPolicy;
+use groundcontrol_common::{
+    Error, Modality, ParsedArtifact, Result, RetrievalAlgorithm, SearchResult,
+};
 
 use crate::embedding::Embedder;
 use crate::storage::hnsw::VectorIndex;

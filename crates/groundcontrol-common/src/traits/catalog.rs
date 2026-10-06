@@ -1,4 +1,4 @@
-//! Metadata catalog port.
+//! Metadata catalog domain capability contract.
 
 use std::collections::HashMap;
 
@@ -7,22 +7,18 @@ use crate::types::{
 };
 use crate::Result;
 
-/// Metadata catalog port: the durable record-keeping contract for a corpus.
+/// Domain capability contract for metadata cataloging and durable record-keeping.
 ///
-/// This is the domain-facing contract for the SQLite-backed metadata store. It
-/// covers file tracking, text chunks, code symbols, edge-type configuration,
-/// key/value corpus config, and resumable indexing state. Every signature
-/// speaks only [`crate::types`] domain records and standard-library types — no
-/// backend type (`rusqlite::Connection`, statements, rows) ever crosses this
-/// boundary, so consumers depend on the contract rather than on SQLite.
+/// This contract defines data boundaries for file tracking, text chunks,
+/// code symbols, edge-type configuration, key/value corpus settings, and
+/// resumable indexing state. Every signature operates strictly on
+/// [`crate::types`] domain records and standard-library types. Raw backend
+/// database handles (`rusqlite::Connection`, prepared statements, rows) remain
+/// strictly encapsulated within `groundcontrol-core`.
 ///
-/// Construction (opening or creating the underlying database) is deliberately
-/// **not** part of this port: it is an adapter/composition-root concern. The
-/// port describes only the runtime behaviour a catalog must provide.
-///
-/// The `templates` and `validation_issues` tables exist in the schema but have
-/// no accessor methods on the store today, so they are intentionally absent
-/// from this contract; the port mirrors exactly the surface that is used.
+/// Database opening, migration, and connection pooling are owned by the
+/// concrete storage implementation in `groundcontrol-core`; this trait defines
+/// the operational capabilities consumed across engine and retrieval workflows.
 pub trait MetadataCatalog {
     // ------------------------------------------------------------------
     // File tracking

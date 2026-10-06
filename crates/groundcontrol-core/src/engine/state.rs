@@ -6,9 +6,9 @@ use std::sync::{Arc, RwLock};
 use tracing::warn;
 
 use groundcontrol_common::config::CorpusConfig;
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog, RetrievalAlgorithm};
-use groundcontrol_common::types::ParsedArtifact;
-use groundcontrol_common::Result;
+use groundcontrol_common::{
+    GraphStore, MetadataCatalog, ParsedArtifact, Result, RetrievalAlgorithm,
+};
 
 use crate::algorithm::{BinaryAlgorithm, Bm25Algorithm, DenseAlgorithm, GraphAlgorithm};
 use crate::embedding::Embedder;

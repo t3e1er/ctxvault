@@ -23,7 +23,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
-use groundcontrol_common::ports::MetadataCatalog;
+use groundcontrol_common::traits::MetadataCatalog;
 use groundcontrol_common::{Error, Result};
 use groundcontrol_core::corpus_manager::CorpusManager;
 

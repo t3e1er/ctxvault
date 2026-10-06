@@ -12,7 +12,8 @@ use std::path::Path;
 
 use scraper::{Html, Selector};
 
-use groundcontrol_common::ports::{DocumentExtractor, ExtractedDocument};
+use groundcontrol_common::traits::DocumentExtractor;
+use groundcontrol_common::types::ExtractedDocument;
 use groundcontrol_common::Result;
 
 use self::dom::render_node_to_markdown;

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use groundcontrol_common::ports::GraphStore;
+use groundcontrol_common::traits::GraphStore;
 use groundcontrol_common::{Error, Result};
 use groundcontrol_core::corpus_manager::CorpusManager;
 use groundcontrol_core::engine::Engine;

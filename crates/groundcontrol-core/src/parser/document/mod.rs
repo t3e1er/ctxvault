@@ -16,8 +16,8 @@ pub use policy::classify_document_chunk;
 
 use std::path::Path;
 
-use groundcontrol_common::ports::{DocumentExtractor, ExtractedDocument};
-use groundcontrol_common::types::FileFormat;
+use groundcontrol_common::traits::DocumentExtractor;
+use groundcontrol_common::types::{ExtractedDocument, FileFormat};
 use groundcontrol_common::Result;
 
 /// Default composite document extractor registry for groundcontrol.

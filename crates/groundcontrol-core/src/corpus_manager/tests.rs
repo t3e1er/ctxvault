@@ -8,8 +8,8 @@ use groundcontrol_common::config::{
     ChunkingConfig, CorpusConfig, CorpusMode, EdgeSource, EdgeTypeConfig, EmbeddingConfig,
     GraphConfig, IndexMode,
 };
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
 use groundcontrol_common::types::{Edge, EdgeProvenance, ResolutionConfidence};
+use groundcontrol_common::{GraphStore, MetadataCatalog};
 
 use crate::corpus_manager::{CorpusManager, ResolverKind};
 use crate::engine::Engine;

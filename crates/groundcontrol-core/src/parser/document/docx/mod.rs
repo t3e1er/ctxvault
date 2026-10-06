@@ -13,7 +13,8 @@ use std::path::Path;
 
 use zip::ZipArchive;
 
-use groundcontrol_common::ports::{DocumentExtractor, ExtractedDocument};
+use groundcontrol_common::traits::DocumentExtractor;
+use groundcontrol_common::types::ExtractedDocument;
 use groundcontrol_common::{Error, Result};
 
 use self::body::parse_document_xml;

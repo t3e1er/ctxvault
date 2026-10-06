@@ -55,7 +55,7 @@ pub fn print_index_completion_card(
     elapsed: Duration,
     engine: &groundcontrol_core::engine::Engine,
 ) {
-    use groundcontrol_common::ports::MetadataCatalog;
+    use groundcontrol_common::traits::MetadataCatalog;
     let file_count = engine.store().list_files().map(|f| f.len()).unwrap_or(0);
     let node_count = engine.knowledge_graph().node_count();
     let edge_count = engine.knowledge_graph().edge_count();

@@ -3,11 +3,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
 use groundcontrol_common::types::{
     CodeSymbol, CodeSymbolType, EdgeProvenance, ExternalRefKind, ResolutionConfidence,
 };
-use groundcontrol_common::Result;
+use groundcontrol_common::{GraphStore, MetadataCatalog, Result};
 
 use crate::engine::Engine;
 

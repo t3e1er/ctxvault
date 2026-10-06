@@ -2,9 +2,7 @@
 
 use std::path::Path;
 
-use groundcontrol_common::ports::RetrievalAlgorithm;
-use groundcontrol_common::types::{Modality, ParsedArtifact, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::{Modality, ParsedArtifact, Result, RetrievalAlgorithm, SearchResult};
 
 use crate::index::BM25Index;
 

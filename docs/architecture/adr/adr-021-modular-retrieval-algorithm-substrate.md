@@ -24,7 +24,7 @@ This design had major drawbacks:
 
 ## Decision
 We refactored the indexing and retrieval pipeline into an **Algorithm Substrate / Component Architecture**:
-1. Defined the [`RetrievalAlgorithm`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/ports/algorithm.rs) port trait in `groundcontrol-common::ports::algorithm`.
+1. Defined the [`RetrievalAlgorithm`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/traits/algorithm.rs) capability trait in `groundcontrol-common::traits::algorithm`.
 2. Created a clean intermediate representation, [`ParsedArtifact`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/types/artifact.rs), separating pure CPU AST parsing from downstream index ingestion.
 3. Decomposed algorithms into isolated subdirectories under `crates/groundcontrol-core/src/algorithm/`:
    - `bm25/`: `mod.rs`, `types.rs`, `tests.rs`
