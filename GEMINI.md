@@ -54,13 +54,15 @@ groundcontrol has no legacy external consumers to protect. Optimize for a clean,
 - Clippy runs with `-D warnings`. Never silence unused code warnings with blanket `#[allow(dead_code)]`.
 - Do not leave TODO stubs, commented-out code, or duplicate code paths. Collapse duplicate paths immediately.
 
-### Hexagonal Architecture (Ports & Adapters)
-Every major concern is defined as a trait (**port**) in `groundcontrol-common::ports` or `groundcontrol-core`; concrete backends (**adapters**) implement them:
-- **Major Ports**: `MetadataCatalog` (SQLite), `TextIndex` (Tantivy BM25), `VectorStore` (HNSW), `GraphStore` (Petgraph), `EmbeddingProvider` (ONNX), `SearchService` (multi-modal dispatch + RRF).
-- **Encapsulation Barrier**: Adapters never leak backend types (`rusqlite::Connection`, `tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`) across ports. Port signatures use domain types from `groundcontrol-common` only.
-- **Domain Decoupling**: `Engine` holds ports; it does not own concrete backends and does not expose concrete accessors. `groundcontrol-mcp` depends on ports, `SearchService`, and domain types, never core internals.
-- **Composition Root**: `crates/groundcontrol-cli/src/main.rs` is the *only* place adapters are named, constructed, and injected via `CorpusManager` / engine builders.
-- **Rust DI Policy**: Prefer generics with trait bounds on hot paths (zero-cost monomorphization). Use `Arc<dyn Trait>` only for runtime pluggable boundaries.
+### Layered Architecture & Storage Encapsulation
+Rather than dogmatic hexagonal DI with runtime-swappable trait objects (`Arc<dyn Port>`), `groundcontrol` follows a clean **Layered Architecture with strict Storage Encapsulation**:
+- **Layering & Separation of Concerns**:
+  - `groundcontrol-common`: Authoritative pure domain models (`Chunk`, `Edge`, `Symbol`), configurations, error domains, and foundational capability traits (e.g. `MetadataCatalog`, `Store`).
+  - `groundcontrol-core`: Stateful engine orchestration, retrieval algorithms, indexing pipelines, and storage engines.
+  - `groundcontrol-mcp`: Transport layer (stdio/HTTP) translating MCP JSON-RPC requests into `Engine` and `CorpusManager` domain operations.
+  - `groundcontrol-cli`: Composition root and binary entrypoints.
+- **Strict Storage Encapsulation Barrier**: Raw backend database handles and third-party types (`rusqlite::Connection`, `tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`) are private implementation details confined within their respective domain/storage modules in `groundcontrol-core`. They are never exposed across crate boundaries or leaked to the MCP surface.
+- **Pragmatic Rust Contracts**: Purpose-built storage engines (SQLite catalog, Tantivy BM25, HNSW index, Petgraph graph) are owned directly and composed by value. Trait contracts are reserved for true domain variations (e.g., algorithmic retrieval strategies, extractors, metadata interfaces) rather than gratuitous architectural indirection.
 
 ### Idiomatic Domain Separation & Module Structuring
 Every non-trivial subsystem or domain module across the workspace must follow a strict separation of concerns and uniform file layout:
