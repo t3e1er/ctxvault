@@ -1,36 +1,23 @@
-//! Vector store port.
+//! Vector store domain capability contract.
 
 use std::path::Path;
 
 use crate::types::{Modality, VectorSearchResult};
 use crate::Result;
 
-/// Vector store port: the dense approximate-nearest-neighbor contract for a corpus.
+/// Domain capability contract for dense approximate-nearest-neighbor (ANN) vector indexing.
 ///
-/// This is the domain-facing contract for the HNSW-backed vector index. It
-/// covers vector ingestion (single/batch add and per-document removal),
-/// similarity search restricted to a [`Modality`], persistence to disk, and the
-/// dimension/model-version/stale/dirty bookkeeping the engine relies on. Every
-/// signature speaks only plain `Vec<f32>` / `&[f32]` vectors, standard-library
-/// types, and [`crate::types`] domain types
-/// ([`Modality`], [`VectorSearchResult`]) — no backend type (`hnsw_rs::*`) ever
-/// crosses this boundary, so consumers depend on the contract rather than on
-/// HNSW.
+/// This contract defines storage boundaries for vector ingestion (individual
+/// and batched additions, document-level and chunk-level embeddings), path-based
+/// vector pruning, similarity search restricted to a [`Modality`], index
+/// persistence, and model-version metadata bookkeeping. Every signature
+/// speaks only plain `Vec<f32>` / `&[f32]` vectors, standard-library types, and
+/// [`crate::types`] domain types ([`Modality`], [`VectorSearchResult`]). Raw
+/// backend types (`hnsw_rs::*`) remain strictly encapsulated within
+/// `groundcontrol-core`.
 ///
-/// # Construction vs. persistence
-///
-/// Persistence is split by object-safety and ownership:
-///
-/// - [`VectorStore::save`] is an **instance** method (`&self`) and therefore
-///   part of the port — persisting the current state is runtime behaviour a
-///   store must provide.
-/// - Loading is deliberately **not** on the port. The load-equivalent operation
-///   (and the `new` / `new_default` constructors) return `Self`, which a
-///   `&dyn`-object-safe trait cannot express, and constructing a store — reading
-///   a `vectors.bin` off disk or building an empty index — is an
-///   adapter/composition-root concern, not a runtime behaviour of an existing
-///   store. The composition root constructs the concrete adapter (loading from
-///   disk when present) and injects it behind this port.
+/// Index instantiation and disk loading are owned directly by the concrete
+/// `VectorIndex` lifecycle in `groundcontrol-core`.
 pub trait VectorStore {
     /// Add a single vector to the index.
     ///

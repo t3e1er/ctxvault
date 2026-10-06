@@ -14,6 +14,7 @@ use super::graph::{
     handle_trace_cross_corpus_dummy,
 };
 use super::grep::handle_grep;
+use super::r#where::{handle_where_corpus_manager, handle_where_engine};
 use super::read::{handle_get_snippet, handle_list_notes, handle_read_file};
 use super::search::{handle_search, handle_search_related};
 use super::system::{
@@ -22,7 +23,6 @@ use super::system::{
     handle_unload_corpus_dummy, handle_unload_corpus_manager,
 };
 use super::template::{handle_list_templates, handle_validate};
-use super::where_tool::{handle_where_corpus_manager, handle_where_engine};
 use super::write::{handle_delete_note, handle_move_note, handle_write_note};
 
 /// MCP tool handler function signature for read-only vs mutating tools.

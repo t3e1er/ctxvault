@@ -7,7 +7,7 @@ use groundcontrol_common::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::index::BM25Index;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
 
 /// A semantic gap: a query where BM25 and vector search produce divergent results.
 #[derive(Debug, Clone, Serialize, Deserialize)]

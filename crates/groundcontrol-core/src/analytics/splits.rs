@@ -29,7 +29,7 @@ pub struct SplitSuggestion {
 ///
 /// This is a heuristic-based approach that doesn't require embeddings.
 pub fn suggest_splits(
-    store: &crate::persistence::Store,
+    store: &crate::storage::sqlite::Store,
     corpus_root: Option<&Path>,
     max_chunk_chars: usize,
 ) -> Result<Vec<SplitSuggestion>> {

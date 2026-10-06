@@ -9,9 +9,12 @@ pub mod hybrid;
 pub mod multihop;
 pub mod projection;
 pub mod semantic;
+pub mod service;
 
 #[cfg(test)]
 mod tests;
+
+pub use service::CoreSearchService;
 
 pub use crate::algorithm::binaryv3::BinaryV3SearchIndex;
 /// Canonical in-memory 256-bit binary search index backed by BinaryV3.

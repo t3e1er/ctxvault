@@ -5,6 +5,7 @@
 //! indexing, delta scanning, and provides unified access to all subsystems.
 
 pub(crate) mod analytics;
+pub mod builder;
 pub(crate) mod indexer;
 pub(crate) mod state;
 pub(crate) mod types;
@@ -12,6 +13,7 @@ pub(crate) mod types;
 #[cfg(test)]
 mod tests;
 
+pub use builder::EngineBuilder;
 pub use state::Engine;
 pub use types::{
     DeltaScanResult, IndexingProgress, IndexingStage, IndexingStatusResponse, PendingChunk,

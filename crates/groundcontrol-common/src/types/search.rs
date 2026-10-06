@@ -492,3 +492,54 @@ pub enum BinaryProjectionKind {
     #[default]
     PartitionedHyperplane,
 }
+
+/// Query options for search-mode dispatch.
+///
+/// Encapsulates all query parameters required for multimodal search dispatch,
+/// mirroring the search capabilities across lexical, semantic, graph, and fast modes.
+#[derive(Debug, Clone)]
+pub struct SearchQuery {
+    /// The raw query text.
+    pub query: String,
+    /// Retrieval mode: `bm25`, `semantic`, `hybrid`, `graph`, `explain`, or `fast`.
+    ///
+    /// `None` selects the default (`hybrid`). `fast` executes sub-minute CPU SIF +
+    /// 256-bit MRL binary Hamming scan + Query-Time PPR with zero ONNX neural inference.
+    /// Any unrecognized value is an error, reproduced by the service.
+    pub mode: Option<String>,
+    /// Maximum number of results to return. `None` defaults to 10.
+    pub limit: Option<usize>,
+    /// Modality filter (docs | code | both), threaded through every mode.
+    pub modality: Modality,
+    /// Semantic-search depth (precise | broad | adaptive). Only used by `semantic`.
+    pub depth: SearchDepth,
+    /// Graph traversal depth. `None` takes the per-mode default (2 for
+    /// `hybrid`/`explain`, 3 for `graph`).
+    pub graph_depth: Option<usize>,
+    /// Optional edge-type filter for graph-aware modes.
+    pub edge_types: Option<Vec<String>>,
+    /// Optional edge-class filter (`code` | `semantic` | `structural` | `crossmodal` | `hybrid`) as a raw
+    /// string. The service applies the per-mode default when this is `None`.
+    pub edge_class: Option<String>,
+    /// Whether to run multi-hop query decomposition (`hybrid` mode only).
+    pub decompose: Option<bool>,
+    /// Number of top-ranked search results to inline source snippets for in Turn 1.
+    pub snippets: Option<usize>,
+}
+
+impl Default for SearchQuery {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            mode: None,
+            limit: None,
+            modality: Modality::Both,
+            depth: SearchDepth::default(),
+            graph_depth: None,
+            edge_types: None,
+            edge_class: None,
+            decompose: None,
+            snippets: None,
+        }
+    }
+}

@@ -9,7 +9,7 @@ use super::edge::Edge;
 
 /// A parsed file artifact produced once per file by Tree-sitter / Markdown parsing.
 ///
-/// Broadcast across all registered [`crate::ports::RetrievalAlgorithm`] implementations.
+/// Broadcast across all registered [`crate::traits::RetrievalAlgorithm`] implementations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedArtifact {
     /// Relative path within the corpus.

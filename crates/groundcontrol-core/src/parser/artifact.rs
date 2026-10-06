@@ -10,7 +10,7 @@ use groundcontrol_common::config::ChunkingConfig;
 use groundcontrol_common::types::{Document, Edge, EdgeProvenance, FileFormat, ParsedArtifact};
 use groundcontrol_common::Result;
 
-use crate::index::classifier::{FileClassification, FileClassifier};
+use crate::classifier::{FileClassification, FileClassifier};
 use crate::parser::code::chunker::CodeChunker;
 use crate::parser::document::DocumentExtractorRegistry;
 

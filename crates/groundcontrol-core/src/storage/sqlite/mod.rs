@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-use groundcontrol_common::ports::MetadataCatalog;
+use groundcontrol_common::traits::MetadataCatalog;
 use groundcontrol_common::types::{
     ChunkRecord, CodeSymbol, EdgeTypeRecord, FileFormat, FileRecord, IndexingState,
 };

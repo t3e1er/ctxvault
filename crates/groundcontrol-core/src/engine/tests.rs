@@ -5,11 +5,11 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use groundcontrol_common::config::CorpusConfig;
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
 use groundcontrol_common::types::{CodeSymbolType, IndexingStatus};
+use groundcontrol_common::{GraphStore, MetadataCatalog};
 
 use crate::engine::Engine;
-use crate::vector_index::VectorIndex;
+use crate::storage::hnsw::VectorIndex;
 
 /// Create a minimal corpus config pointing at the given path.
 fn test_config(corpus_path: &Path) -> CorpusConfig {

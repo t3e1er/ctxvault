@@ -1,8 +1,7 @@
 //! BM25 keyword search strategy.
 
-use groundcontrol_common::ports::TextIndex;
 use groundcontrol_common::types::{Modality, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::{Result, TextIndex};
 
 /// Simple BM25 keyword search, restricted to the requested [`Modality`].
 pub fn search_bm25(

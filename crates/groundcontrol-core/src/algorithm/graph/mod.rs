@@ -2,9 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use groundcontrol_common::ports::RetrievalAlgorithm;
-use groundcontrol_common::types::{EntityKind, Modality, ParsedArtifact, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::types::EntityKind;
+use groundcontrol_common::{Modality, ParsedArtifact, Result, RetrievalAlgorithm, SearchResult};
 
 use crate::graph::KnowledgeGraph;
 

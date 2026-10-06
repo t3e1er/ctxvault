@@ -1,4 +1,4 @@
-//! Knowledge graph store port.
+//! Knowledge graph store domain capability contract.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -11,38 +11,19 @@ use crate::types::{
 };
 use crate::Result;
 
-/// Graph store port: the typed knowledge-graph contract for a corpus.
+/// Domain capability contract for typed knowledge-graph storage and graph algorithms.
 ///
-/// This is the domain-facing contract for the Petgraph-backed `KnowledgeGraph`.
-/// It covers node/edge mutation, edge construction from parsed documents,
-/// traversal (BFS, shortest path, lineage), backlink/forwardlink queries,
-/// taxonomy validation (broken links, cycles, orphan ADRs), community
-/// detection, statistics, and persistence. Every signature speaks only
-/// [`crate::types`] / [`crate::config`] domain types and standard-library
-/// types — no backend type (`petgraph::NodeIndex`, `DiGraph`, …) ever crosses
-/// this boundary, so consumers depend on the contract rather than on Petgraph.
+/// This contract covers node/edge mutation, cross-corpus edge linking,
+/// graph traversal (BFS, shortest path, structural lineage), backlink/forwardlink
+/// resolution, taxonomy validation (broken links, circular dependencies, orphan ADRs),
+/// community detection (Louvain, Leiden), statistics, and persistence.
 ///
-/// # Exclusions (surface deliberately not on the port)
+/// Every signature operates strictly on [`crate::types`] / [`crate::config`] domain
+/// types and standard-library types. Raw graph structures (`petgraph::NodeIndex`,
+/// `petgraph::graph::DiGraph`) remain strictly encapsulated within `groundcontrol-core`.
 ///
-/// - **Construction and loading (`new`, `load`).** Both return `Self` — a
-///   `&dyn`-object-safe trait cannot express that, and building a graph (empty
-///   or deserialized from `graph.bin`) is an adapter/composition-root concern,
-///   not runtime behaviour of an existing store. `save` (`&self`) *is* on the
-///   port because persisting current state is runtime behaviour; loading stays
-///   an inherent method on the concrete adapter.
-/// - **`get_node`.** It returns a backend `NodeIndex` and has no non-test
-///   callers; every existence check it served is covered by
-///   [`GraphStore::contains_node`], so it is excluded entirely (a backend type
-///   must never leak across the port).
-/// - **`add_node` returns `()` here, not the backend `NodeIndex`.** The sole
-///   external caller discards the index, and the internal consumers of that
-///   index live inside the adapter's own edge-construction methods — off the
-///   port.
-///
-/// Some inherent methods on the adapter (e.g. `traverse_dfs`, `orphan_paths`,
-/// `node_degree_list`, `ensure_node`) have no non-test callers today and are
-/// intentionally omitted from this contract; the port mirrors exactly the
-/// surface consumers use.
+/// Graph construction and deserialization from disk are managed directly by
+/// `KnowledgeGraph` in `groundcontrol-core`.
 pub trait GraphStore {
     // ------------------------------------------------------------------
     // Node / edge mutation

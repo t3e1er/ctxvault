@@ -3,9 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::ports::{EmbeddingProvider, GraphStore, TextIndex, VectorStore};
 use groundcontrol_common::types::{Modality, ScoreBreakdown, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::{EmbeddingProvider, GraphStore, Result, TextIndex, VectorStore};
 
 use super::fusion::{enrich_results_with_lineage, path_matches_modality, rrf_fuse};
 use super::hybrid::search_hybrid_full;

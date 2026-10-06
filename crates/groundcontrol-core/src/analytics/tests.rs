@@ -57,7 +57,7 @@ fn test_analyze_density_with_data() {
 
 #[test]
 fn test_find_semantic_gaps_disjoint() {
-    use crate::vector_index::VectorIndex;
+    use crate::storage::hnsw::VectorIndex;
     use groundcontrol_common::types::Chunk;
 
     let mut bm25 = BM25Index::open_in_memory().unwrap();

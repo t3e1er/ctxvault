@@ -3,11 +3,10 @@
 use std::collections::{HashMap, HashSet};
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::ports::{GraphStore, TextIndex, VectorStore};
 use groundcontrol_common::types::{
     GraphExplanation, Modality, SearchExplanation, SignalExplanation,
 };
-use groundcontrol_common::Result;
+use groundcontrol_common::{GraphStore, Result, TextIndex, VectorStore};
 
 use super::fusion::path_matches_modality;
 

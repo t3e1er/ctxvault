@@ -3,7 +3,7 @@ use groundcontrol_common::config::{
     ChunkingConfig, CorpusConfig, CorpusMode, EdgeClass, EdgeSource, EdgeTypeConfig,
     EmbeddingConfig, GraphConfig, IndexMode,
 };
-use groundcontrol_common::ports::GraphStore;
+use groundcontrol_common::traits::GraphStore;
 use groundcontrol_common::types::EdgeProvenance;
 use groundcontrol_core::corpus_manager::CorpusManager;
 use groundcontrol_core::engine::Engine;

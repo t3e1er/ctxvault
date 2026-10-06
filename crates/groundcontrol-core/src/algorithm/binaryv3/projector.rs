@@ -221,7 +221,7 @@ impl BinaryV3Projector {
         }
 
         // Sub-tokens from camelCase and snake_case identifiers (mu_subword = 1.0)
-        let sub_tokens = crate::parser::code::patterns::split_identifier(token);
+        let sub_tokens = crate::parser::code::split_identifier(token);
         if sub_tokens.len() > 1 {
             for sub in sub_tokens {
                 let sub_lower = sub.to_lowercase();

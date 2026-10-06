@@ -12,9 +12,7 @@ use tantivy::{
 };
 
 use groundcontrol_common::{
-    ports::TextIndex,
-    types::{Chunk, EntityKind, Modality, ScoreBreakdown, SearchResult},
-    Error, Result,
+    Chunk, EntityKind, Error, Modality, Result, ScoreBreakdown, SearchResult, TextIndex,
 };
 
 use super::lockfile::heal_stale_lockfiles;

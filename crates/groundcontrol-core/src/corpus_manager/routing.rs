@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use groundcontrol_common::ports::{GraphStore, MetadataCatalog};
-use groundcontrol_common::{Error, Result};
+use groundcontrol_common::{Error, GraphStore, MetadataCatalog, Result};
 
 use super::manager::CorpusManager;
 use super::types::CorpusInfo;

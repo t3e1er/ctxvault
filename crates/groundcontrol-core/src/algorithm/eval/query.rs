@@ -1,8 +1,6 @@
 //! Isolated query execution across retrieval algorithms for evaluation.
 
-use groundcontrol_common::ports::{SearchQuery, SearchService};
-use groundcontrol_common::types::Modality;
-use groundcontrol_common::{Error, Result};
+use groundcontrol_common::{Error, Modality, Result, SearchQuery, SearchService};
 
 use super::config::AlgoConfig;
 use super::hit::{deduplicate_hits, AlgoHit};

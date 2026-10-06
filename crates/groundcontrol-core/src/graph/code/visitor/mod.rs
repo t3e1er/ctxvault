@@ -8,8 +8,7 @@ pub mod state;
 use tree_sitter::Node;
 
 use crate::graph::hybrid_lsp::clean_type_name;
-use crate::parser::code::languages::SupportedLanguage;
-use crate::parser::code::spec::get_language_spec;
+use crate::parser::code::languages::{get_language_spec, LanguageSpec, SupportedLanguage};
 
 pub(crate) use state::CallAndImportVisitor;
 
@@ -39,7 +38,7 @@ impl<'a> CallAndImportVisitor<'a> {
             || self.file_symbols.iter().any(|s| {
                 s.start_line == node.start_position().row + 1
                     && s.end_line == node.end_position().row + 1
-                    && crate::parser::code::spec::LanguageSpec::is_container(s.symbol_type)
+                    && LanguageSpec::is_container(s.symbol_type)
             });
 
         if is_container {

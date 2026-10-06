@@ -177,7 +177,7 @@ L490: }
 
 ### 2.5 Rust Trait & Signature Proposals
 
-#### Additions to `groundcontrol-common::ports::catalog::MetadataCatalog`
+#### Additions to [`MetadataCatalog`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/traits/catalog.rs)
 ```rust
 /// Detailed call-site record captured during AST parsing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

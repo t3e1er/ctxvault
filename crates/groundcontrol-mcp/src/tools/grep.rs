@@ -7,7 +7,7 @@ use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use groundcontrol_common::ports::MetadataCatalog;
+use groundcontrol_common::traits::MetadataCatalog;
 use groundcontrol_common::{Error, Result};
 use groundcontrol_core::engine::Engine;
 

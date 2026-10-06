@@ -1,7 +1,7 @@
 //! File classification and exclusion pattern matching.
 
-pub mod classifier;
+pub mod engine;
 pub mod exclude;
 
-pub use classifier::{FileClassification, FileClassifier};
+pub use engine::{FileClassification, FileClassifier};
 pub use exclude::ExcludeMatcher;

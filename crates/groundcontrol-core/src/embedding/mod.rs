@@ -586,7 +586,7 @@ impl Embedder {
     }
 }
 
-impl groundcontrol_common::ports::EmbeddingProvider for Embedder {
+impl groundcontrol_common::EmbeddingProvider for Embedder {
     fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
         Embedder::embed_query(self, query)
     }

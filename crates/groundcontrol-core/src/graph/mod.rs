@@ -510,7 +510,7 @@ impl Default for KnowledgeGraph {
     }
 }
 
-impl groundcontrol_common::ports::GraphStore for KnowledgeGraph {
+impl groundcontrol_common::GraphStore for KnowledgeGraph {
     fn add_node(&mut self, path: &str, title: Option<&str>) {
         let _ = KnowledgeGraph::add_node(self, path, title);
     }

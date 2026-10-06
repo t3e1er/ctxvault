@@ -3,12 +3,11 @@
 use std::collections::{HashMap, HashSet};
 
 use groundcontrol_common::config::EdgeClass;
-use groundcontrol_common::ports::TextIndex;
 use groundcontrol_common::types::{
     EntityKind, GraphExplanation, Modality, ScoreBreakdown, SearchExplanation, SearchResult,
     SignalExplanation,
 };
-use groundcontrol_common::Result;
+use groundcontrol_common::{Result, TextIndex};
 
 use super::fusion::{enrich_results_with_lineage, path_matches_modality};
 use crate::algorithm::binaryv3::BinaryV3SearchIndex;

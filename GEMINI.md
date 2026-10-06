@@ -54,13 +54,42 @@ groundcontrol has no legacy external consumers to protect. Optimize for a clean,
 - Clippy runs with `-D warnings`. Never silence unused code warnings with blanket `#[allow(dead_code)]`.
 - Do not leave TODO stubs, commented-out code, or duplicate code paths. Collapse duplicate paths immediately.
 
-### Hexagonal Architecture (Ports & Adapters)
-Every major concern is defined as a trait (**port**) in `groundcontrol-common::ports` or `groundcontrol-core`; concrete backends (**adapters**) implement them:
-- **Major Ports**: `MetadataCatalog` (SQLite), `TextIndex` (Tantivy BM25), `VectorStore` (HNSW), `GraphStore` (Petgraph), `EmbeddingProvider` (ONNX), `SearchService` (multi-modal dispatch + RRF).
-- **Encapsulation Barrier**: Adapters never leak backend types (`rusqlite::Connection`, `tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`) across ports. Port signatures use domain types from `groundcontrol-common` only.
-- **Domain Decoupling**: `Engine` holds ports; it does not own concrete backends and does not expose concrete accessors. `groundcontrol-mcp` depends on ports, `SearchService`, and domain types, never core internals.
-- **Composition Root**: `crates/groundcontrol-cli/src/main.rs` is the *only* place adapters are named, constructed, and injected via `CorpusManager` / engine builders.
-- **Rust DI Policy**: Prefer generics with trait bounds on hot paths (zero-cost monomorphization). Use `Arc<dyn Trait>` only for runtime pluggable boundaries.
+### Layered Architecture & Storage Encapsulation
+Rather than dogmatic hexagonal DI with runtime-swappable trait objects (`Arc<dyn Port>`), `groundcontrol` follows a clean **Layered Architecture with strict Storage Encapsulation**:
+- **Layering & Separation of Concerns**:
+  - `groundcontrol-common`: Authoritative pure domain models (`Chunk`, `Edge`, `Symbol`), configurations, error domains, and foundational capability traits (e.g. `MetadataCatalog`, `Store`).
+  - `groundcontrol-core`: Stateful engine orchestration, retrieval algorithms, indexing pipelines, and storage engines.
+  - `groundcontrol-mcp`: Transport layer (stdio/HTTP) translating MCP JSON-RPC requests into `Engine` and `CorpusManager` domain operations.
+  - `groundcontrol-cli`: Composition root and binary entrypoints.
+- **Strict Storage Encapsulation Barrier**: Raw backend database handles and third-party types (`rusqlite::Connection`, `tantivy::*`, `hnsw_rs::*`, `petgraph::*`, `ort::*`) are private implementation details confined within their respective domain/storage modules in `groundcontrol-core`. They are never exposed across crate boundaries or leaked to the MCP surface.
+- **Pragmatic Rust Contracts**: Purpose-built storage engines (SQLite catalog, Tantivy BM25, HNSW index, Petgraph graph) are owned directly and composed by value. Trait contracts are reserved for true domain variations (e.g., algorithmic retrieval strategies, extractors, metadata interfaces) rather than gratuitous architectural indirection.
+
+### Idiomatic Domain Separation & Module Structuring
+Every non-trivial subsystem or domain module across the workspace must follow a strict separation of concerns and uniform file layout:
+- **Canonical `<domain>/` Module Blueprint**:
+  - `mod.rs`: Lean public facade (<100 lines). Declares submodules, re-exports public API/contracts (`pub use types::*; pub use service::*;`), and houses trait adapter implementations. No sprawling implementation code.
+  - `types.rs`: Pure domain models, enums, configuration, DTOs, and error types. Minimal business logic (constructors/defaults/validations only).
+  - `service.rs` (or domain noun, e.g., `builder.rs`, `pipeline.rs`): Stateful orchestrator, engine logic, or service coordination.
+  - `<concern>.rs`: Decomposed operational concerns (e.g. `files.rs`, `chunks.rs`, `schema.rs`).
+  - `tests.rs`: Domain-level unit & subsystem test suite.
+- **Zero Compatibility Shims or Alias Files**:
+  - Never retain orphan files or single-re-export shims (e.g., `vector_index.rs` or `persistence/mod.rs`). Callers must reference canonical module paths directly.
+- **No Orphan Root Files**:
+  - Domain concerns must not float in `src/` root (e.g., `engine_builder.rs` must live in `engine/builder.rs`, `search_service.rs` in `search/service.rs`).
+- **No Single-File Directory Wrappers**:
+  - Do not create directories that contain only `mod.rs` (e.g., `artifacts/mod.rs` or `config_cmd/mod.rs`). Use a clean sibling file (e.g., `commands/config.rs`) unless a domain has multiple decomposed files.
+
+### 3-Tier Testing Pyramid & Test Placement Standards
+Test placement is strictly deterministic across 3 tiers:
+1. **Tier 1 (Micro-Unit Tests — Inline `#[cfg(test)] mod tests`)**:
+   - **Scope**: Private helper functions, internal regexes, and small invariants scoped strictly to that file.
+   - **Ceiling**: Maximum ~80 lines of test code. If test fixtures, extensive inputs, or roundtrips exceed 80 lines, they must be moved to Tier 2.
+2. **Tier 2 (Domain/Subsystem Tests — Dedicated `<domain>/tests.rs`)**:
+   - **Scope**: Comprehensive unit, roundtrip, and functional tests for the domain module.
+   - **Wiring**: Declared in `<domain>/mod.rs` via `#[cfg(test)] mod tests;`. Keeps production code files clean, readable, and focused.
+3. **Tier 3 (Crate Integration Tests — `crates/<crate>/tests/*.rs`)**:
+   - **Scope**: Black-box integration testing importing the crate as an external consumer (`use groundcontrol_core::*`).
+   - **Usage**: Multi-corpus federation, end-to-end MCP JSON-RPC protocol over stdio/HTTP, and end-to-end index-and-query workflows.
 
 ---
 

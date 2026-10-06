@@ -166,9 +166,9 @@ Working Repository (Authoritative Ground Truth)
 
 ---
 
-## 4. Pure-Rust Ingestion Adapters (`DocumentExtractor` Port)
+## 4. Pure-Rust Ingestion Implementations (`DocumentExtractor` Trait)
 
-Following groundcontrol's strict Hexagonal Architecture, extractors are defined via a port trait in `groundcontrol-common::ports::DocumentExtractor`:
+Under groundcontrol's Layered Architecture with Storage Encapsulation, extractors are defined via a domain capability trait in [`DocumentExtractor`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/traits/extractor.rs):
 
 ```rust
 /// Domain representation of an extracted document prior to indexing.

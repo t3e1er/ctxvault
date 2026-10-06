@@ -1,8 +1,6 @@
 //! Composite multi-algorithm retrieval orchestrators.
 
-use groundcontrol_common::ports::RetrievalAlgorithm;
-use groundcontrol_common::types::{Modality, SearchResult};
-use groundcontrol_common::Result;
+use groundcontrol_common::{Modality, Result, RetrievalAlgorithm, SearchResult};
 
 pub mod rrf;
 #[cfg(test)]

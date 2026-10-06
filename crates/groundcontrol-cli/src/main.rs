@@ -2,7 +2,6 @@
 
 pub mod artifacts;
 mod commands;
-mod config_cmd;
 mod installer;
 
 use std::path::{Path, PathBuf};
@@ -585,15 +584,15 @@ async fn main() -> anyhow::Result<()> {
             }
             Commands::Config { action } => match action {
                 ConfigAction::List => {
-                    config_cmd::handle_config_list()?;
+                    commands::config::handle_config_list()?;
                     return Ok(());
                 }
                 ConfigAction::Get { key } => {
-                    config_cmd::handle_config_get(&key)?;
+                    commands::config::handle_config_get(&key)?;
                     return Ok(());
                 }
                 ConfigAction::Set { key, value } => {
-                    config_cmd::handle_config_set(&key, &value)?;
+                    commands::config::handle_config_set(&key, &value)?;
                     return Ok(());
                 }
             },

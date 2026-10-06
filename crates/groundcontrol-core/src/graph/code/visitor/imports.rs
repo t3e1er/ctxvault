@@ -10,8 +10,7 @@ use std::path::Path;
 use groundcontrol_common::types::{Edge, EdgeProvenance, ResolutionConfidence};
 use tree_sitter::Node;
 
-use crate::parser::code::languages::SupportedLanguage;
-use crate::parser::code::spec::get_language_spec;
+use crate::parser::code::languages::{get_language_spec, SupportedLanguage};
 
 use super::state::CallAndImportVisitor;
 

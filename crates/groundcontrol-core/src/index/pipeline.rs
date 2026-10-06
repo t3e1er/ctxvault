@@ -31,7 +31,7 @@ use std::{
 
 use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 
-use crate::{embedding::Embedder, engine::PendingChunk, vector_index::VectorIndex};
+use crate::{embedding::Embedder, engine::PendingChunk, storage::hnsw::VectorIndex};
 
 use groundcontrol_common::{types::Edge, Error, Result};
 
