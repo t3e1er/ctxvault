@@ -2,6 +2,12 @@
 # Git pre-push hook: runs local validation pipeline before push
 set -e
 
+# Ensure cargo and standard tools are in PATH
+if [ -d "$HOME/.cargo/bin" ]; then
+    PATH="$HOME/.cargo/bin:$PATH"
+    export PATH
+fi
+
 echo "=========================================================="
 echo "  Running Groundcontrol Pre-Push Validation Pipeline..."
 echo "=========================================================="

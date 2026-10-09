@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::chunk::Chunk;
-use super::code::{CodeSymbol, ExternalRef, ExtractedGrammarSemantics};
+use super::code::{CallSiteRecord, CodeSymbol, ExternalRef, ExtractedGrammarSemantics};
 use super::document::{Document, FileFormat};
 use super::edge::Edge;
 
@@ -34,6 +34,8 @@ pub struct ParsedArtifact {
     pub graph_edges: Vec<Edge>,
     /// Unresolved call/import targets captured for cross-corpus resolution.
     pub external_refs: Vec<ExternalRef>,
+    /// Bounded call sites captured during AST traversal for Tier 2 preamble cards.
+    pub call_sites: Vec<CallSiteRecord>,
     /// Raw text content if available.
     pub raw_content: Option<String>,
     /// Optional synthesized projection text for non-text / binary files.

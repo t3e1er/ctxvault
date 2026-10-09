@@ -4,6 +4,7 @@
 //! edge types, templates, and validation issues. Uses WAL mode for concurrency
 //! and foreign keys for referential integrity.
 
+pub mod call_sites;
 pub mod chunks;
 pub mod config;
 pub mod edges;
@@ -22,7 +23,7 @@ use rusqlite::Connection;
 
 use groundcontrol_common::traits::MetadataCatalog;
 use groundcontrol_common::types::{
-    ChunkRecord, CodeSymbol, EdgeTypeRecord, FileFormat, FileRecord, IndexingState,
+    CallSiteRecord, ChunkRecord, CodeSymbol, EdgeTypeRecord, FileFormat, FileRecord, IndexingState,
 };
 use groundcontrol_common::{Error, Result};
 
@@ -260,6 +261,22 @@ impl MetadataCatalog for Store {
 
     fn checkpoint(&self) -> Result<()> {
         Store::checkpoint(self)
+    }
+
+    fn insert_call_sites(&self, call_sites: &[CallSiteRecord]) -> Result<()> {
+        Store::insert_call_sites(self, call_sites)
+    }
+
+    fn get_call_sites_for_symbol(
+        &self,
+        callee_scope_path: &str,
+        max_callers: usize,
+    ) -> Result<Vec<CallSiteRecord>> {
+        Store::get_call_sites_for_symbol(self, callee_scope_path, max_callers)
+    }
+
+    fn delete_call_sites_for_file(&self, file_path: &str) -> Result<()> {
+        Store::delete_call_sites_for_file(self, file_path)
     }
 }
 

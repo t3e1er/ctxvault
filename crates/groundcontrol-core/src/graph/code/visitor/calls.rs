@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use groundcontrol_common::types::{
-    CodeSymbol, Edge, EdgeProvenance, ExternalRefKind, ResolutionConfidence,
+    CallSiteRecord, CodeSymbol, Edge, EdgeProvenance, ExternalRefKind, ResolutionConfidence,
 };
 use tree_sitter::Node;
 
@@ -19,6 +19,18 @@ impl<'a> CallAndImportVisitor<'a> {
         let Some((receiver, callee)) = self.extract_call_parts(node) else {
             return;
         };
+
+        // Capture call-site preamble if not a ubiquitous utility/logging sink and not self-recursion
+        if !Self::is_utility_sink(receiver.as_deref(), &callee) && caller != &callee {
+            let (line, call_snippet) = self.extract_call_snippet(node);
+            self.call_sites.push(CallSiteRecord {
+                caller_scope: caller.clone(),
+                file_path: self.file_path.clone(),
+                line,
+                call_snippet,
+                callee_name: callee.clone(),
+            });
+        }
 
         if let Some((target_sym, confidence)) = self.resolve_callee(receiver.as_deref(), &callee) {
             let key = (caller.clone(), target_sym.scope_path.clone());
@@ -364,6 +376,117 @@ impl<'a> CallAndImportVisitor<'a> {
             || callee.starts_with("assert!")
             || callee.starts_with("assert_eq!")
             || callee.starts_with("assert_ne!")
+    }
+
+    pub(super) fn is_utility_sink(receiver: Option<&str>, callee: &str) -> bool {
+        let callee_clean = callee.rsplit("::").next().unwrap_or(callee);
+        let callee_clean = callee_clean.rsplit('.').next().unwrap_or(callee_clean).trim();
+
+        if let Some(r) = receiver {
+            let r_clean = r.rsplit("::").next().unwrap_or(r);
+            let r_clean = r_clean.rsplit('.').next().unwrap_or(r_clean).trim().to_lowercase();
+            if matches!(
+                r_clean.as_str(),
+                "fmt"
+                    | "log"
+                    | "logger"
+                    | "logging"
+                    | "console"
+                    | "tracing"
+                    | "slog"
+                    | "zap"
+                    | "logrus"
+                    | "stdout"
+                    | "stderr"
+            ) {
+                return true;
+            }
+        }
+
+        let lower = callee.to_lowercase();
+        let lower_clean = callee_clean.to_lowercase();
+
+        matches!(
+            lower_clean.as_str(),
+            "print"
+                | "println"
+                | "eprintln"
+                | "printf"
+                | "fprintf"
+                | "sprintf"
+                | "snprintf"
+                | "format"
+                | "info"
+                | "warn"
+                | "warning"
+                | "error"
+                | "debug"
+                | "trace"
+        ) || lower.starts_with("fmt.")
+            || lower.starts_with("log.")
+            || lower.starts_with("logger.")
+            || lower.starts_with("logging.")
+            || lower.starts_with("console.")
+            || lower.starts_with("tracing::")
+            || lower.starts_with("log::")
+    }
+
+    pub(super) fn extract_call_snippet(&self, node: Node) -> (usize, String) {
+        let start_row = node.start_position().row;
+        let end_row = node.end_position().row;
+        let total_lines = self.content_lines.len();
+
+        if start_row >= total_lines {
+            return (start_row + 1, String::new());
+        }
+
+        let stmt_start_row = node
+            .parent()
+            .map(|p| {
+                let k = p.kind();
+                if k.contains("statement") || k.contains("declaration") || k.contains("assignment")
+                {
+                    p.start_position().row
+                } else {
+                    start_row
+                }
+            })
+            .unwrap_or(start_row);
+
+        let effective_start =
+            if start_row.saturating_sub(stmt_start_row) <= 1 { stmt_start_row } else { start_row };
+
+        let mut target_end = end_row.max(effective_start);
+
+        if target_end == effective_start && target_end + 1 < total_lines {
+            let next_line = self.content_lines[target_end + 1].trim();
+            if next_line.starts_with("if err")
+                || next_line.starts_with("if (err")
+                || next_line.starts_with("if !")
+                || next_line.starts_with("if (!")
+                || next_line.starts_with("if let Err")
+                || next_line.starts_with("catch")
+                || next_line.starts_with("except")
+            {
+                let mut check_end = target_end + 1;
+                while check_end < total_lines && check_end < effective_start + 3 {
+                    if self.content_lines[check_end].contains('}') {
+                        break;
+                    }
+                    check_end += 1;
+                }
+                target_end = check_end.min(effective_start + 3);
+            }
+        }
+
+        let bounded_end = target_end.min(effective_start + 3).min(total_lines.saturating_sub(1));
+
+        let mut lines = Vec::new();
+        for r in effective_start..=bounded_end {
+            lines.push(self.content_lines[r]);
+        }
+
+        (effective_start + 1, lines.join("\n"))
     }
 }
 

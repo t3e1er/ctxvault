@@ -63,6 +63,7 @@ impl ArtifactParser {
         let mut grammar_semantics = Vec::new();
         let mut graph_edges = Vec::new();
         let mut external_refs = Vec::new();
+        let mut call_sites = Vec::new();
 
         if let Some(res) = parse_res {
             raw_chunks = res.chunks;
@@ -70,6 +71,7 @@ impl ArtifactParser {
             grammar_semantics = res.grammar_semantics;
             graph_edges = res.edges;
             external_refs = res.external_refs;
+            call_sites = res.call_sites;
         }
 
         Ok(ParsedArtifact {
@@ -84,6 +86,7 @@ impl ArtifactParser {
             chunks: raw_chunks,
             graph_edges,
             external_refs,
+            call_sites,
             raw_content: Some(content),
             projection_text: None,
         })
@@ -157,6 +160,7 @@ impl ArtifactParser {
             chunks: raw_chunks,
             graph_edges: Vec::new(),
             external_refs: Vec::new(),
+            call_sites: Vec::new(),
             raw_content: Some(content),
             projection_text: None,
         })
@@ -191,6 +195,7 @@ impl ArtifactParser {
             chunks,
             graph_edges: Vec::new(),
             external_refs: Vec::new(),
+            call_sites: Vec::new(),
             raw_content: Some(content),
             projection_text: None,
         })
@@ -253,6 +258,7 @@ impl ArtifactParser {
             chunks,
             graph_edges,
             external_refs: Vec::new(),
+            call_sites: Vec::new(),
             raw_content: Some(extracted.normalized_text.clone()),
             projection_text: Some(extracted.normalized_text),
         })

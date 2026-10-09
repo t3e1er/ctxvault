@@ -167,6 +167,7 @@ impl Engine {
         }
 
         self.store.delete_file(rel_path)?;
+        self.store.delete_call_sites_for_file(rel_path)?;
         self.remove_artifact(rel_path)?;
 
         debug!("Removed file: {}", rel_path);
@@ -239,6 +240,10 @@ impl Engine {
 
         if record.is_code {
             self.store.save_code_symbols(path, &record.symbols)?;
+            self.store.delete_call_sites_for_file(path)?;
+            if !record.call_sites.is_empty() {
+                self.store.insert_call_sites(&record.call_sites)?;
+            }
             if !record.external_refs.is_empty() {
                 self.external_refs.extend(record.external_refs.iter().cloned());
             }

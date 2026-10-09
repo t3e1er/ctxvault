@@ -23,6 +23,7 @@ fn test_bm25_lifecycle_and_search() {
         ],
         graph_edges: Vec::new(),
         external_refs: Vec::new(),
+        call_sites: Vec::new(),
         raw_content: None,
         projection_text: None,
     };

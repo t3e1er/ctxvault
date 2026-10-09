@@ -2,7 +2,7 @@
 title: "RFC: Mathematical Formalization & Architectural Optimization of Progressive Disclosure (Tiers 2 & 3)"
 description: "Advancing Tier 2 (Targeted Structural & Subgraph Extraction) and Tier 3 (Syntactic Slicing & Multi-File Context Hydration) through mathematical information scent optimization, dominator pruning, AST-aligned snapping, and unified multi-slice co-hydration."
 category: "roadmap"
-status: "proposed"
+status: "in-progress"
 tags: ["rfc", "progressive-disclosure", "tier-2", "tier-3", "ast-slicing", "call-site-cards", "dominator-pruning", "federated-stubs", "read-slices", "bpi", "mcst"]
 related:
   - "[[docs/roadmap/coderoadmap]]"
@@ -15,11 +15,18 @@ related:
 
 # RFC: Mathematical Formalization & Architectural Optimization of Progressive Disclosure (Tiers 2 & 3)
 
-**Status**: Proposed  
+**Status**: In Progress (Tier 2 Call-Site Preambles & Federated Stubs Implemented)  
 **Author**: Architecture Team & Antigravity Scientific Pair  
 **Scope**: `groundcontrol-core`, `groundcontrol-mcp`, `groundcontrol-common`, `groundtruth`  
-**Date**: September 2026  
-**Target Version**: `0.2.0`  
+**Date**: September–October 2026  
+**Target Version**: `0.3.0`  
+**Active Implementation**:
+- Domain types: [`CallSiteRecord`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/types/code.rs)
+- Trait contracts: [`MetadataCatalog`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-common/src/traits/catalog.rs)
+- Storage & SQLite queries: [`call_sites.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/storage/sqlite/call_sites.rs)
+- AST extraction & sink suppression: [`calls.rs`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-core/src/graph/code/visitor/calls.rs)
+- Lean formatting & protocol stubs: [`format_lean_code_symbol`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-mcp/src/format/lean.rs)
+- MCP Tool handler: [`handle_get_snippet`](file:///c:/dev/semantic/groundcontrol/crates/groundcontrol-mcp/src/tools/read.rs)
 **Related Documents**: [three-tier-model.md](file:///c:/dev/semantic/groundcontrol/docs/concepts/progressive-disclosure/three-tier-model.md), [RFC-lean-multiline-text-emission.md](file:///c:/dev/semantic/groundcontrol/docs/roadmap/RFC-lean-multiline-text-emission.md), [coderoadmap.md](file:///c:/dev/semantic/groundcontrol/docs/roadmap/coderoadmap.md), [cast-chunking.md](file:///c:/dev/semantic/groundcontrol/docs/architecture/implementation/cast-chunking.md)
 
 ---

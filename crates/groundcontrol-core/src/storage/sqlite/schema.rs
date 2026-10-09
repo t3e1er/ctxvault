@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS identifiers (
 );
 CREATE INDEX IF NOT EXISTS idx_identifiers_id ON identifiers(identifier);
 CREATE INDEX IF NOT EXISTS idx_identifiers_file ON identifiers(file_path);
+
+CREATE TABLE IF NOT EXISTS call_sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_scope TEXT NOT NULL,
+    file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+    line INTEGER NOT NULL,
+    call_snippet TEXT NOT NULL,
+    callee_name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_call_sites_callee ON call_sites(callee_name);
+CREATE INDEX IF NOT EXISTS idx_call_sites_caller ON call_sites(caller_scope);
+CREATE INDEX IF NOT EXISTS idx_call_sites_file ON call_sites(file_path);
 "#;
 
 /// Apply pragmatic configurations and initialize schema tables.

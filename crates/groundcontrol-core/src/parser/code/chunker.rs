@@ -8,7 +8,7 @@ use std::path::Path;
 
 use groundcontrol_common::config::ChunkingConfig;
 use groundcontrol_common::types::{
-    Chunk, ChunkEmbedPolicy, CodeSymbol, CodeSymbolType, Edge, ExternalRef,
+    CallSiteRecord, Chunk, ChunkEmbedPolicy, CodeSymbol, CodeSymbolType, Edge, ExternalRef,
 };
 use tree_sitter::{Node, Parser};
 
@@ -41,6 +41,8 @@ pub struct CodeParseAndExtractResult {
     pub edges: Vec<Edge>,
     /// Unresolved call and import targets captured for cross-corpus or cross-file resolution.
     pub external_refs: Vec<ExternalRef>,
+    /// Bounded call sites captured during AST traversal for Tier 2 preamble cards.
+    pub call_sites: Vec<CallSiteRecord>,
 }
 
 /// AST-aware code chunker.
@@ -153,6 +155,7 @@ impl CodeChunker {
             grammar_semantics: extractor.grammar_semantics,
             edges: extraction.edges,
             external_refs: extraction.external_refs,
+            call_sites: extraction.call_sites,
         })
     }
 }

@@ -10,10 +10,31 @@
 //! - Turn 3 (`read_file`): Token-efficient markdown code blocks without JSON string
 //!   escapes (`\n`, `\"`) for single and batch file reads.
 
-use groundcontrol_common::types::{GraphMatchResult, GraphTreeNode, ScoreBreakdown, SearchResult};
+use groundcontrol_common::types::{
+    CallSiteRecord, GraphMatchResult, GraphTreeNode, ScoreBreakdown, SearchResult,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Cross-corpus or protocol interface stub for Tier 2 progressive disclosure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FederatedStub {
+    /// Target corpus name if cross-corpus.
+    pub target_corpus: Option<String>,
+    /// Target file name or service label (e.g. `demo.proto`).
+    pub target_name: String,
+    /// Repo-relative file path of the target stub (e.g. `pb/demo.proto`).
+    pub file_path: String,
+    /// 1-based line number of the stub definition.
+    pub line: usize,
+    /// Remote interface or RPC name being invoked (e.g. `ShipOrder`).
+    pub via_symbol: String,
+    /// Programming language / syntax highlighting label (e.g. `protobuf`).
+    pub language: String,
+    /// Verbatim stub definition line(s).
+    pub stub_snippet: String,
+}
 
 /// Detect a source language from a file extension. Returns `"text"` when unknown.
 pub fn language_from_path(path: &str) -> &'static str {
@@ -26,6 +47,7 @@ pub fn language_from_path(path: &str) -> &'static str {
         Some("java") => "java",
         Some("c") | Some("h") => "c",
         Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") | Some("hh") => "cpp",
+        Some("proto") => "protobuf",
         Some("md") | Some("markdown") => "markdown",
         Some("toml") => "toml",
         Some("json") => "json",
@@ -231,6 +253,9 @@ pub fn format_lean_code_symbol(
     truncated: bool,
     incoming: &BTreeMap<String, Vec<Value>>,
     outgoing: &BTreeMap<String, Vec<Value>>,
+    call_sites: &[CallSiteRecord],
+    total_incoming_callers: usize,
+    federated_stubs: &[FederatedStub],
 ) -> String {
     let mut out = String::with_capacity(source.len() + 512);
     let line_count = if end_line >= start_line { end_line - start_line + 1 } else { 0 };
@@ -256,6 +281,50 @@ pub fn format_lean_code_symbol(
 
     if truncated {
         out.push_str("> [Note: Symbol body truncated at max_lines]\n\n");
+    }
+
+    // Render Call-Site Preamble Cards if present
+    if !call_sites.is_empty() {
+        let shown = call_sites.len();
+        let total = total_incoming_callers.max(shown);
+        out.push_str(&format!(
+            "### Call-Site Preambles (Incoming 1-Hop Callers, Top {shown} of {total})\n"
+        ));
+        for cs in call_sites {
+            let caller_name = cs
+                .caller_scope
+                .rsplit(" > ")
+                .next()
+                .unwrap_or(&cs.caller_scope)
+                .rsplit("::")
+                .next()
+                .unwrap_or(&cs.caller_scope)
+                .trim();
+            out.push_str(&format!("{caller_name} ({}:L{}):\n", cs.file_path, cs.line));
+            let cs_lang = language_from_path(&cs.file_path);
+            out.push_str(&format!("```{cs_lang}\n"));
+            out.push_str(&prefix_line_numbers(&cs.call_snippet, cs.line));
+            out.push_str("```\n");
+        }
+        out.push('\n');
+    }
+
+    // Render Federated Outbound Stubs if present
+    if !federated_stubs.is_empty() {
+        out.push_str("### Federated Outbound Stubs (Cross-Corpus / Protocol Stubs)\n");
+        for stub in federated_stubs {
+            out.push_str(&format!(
+                "{} ({}:L{} via {}):\n",
+                stub.target_name, stub.file_path, stub.line, stub.via_symbol
+            ));
+            out.push_str(&format!("```{}\n", stub.language));
+            out.push_str(&stub.stub_snippet);
+            if !stub.stub_snippet.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+        }
+        out.push('\n');
     }
 
     // Render neighbor affordances if present
