@@ -51,6 +51,8 @@ pub struct CodeExtraction {
     /// Unresolved call/import targets ([`ExternalRefKind::Call`] /
     /// [`ExternalRefKind::Import`]) captured for later cross-corpus resolution.
     pub external_refs: Vec<ExternalRef>,
+    /// Call sites captured during AST traversal for Tier 2 preamble cards.
+    pub call_sites: Vec<groundcontrol_common::types::CallSiteRecord>,
 }
 
 /// Polyglot code graph extractor.
@@ -124,8 +126,9 @@ impl CodeGraphExtractor {
             }
         }
 
+        let call_sites = visitor.call_sites;
         edges.extend(visitor.edges);
-        CodeExtraction { edges, external_refs }
+        CodeExtraction { edges, external_refs, call_sites }
     }
 
     /// Extract all structural edges (defines, imports, calls, implements) for a single code file
@@ -141,20 +144,20 @@ impl CodeGraphExtractor {
         symbol_index: &HashMap<String, Vec<&CodeSymbol>>,
     ) -> CodeExtraction {
         if content.len() > crate::parser::code::chunker::CodeChunker::MAX_CODE_FILE_SIZE_BYTES {
-            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+            return CodeExtraction::default();
         }
 
         let Some(lang) = detect_language(file_path) else {
-            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+            return CodeExtraction::default();
         };
 
         let mut parser = Parser::new();
         if parser.set_language(&lang.tree_sitter_language()).is_err() {
-            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+            return CodeExtraction::default();
         }
 
         let Some(tree) = parser.parse(content, None) else {
-            return CodeExtraction { edges: Vec::new(), external_refs: Vec::new() };
+            return CodeExtraction::default();
         };
 
         Self::extract_edges_from_tree(file_path, content, file_symbols, symbol_index, lang, &tree)

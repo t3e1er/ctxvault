@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::types::{
-    ChunkRecord, CodeSymbol, EdgeTypeRecord, FileFormat, FileRecord, IndexingState,
+    CallSiteRecord, ChunkRecord, CodeSymbol, EdgeTypeRecord, FileFormat, FileRecord, IndexingState,
 };
 use crate::Result;
 
@@ -141,6 +141,26 @@ pub trait MetadataCatalog {
 
     /// Flush the database write-ahead log or checkpoint changes to disk.
     fn checkpoint(&self) -> Result<()> {
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Call sites
+    // ------------------------------------------------------------------
+
+    /// Batch insert call-site records captured by the Tree-sitter visitor.
+    fn insert_call_sites(&self, call_sites: &[CallSiteRecord]) -> Result<()>;
+
+    /// Retrieve bounded call-site preambles for a given target callee symbol or scope path.
+    fn get_call_sites_for_symbol(
+        &self,
+        callee_scope_path: &str,
+        max_callers: usize,
+    ) -> Result<Vec<CallSiteRecord>>;
+
+    /// Delete all call-site records for a given file.
+    fn delete_call_sites_for_file(&self, file_path: &str) -> Result<()> {
+        let _ = file_path;
         Ok(())
     }
 }

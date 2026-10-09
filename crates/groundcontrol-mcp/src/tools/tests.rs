@@ -2501,3 +2501,118 @@ fn test_where_tool_identifier_lookup() {
     assert!(lean_str.contains("# Where: \"process_order\""));
     assert!(lean_str.contains("`order.rs:L1`"));
 }
+
+#[test]
+fn test_get_snippet_call_site_preambles_and_federated_stubs() {
+    let tmp = TempDir::new().unwrap();
+    let mut engine = create_test_engine(&tmp);
+    let corpus_dir = tmp.path().join("corpus");
+
+    let code = r#"
+pub fn ship_order(id: u64) -> bool {
+    id > 0
+}
+
+pub fn place_order() {
+    let tracking = ship_order(42);
+    if !tracking {
+        println!("shipping error");
+    }
+}
+"#;
+    fs::write(corpus_dir.join("checkout.rs"), code).unwrap();
+    engine.index_file("checkout.rs", code).unwrap();
+
+    // Create the proto file referenced by cross-corpus edge
+    let proto_dir = corpus_dir.join("pb");
+    fs::create_dir_all(&proto_dir).unwrap();
+    let proto_content = r#"syntax = "proto3";
+
+service ShippingService {
+    rpc ShipOrder(ShipOrderRequest) returns (ShipOrderResponse);
+}
+"#;
+    fs::write(proto_dir.join("demo.proto"), proto_content).unwrap();
+
+    // Add a cross-corpus outbound edge from ship_order to a proto definition
+    engine.graph_mut().add_cross_corpus_edge(
+        "ship_order",
+        "proto::ShipOrder",
+        "calls",
+        1.0,
+        EdgeProvenance::CodeCalls,
+        EdgeClass::CrossModal,
+        Some("proto".to_string()),
+        Some(groundcontrol_common::types::ResolutionConfidence::High),
+        Some("pb/demo.proto".to_string()),
+        Some("ShipOrder".to_string()),
+        Some("Service".to_string()),
+    );
+    engine.commit().unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register_all();
+
+    // 1. Query get_snippet in lean format with default parameters (callers=3, inline_stubs=true)
+    let lean_val = registry
+        .execute_read(
+            "get_snippet",
+            &engine,
+            serde_json::json!({ "name": "ship_order", "format": "lean" }),
+        )
+        .unwrap();
+    let lean_text = lean_val.as_str().expect("expected lean text string");
+
+    // Symbol definition block
+    assert!(lean_text.contains("# Symbol: ship_order (`checkout.rs:L2-L4"));
+    assert!(lean_text.contains("L2: pub fn ship_order(id: u64) -> bool {"));
+
+    // Call-site preambles block
+    assert!(lean_text.contains("### Call-Site Preambles (Incoming 1-Hop Callers, Top 1 of 1)"));
+    assert!(lean_text.contains("place_order (checkout.rs:L7):"));
+    assert!(lean_text.contains("L7:     let tracking = ship_order(42);"));
+    assert!(lean_text.contains("L8:     if !tracking {"));
+
+    // Federated outbound stubs block
+    assert!(lean_text.contains("### Federated Outbound Stubs (Cross-Corpus / Protocol Stubs)"));
+    assert!(lean_text.contains("demo.proto (pb/demo.proto:L4 via ShipOrder):"));
+    assert!(lean_text.contains("rpc ShipOrder(ShipOrderRequest) returns (ShipOrderResponse);"));
+
+    // 2. Query get_snippet with callers=0 and inline_stubs=false
+    let lean_disabled = registry
+        .execute_read(
+            "get_snippet",
+            &engine,
+            serde_json::json!({
+                "name": "ship_order",
+                "format": "lean",
+                "callers": 0,
+                "inline_stubs": false
+            }),
+        )
+        .unwrap();
+    let lean_disabled_text = lean_disabled.as_str().unwrap();
+    assert!(!lean_disabled_text.contains("### Call-Site Preambles"));
+    assert!(!lean_disabled_text.contains("### Federated Outbound Stubs"));
+
+    // 3. Query get_snippet in JSON format
+    let json_val = registry
+        .execute_read(
+            "get_snippet",
+            &engine,
+            serde_json::json!({ "name": "ship_order", "format": "json" }),
+        )
+        .unwrap();
+    let call_sites = json_val["call_sites"].as_array().expect("call_sites array");
+    assert_eq!(call_sites.len(), 1);
+    assert_eq!(call_sites[0]["caller_scope"], "place_order");
+    assert_eq!(call_sites[0]["file_path"], "checkout.rs");
+    assert_eq!(call_sites[0]["line"], 7);
+    assert!(call_sites[0]["call_snippet"].as_str().unwrap().contains("ship_order(42)"));
+
+    let stubs = json_val["federated_stubs"].as_array().expect("federated_stubs array");
+    assert_eq!(stubs.len(), 1);
+    assert_eq!(stubs[0]["target_corpus"], "proto");
+    assert_eq!(stubs[0]["file_path"], "pb/demo.proto");
+    assert_eq!(stubs[0]["via_symbol"], "ShipOrder");
+}

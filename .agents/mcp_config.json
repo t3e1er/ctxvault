@@ -1,7 +1,13 @@
 {
   "mcpServers": {
     "groundcontrol": {
-      "serverUrl": "http://127.0.0.1:9090/sse"
+      "serverUrl": "http://127.0.0.1:9090/sse",
+      "headers": {
+        "x-api-key": "ag_a563cf5514c3ecb8ff71ff7a"
+      },
+      "env": {
+        "GROUNDCONTROL_API_KEY": "ag_a563cf5514c3ecb8ff71ff7a"
+      }
     },
     "codebase-memory": {
       "command": "codebase-memory-mcp",

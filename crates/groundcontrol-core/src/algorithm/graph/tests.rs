@@ -26,6 +26,7 @@ fn test_graph_lifecycle_and_ppr() {
             EdgeProvenance::CodeCalls,
         )],
         external_refs: Vec::new(),
+        call_sites: Vec::new(),
         raw_content: None,
         projection_text: None,
     };

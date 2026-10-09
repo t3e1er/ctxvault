@@ -27,6 +27,7 @@ fn test_dense_lifecycle() {
         .with_embed_policy(ChunkEmbedPolicy::Anchor)],
         graph_edges: Vec::new(),
         external_refs: Vec::new(),
+        call_sites: Vec::new(),
         raw_content: None,
         projection_text: None,
     };

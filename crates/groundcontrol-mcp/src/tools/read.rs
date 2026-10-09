@@ -47,6 +47,10 @@ pub(crate) struct GetSnippetParams {
     pub max_tokens: Option<usize>,
     #[serde(default)]
     pub include_neighbors: bool,
+    /// Max call-site preamble cards to inline (default: 3, set 0 to disable)
+    pub callers: Option<usize>,
+    /// Inline cross-corpus interface stubs (default: true)
+    pub inline_stubs: Option<bool>,
     pub format: Option<String>,
 }
 
@@ -69,6 +73,7 @@ pub(crate) fn language_from_path(path: &str) -> &'static str {
         Some("java") => "java",
         Some("c") | Some("h") => "c",
         Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") | Some("hh") => "cpp",
+        Some("proto") => "protobuf",
         Some("md") | Some("markdown") => "markdown",
         _ => "text",
     }
@@ -326,6 +331,8 @@ pub fn handle_get_snippet(engine: &Engine, args: Value) -> Result<Value> {
             max_lines,
             params.max_tokens,
             params.include_neighbors,
+            params.callers.unwrap_or(3),
+            params.inline_stubs.unwrap_or(true),
             is_lean,
         );
     }
@@ -372,6 +379,8 @@ fn fetch_code_symbol(
     max_lines: usize,
     max_tokens: Option<usize>,
     include_neighbors: bool,
+    callers_limit: usize,
+    inline_stubs: bool,
     is_lean: bool,
 ) -> Result<Value> {
     let mut matches = engine.store().find_symbols_by_qualified_name(qualified_name)?;
@@ -526,6 +535,111 @@ fn fetch_code_symbol(
                 });
             }
 
+            // Query bounded call sites
+            let call_sites = if callers_limit > 0 {
+                let mut cs = engine
+                    .store()
+                    .get_call_sites_for_symbol(&sym.scope_path, callers_limit)
+                    .unwrap_or_default();
+                if cs.is_empty() && sym.name != sym.scope_path {
+                    cs = engine
+                        .store()
+                        .get_call_sites_for_symbol(&sym.name, callers_limit)
+                        .unwrap_or_default();
+                }
+                cs
+            } else {
+                Vec::new()
+            };
+
+            // Query outbound cross-corpus / protocol stubs
+            let mut federated_stubs = Vec::new();
+            if inline_stubs {
+                let all_edges = engine.graph().get_all_edges();
+                let matches_sym =
+                    |candidate: &str| candidate == sym.scope_path || candidate == sym.name;
+                let mut seen_stubs = HashSet::new();
+
+                for e in all_edges.iter().filter(|e| matches_sym(&e.source)) {
+                    let is_cross_or_proto = e.target_corpus.is_some()
+                        || e.target_path
+                            .as_deref()
+                            .map(|p| p.ends_with(".proto") || p.ends_with(".thrift"))
+                            .unwrap_or(false)
+                        || e.target.ends_with(".proto");
+
+                    if is_cross_or_proto {
+                        let file_path = e.target_path.clone().unwrap_or_else(|| {
+                            if e.target.contains(".proto") {
+                                e.target.clone()
+                            } else {
+                                format!("{}.proto", e.target_corpus.as_deref().unwrap_or("stub"))
+                            }
+                        });
+                        let target_name = Path::new(&file_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&file_path)
+                            .to_string();
+                        let via_symbol = e.target_symbol.clone().unwrap_or_else(|| {
+                            let clean = e.target.rsplit("::").next().unwrap_or(&e.target);
+                            clean.rsplit('.').next().unwrap_or(clean).to_string()
+                        });
+
+                        if seen_stubs.insert((file_path.clone(), via_symbol.clone())) {
+                            let full_path = corpus_root.join(&file_path);
+                            let (line, stub_snippet) =
+                                if let Ok(target_content) = read_file_lossy(&full_path) {
+                                    let lines: Vec<&str> = target_content.lines().collect();
+                                    let mut found_line = 1;
+                                    let mut snippet = String::new();
+                                    for (idx, l) in lines.iter().enumerate() {
+                                        if l.contains(&via_symbol) {
+                                            found_line = idx + 1;
+                                            snippet = l.trim().to_string();
+                                            break;
+                                        }
+                                    }
+                                    if snippet.is_empty() {
+                                        snippet = format!("rpc {via_symbol}();");
+                                    }
+                                    (found_line, snippet)
+                                } else {
+                                    (1, format!("rpc {via_symbol}();"))
+                                };
+
+                            let stub_lang = language_from_path(&file_path).to_string();
+                            federated_stubs.push(crate::format::lean::FederatedStub {
+                                target_corpus: e.target_corpus.clone(),
+                                target_name,
+                                file_path,
+                                line,
+                                via_symbol,
+                                language: stub_lang,
+                                stub_snippet,
+                            });
+                        }
+                    }
+                }
+            }
+
+            let total_incoming_callers = engine
+                .graph()
+                .get_all_edges()
+                .into_iter()
+                .filter(|e| {
+                    e.edge_type == "calls" && (e.target == sym.scope_path || e.target == sym.name)
+                })
+                .count()
+                .max(call_sites.len());
+
+            if !call_sites.is_empty() {
+                out["call_sites"] = serde_json::to_value(&call_sites).unwrap_or_default();
+            }
+            if !federated_stubs.is_empty() {
+                out["federated_stubs"] = serde_json::to_value(&federated_stubs).unwrap_or_default();
+            }
+
             if is_lean {
                 let lean = crate::format::lean::format_lean_code_symbol(
                     &sym.name,
@@ -539,6 +653,9 @@ fn fetch_code_symbol(
                     truncated,
                     &incoming,
                     &outgoing,
+                    &call_sites,
+                    total_incoming_callers,
+                    &federated_stubs,
                 );
                 Ok(Value::String(lean))
             } else {

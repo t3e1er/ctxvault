@@ -1072,3 +1072,56 @@ public class SearchService {
         .expect("expected call edge to SearchService > execute");
     assert_eq!(call_edge.confidence, Some(ResolutionConfidence::High));
 }
+
+#[test]
+fn test_call_site_extraction_and_utility_sink_suppression() {
+    let config = ChunkingConfig::default();
+    let go_code = r#"package main
+
+import (
+    "fmt"
+    "log"
+)
+
+type checkoutService struct{}
+
+func (cs *checkoutService) PlaceOrder(ctx string) error {
+    fmt.Sprintf("processing order")
+    log.Printf("start")
+    println("debug")
+    shippingTrackingID, err := cs.shipOrder(ctx, "123 Main St", "cart")
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
+func (cs *checkoutService) shipOrder(ctx string, addr string, item string) (string, error) {
+    return "track123", nil
+}
+"#;
+
+    let res = CodeChunker::parse_and_chunk(Path::new("src/checkout.go"), go_code, &config).unwrap();
+    let symbol_index = CodeGraphExtractor::build_symbol_index(&res.symbols);
+    let extraction = CodeGraphExtractor::extract_edges_for_file_with_index(
+        Path::new("src/checkout.go"),
+        go_code,
+        &res.symbols,
+        &symbol_index,
+    );
+
+    // Verify call_sites: utility sinks suppressed, shipOrder captured
+    assert_eq!(
+        extraction.call_sites.len(),
+        1,
+        "expected only 1 call site, got: {:?}",
+        extraction.call_sites
+    );
+    let cs = &extraction.call_sites[0];
+    assert_eq!(cs.callee_name, "shipOrder");
+    assert!(cs.caller_scope.contains("PlaceOrder"));
+    assert_eq!(cs.file_path, "src/checkout.go");
+    assert_eq!(cs.line, 14);
+    assert!(cs.call_snippet.contains("cs.shipOrder(ctx, \"123 Main St\", \"cart\")"));
+    assert!(cs.call_snippet.contains("if err != nil"));
+}

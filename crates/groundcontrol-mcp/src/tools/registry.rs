@@ -263,7 +263,9 @@ impl ToolRegistry {
                     "chunk_index": { "type": "integer", "description": "With path, fetch that specific doc chunk (zero-based)" },
                     "max_lines": { "type": "integer", "description": "Hard cap on returned lines (default 500)" },
                     "max_tokens": { "type": "integer", "description": "Optional token budget cap. Automatically truncates output and includes continuation hints." },
-                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code relationships (incoming/outgoing grouped by edge type) as handles, or adjacent doc chunks (default false)" }
+                    "include_neighbors": { "type": "boolean", "description": "Include neighbor context: code relationships (incoming/outgoing grouped by edge type) as handles, or adjacent doc chunks (default false)" },
+                    "callers": { "type": "integer", "description": "Max call-site preamble cards to inline directly in response (default: 3, set 0 to disable)" },
+                    "inline_stubs": { "type": "boolean", "description": "Inline federated cross-corpus interface stubs (default: true)" }
                 },
                 "required": []
             }),

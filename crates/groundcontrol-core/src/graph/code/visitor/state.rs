@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use groundcontrol_common::types::{
-    CodeSymbol, Edge, EdgeProvenance, ExternalRef, ExternalRefKind, ResolutionConfidence,
+    CallSiteRecord, CodeSymbol, Edge, EdgeProvenance, ExternalRef, ExternalRefKind,
+    ResolutionConfidence,
 };
 use tree_sitter::Node;
 
@@ -14,6 +15,7 @@ use crate::parser::code::languages::SupportedLanguage;
 pub(crate) struct CallAndImportVisitor<'a> {
     pub(super) file_path: String,
     pub(super) content: &'a str,
+    pub(super) content_lines: Vec<&'a str>,
     pub(super) language: SupportedLanguage,
     pub(super) file_symbols: &'a [CodeSymbol],
     pub(super) symbol_index: &'a HashMap<String, Vec<&'a CodeSymbol>>,
@@ -21,6 +23,7 @@ pub(crate) struct CallAndImportVisitor<'a> {
     pub(super) current_container: Option<String>,
     pub(crate) edges: Vec<Edge>,
     pub(crate) external_refs: Vec<ExternalRef>,
+    pub(crate) call_sites: Vec<CallSiteRecord>,
     pub(super) visited_calls: HashSet<(String, String)>,
     pub(super) visited_edges: HashSet<(String, String, String)>,
     pub(super) visited_external_refs: HashSet<(String, String, ExternalRefKind)>,
@@ -56,9 +59,11 @@ impl<'a> CallAndImportVisitor<'a> {
                 test_callers.insert(s.scope_path.clone());
             }
         }
+        let content_lines = content.lines().collect();
         Self {
             file_path,
             content,
+            content_lines,
             language,
             file_symbols,
             symbol_index,
@@ -66,6 +71,7 @@ impl<'a> CallAndImportVisitor<'a> {
             current_container: None,
             edges: Vec::new(),
             external_refs: Vec::new(),
+            call_sites: Vec::new(),
             visited_calls: HashSet::new(),
             visited_edges: HashSet::new(),
             visited_external_refs: HashSet::new(),

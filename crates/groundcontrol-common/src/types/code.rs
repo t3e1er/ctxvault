@@ -279,3 +279,18 @@ pub struct GrammarTransition {
     /// Relative tree depth.
     pub depth: u16,
 }
+
+/// Detailed call-site record captured during AST parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallSiteRecord {
+    /// Fully qualified scope or function name of the caller.
+    pub caller_scope: String,
+    /// Relative file path containing the call site.
+    pub file_path: String,
+    /// 1-based line number of the call expression.
+    pub line: usize,
+    /// Exact verbatim source line(s) of the call site.
+    pub call_snippet: String,
+    /// Target callee symbol name or scope path.
+    pub callee_name: String,
+}

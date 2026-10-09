@@ -340,3 +340,68 @@ fn test_find_symbols_by_normalized_scope() {
     assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'tcx, T> > instantiate"));
     assert!(ambiguous.iter().any(|s| s.scope_path == "EarlyBinder<'a, A> > instantiate"));
 }
+
+#[test]
+fn test_call_sites_storage() {
+    let store = Store::open_in_memory().unwrap();
+
+    let cs1 = groundcontrol_common::types::CallSiteRecord {
+        caller_scope: "PlaceOrder".to_string(),
+        file_path: "src/checkoutservice/main.go".to_string(),
+        line: 285,
+        call_snippet: "shippingTrackingID, err := cs.shipOrder(ctx, req.Address, prep.cartItems)\nif err != nil {\n    return nil, err\n}".to_string(),
+        callee_name: "shipOrder".to_string(),
+    };
+    let cs2 = groundcontrol_common::types::CallSiteRecord {
+        caller_scope: "checkoutService > ProcessPayment".to_string(),
+        file_path: "src/checkoutservice/payment.go".to_string(),
+        line: 110,
+        call_snippet: "cs.shipOrder(ctx, addr, items)".to_string(),
+        callee_name: "checkoutService > shipOrder".to_string(),
+    };
+    let cs3 = groundcontrol_common::types::CallSiteRecord {
+        caller_scope: "PlaceOrder".to_string(),
+        file_path: "src/checkoutservice/main.go".to_string(),
+        line: 295,
+        call_snippet: "cs.shipOrder(ctx, fallbackAddr, nil)".to_string(),
+        callee_name: "shipOrder".to_string(),
+    };
+
+    store
+        .insert_file("src/checkoutservice/main.go", "hash1", 1000, None, None, FileFormat::Source)
+        .unwrap();
+    store
+        .insert_file(
+            "src/checkoutservice/payment.go",
+            "hash2",
+            1000,
+            None,
+            None,
+            FileFormat::Source,
+        )
+        .unwrap();
+
+    store.insert_call_sites(&[cs1, cs2, cs3]).unwrap();
+
+    // 1. Query by leaf name "shipOrder" matches both exact and qualified
+    let callers = store.get_call_sites_for_symbol("shipOrder", 10).unwrap();
+    // cs3 is deduplicated because PlaceOrder already has cs1
+    assert_eq!(callers.len(), 2);
+    assert_eq!(callers[0].caller_scope, "PlaceOrder");
+    assert_eq!(callers[0].line, 285);
+    assert_eq!(callers[1].caller_scope, "checkoutService > ProcessPayment");
+
+    // 2. Query by qualified name "checkoutService > shipOrder"
+    let callers_qual = store.get_call_sites_for_symbol("checkoutService > shipOrder", 10).unwrap();
+    assert_eq!(callers_qual.len(), 2);
+
+    // 3. Respect max_callers limit
+    let callers_lim = store.get_call_sites_for_symbol("shipOrder", 1).unwrap();
+    assert_eq!(callers_lim.len(), 1);
+
+    // 4. Delete for file
+    store.delete_call_sites_for_file("src/checkoutservice/main.go").unwrap();
+    let remaining = store.get_call_sites_for_symbol("shipOrder", 10).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].file_path, "src/checkoutservice/payment.go");
+}
